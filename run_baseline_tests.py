@@ -57,7 +57,7 @@ def main() -> int:
     steps: list[tuple[str, list[str], bool]] = [
         (
             'Pure utility regression (pytest)',
-            [PY, '-m', 'pytest', 'test_filename_utils.py', 'test_javlibrary_parser.py', 'test_batch_filters.py', 'test_manifest_utils.py', 'test_provider_router.py', 'test_dry_run.py', 'test_series_atomic.py', 'test_workflow_service.py', '-q'],
+            [PY, '-m', 'pytest', 'test_filename_utils.py', 'test_javlibrary_parser.py', 'test_batch_filters.py', 'test_manifest_utils.py', 'test_provider_result.py', 'test_provider_router.py', 'test_dry_run.py', 'test_series_atomic.py', 'test_workflow_service.py', '-q'],
             False,
         ),
         (

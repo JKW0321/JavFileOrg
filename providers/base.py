@@ -12,6 +12,9 @@ class ProviderResult:
     message: Optional[str] = None
     raw_meta: Dict[str, Any] = field(default_factory=dict)
 
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
+
 
 class BaseProvider:
     name = 'base'
