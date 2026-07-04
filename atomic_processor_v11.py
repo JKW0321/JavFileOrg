@@ -91,6 +91,11 @@ class AtomicProcessor:
             
         except Exception as e:
             return False, None, f"下载图片到临时目录失败: {e}"
+
+    def _move_temp_image_to_final(self, temp_image_path: Path, final_image_path: str) -> str:
+        """将临时图片移动到最终路径，返回最终路径。"""
+        shutil.move(str(temp_image_path), final_image_path)
+        return final_image_path
     
     def process_file_atomic(self, file_path: str, new_filename: str, image_url: Optional[str], 
                            finish_folder: str) -> Tuple[bool, Dict[str, Any], str]:
@@ -111,6 +116,7 @@ class AtomicProcessor:
         final_image_path = None
         
         try:
+            source_size = os.path.getsize(file_path)
             # 步骤1: 如果有图片URL，先下载到临时目录
             if image_url:
                 # 生成图片文件名
@@ -144,6 +150,13 @@ class AtomicProcessor:
                 # 跨文件系统时使用 shutil.move
                 shutil.move(file_path, new_video_path)
             
+            # v1.5.1: 移动后做大小校验，防止占位/异常小文件混入 Finish
+            moved_size = os.path.getsize(new_video_path)
+            if moved_size != source_size:
+                raise RuntimeError(
+                    f"视频大小校验失败: source={source_size} bytes, target={moved_size} bytes"
+                )
+
             # 步骤3: 如果有临时图片，移动到最终位置
             if temp_image_path and temp_image_path.exists():
                 try:
@@ -213,6 +226,97 @@ class AtomicProcessor:
                 'video_path': None,
                 'image_path': None
             }, f"原子操作失败: {e}"
+
+    def process_series_group_atomic(self, series_files, title: str, image_url: Optional[str], finish_folder: str):
+        """以事务性方式处理一个序列文件组。
+
+        series_files: [(file_path, sequence), ...]
+        成功条件：全部视频正确移动且（如果需要）图片正确落盘；否则尽量回滚源文件。
+        """
+        temp_image_path = None
+        moved_videos = []
+        final_image_path = None
+        try:
+            if not series_files:
+                return False, {'video_paths': [], 'image_path': None, 'image_downloaded': False}, '空序列组'
+
+            # 1) 先下载图片到临时目录，确保不会先移动视频后图失败
+            if image_url:
+                success, temp_image_path, message = self.download_image_to_temp(image_url, f"{title}.jpg")
+                if not success:
+                    return False, {'video_paths': [], 'image_path': None, 'image_downloaded': False}, message
+
+            # 2) 计算每个视频的最终路径（含重名处理）
+            planned = []
+            for file_path, sequence in series_files:
+                filename = os.path.basename(file_path)
+                file_ext = os.path.splitext(filename)[1]
+                new_filename = self.sanitize_filename(f"{title}-{sequence}{file_ext}")
+                target_path = os.path.join(finish_folder, new_filename)
+                counter = 1
+                base_target_path = target_path
+                while os.path.exists(target_path):
+                    name, ext = os.path.splitext(base_target_path)
+                    target_path = f"{name}_{counter}{ext}"
+                    counter += 1
+                planned.append((file_path, target_path))
+
+            # 3) 逐个移动并做大小校验；任何一个失败都回滚之前已移动的视频
+            for file_path, target_path in planned:
+                source_size = os.path.getsize(file_path)
+                try:
+                    os.rename(file_path, target_path)
+                except OSError:
+                    shutil.move(file_path, target_path)
+                moved_size = os.path.getsize(target_path)
+                if moved_size != source_size:
+                    raise RuntimeError(
+                        f"视频大小校验失败: source={source_size} bytes, target={moved_size} bytes"
+                    )
+                moved_videos.append((file_path, target_path))
+
+            # 4) 全部视频成功后，再提交图片
+            if temp_image_path and temp_image_path.exists():
+                final_image_path = os.path.join(finish_folder, self.sanitize_filename(f"{title}.jpg"))
+                counter = 1
+                base_image_path = final_image_path
+                while os.path.exists(final_image_path):
+                    name, ext = os.path.splitext(base_image_path)
+                    final_image_path = f"{name}_{counter}{ext}"
+                    counter += 1
+                self._move_temp_image_to_final(temp_image_path, final_image_path)
+
+            return True, {
+                'video_paths': [target for _, target in moved_videos],
+                'image_path': final_image_path,
+                'image_downloaded': bool(final_image_path),
+            }, '序列文件组处理成功'
+
+        except Exception as e:
+            # 回滚已经移动的视频
+            for original_path, target_path in reversed(moved_videos):
+                try:
+                    if os.path.exists(target_path):
+                        os.rename(target_path, original_path)
+                except Exception:
+                    pass
+            # 删除最终图片（如果已写出）
+            if final_image_path and os.path.exists(final_image_path):
+                try:
+                    os.remove(final_image_path)
+                except Exception:
+                    pass
+            # 清理临时图片
+            if temp_image_path and temp_image_path.exists():
+                try:
+                    temp_image_path.unlink()
+                except Exception:
+                    pass
+            return False, {
+                'video_paths': [],
+                'image_path': None,
+                'image_downloaded': False,
+            }, f"序列文件组原子处理失败: {e}"
     
     def cleanup_temp_files(self):
         """清理临时文件"""

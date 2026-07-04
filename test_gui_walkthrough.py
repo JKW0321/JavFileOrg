@@ -128,6 +128,7 @@ def make_organizer(folder_path, finish_path):
     obj.max_filename_length_var = FakeVar('')
     obj.preserve_actor_var = FakeVar(True)
     obj.batch_count_var = FakeVar('')
+    obj.dry_run_var = FakeVar(False)
 
     # 网站配置（和真实 GUI 一样）
     obj.website_configs = {
@@ -155,7 +156,21 @@ def make_organizer(folder_path, finish_path):
         return True
     obj.download_image = fake_download
 
-    # extract_content mock（不连网络，直接返回固定 title）
+    # provider factory mock（workflow_service 会调用 provider.search，不直接用 extract_content）
+    class DummyProvider:
+        def search(self, q):
+            return {
+                'ok': True,
+                'title': f'{q.upper()} 美少女と、貸し切り温泉と、濃密性交と。',
+                'image_url': 'http://fake/image.jpg',
+                'provider': 'javhoo',
+                'error_type': None,
+                'message': None,
+            }
+
+    obj._build_provider_factory = lambda: (lambda name: DummyProvider())
+
+    # 兼容旧测试/旧接口：保留 extract_content mock
     obj.extract_content = lambda q, cfg: (
         f'{q.upper()} 美少女と、貸し切り温泉と、濃密性交と。',
         'http://fake/image.jpg'
@@ -177,6 +192,7 @@ def make_organizer(folder_path, finish_path):
 
     # image_download_queue（清理残留任务时用）
     obj.image_download_queue = []
+    obj.minimum_video_size_bytes = 16 * 1024
 
     return obj
 

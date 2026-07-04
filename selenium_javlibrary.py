@@ -113,7 +113,28 @@ class SeleniumJAVLibrary:
                 self.driver = None
                 self.log("🔒 浏览器已关闭", "INFO")
             except Exception:
+                self.driver = None
                 pass
+
+    def _driver_is_usable(self):
+        """当前 driver 是否仍然可用。"""
+        if not self.driver:
+            return False
+        try:
+            _ = self.driver.current_window_handle
+            _ = self.driver.title
+            return True
+        except Exception:
+            return False
+
+    def ensure_browser(self):
+        """确保 driver 可用；如果窗口被关掉或 session 失效，则自动重启。"""
+        if self._driver_is_usable():
+            return True
+        if self.driver:
+            self.log("⚠️ 检测到 Selenium 窗口已关闭或 session 失效，正在重启浏览器...", "WARNING")
+            self.stop_browser()
+        return self.start_browser()
     
     def _load_cookies(self):
         """加载保存的Cookie"""
@@ -333,7 +354,7 @@ class SeleniumJAVLibrary:
         self.log("⏰ 验证超时", "WARNING")
         return False
     
-    def search_by_id(self, jav_id):
+    def search_by_id(self, jav_id, _retry_on_window_error=True):
         """
         根据番号搜索JAVLibrary
         
@@ -343,9 +364,8 @@ class SeleniumJAVLibrary:
         Returns:
             dict: 包含标题、封面等信息的字典，失败返回None
         """
-        if not self.driver:
-            if not self.start_browser():
-                return None
+        if not self.ensure_browser():
+            return None
         
         try:
             # v1.4.3: 使用繁体中文版本
@@ -404,6 +424,15 @@ class SeleniumJAVLibrary:
                 return None
             
         except Exception as e:
+            msg = str(e).lower()
+            if _retry_on_window_error and (
+                'no such window' in msg or
+                'web view not found' in msg or
+                'invalid session id' in msg
+            ):
+                self.log("⚠️ Selenium 窗口/session 已失效，自动重启后重试一次...", "WARNING")
+                self.stop_browser()
+                return self.search_by_id(jav_id, _retry_on_window_error=False)
             self.log(f"❌ 搜索失败: {e}", "ERROR")
             return None
 

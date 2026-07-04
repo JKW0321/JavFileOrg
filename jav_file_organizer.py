@@ -63,12 +63,16 @@ class OptimizedAntiCrawlHandler:
         self.selenium_javlibrary = None
         try:
             from selenium_javlibrary import SeleniumJAVLibrary
-            # v1.4.6: 如果已经有保存的 cookies，则优先无头；否则第一次可见窗口方便人工过 Cloudflare。
+            # v1.5.1: 只要有 cookies 或已有 profile 状态，就优先无头。
             cookies_file = os.path.expanduser('~/.jav_organizer/javlibrary_selenium_cookies.pkl')
+            profile_dir = os.path.expanduser('~/.jav_organizer/javlibrary_chrome_profile')
             has_cookies = os.path.exists(cookies_file)
-            self.selenium_javlibrary = SeleniumJAVLibrary(log_callback=self.log, headless=has_cookies)
-            if has_cookies:
-                self.log("✅ Selenium JAVLibrary已初始化（检测到已保存 Cookie，使用无头模式）", "INFO")
+            has_profile = os.path.isdir(profile_dir) and any(os.scandir(profile_dir))
+            use_headless = has_cookies or has_profile
+            self.selenium_javlibrary = SeleniumJAVLibrary(log_callback=self.log, headless=use_headless)
+            if use_headless:
+                reason = 'Cookie' if has_cookies else 'profile'
+                self.log(f"✅ Selenium JAVLibrary已初始化（检测到已保存 {reason} 状态，使用无头模式）", "INFO")
             else:
                 self.log("✅ Selenium JAVLibrary已初始化（首次使用，显示浏览器窗口）", "INFO")
         except ImportError:
@@ -288,6 +292,9 @@ class JavFileOrganizer:
         self.anti_crawl = None  # v1.9.3: 延迟初始化，等待 GUI 创建后
         self.is_processing = False
         self.stop_processing = False
+        self.run_log_path = None
+        self._run_log_lock = threading.Lock()
+        self.minimum_video_size_bytes = 16 * 1024  # 16KB：用于跳过 AppleDouble / 可疑伪视频
         
         # v1.1 优化: 线程安全和性能优化相关属性
         self.metadata_cache = {}  # 元数据缓存
@@ -541,6 +548,12 @@ class JavFileOrganizer:
         batch_entry = ttk.Entry(batch_frame, textvariable=self.batch_count_var, width=10)
         batch_entry.pack(side=tk.LEFT, padx=(5, 5))
         ttk.Label(batch_frame, text="个文件 (留空=处理全部)").pack(side=tk.LEFT)
+
+        # 安全审计 / Dry Run
+        self.dry_run_var = tk.BooleanVar(value=False)
+        dry_run_cb = ttk.Checkbutton(process_frame, text="🧪 仅审计（Dry Run，不移动文件不下载图片）",
+                                     variable=self.dry_run_var)
+        dry_run_cb.pack(anchor=tk.W, pady=(6, 0))
         
         # === 右列内容 ===
         
@@ -637,6 +650,58 @@ class JavFileOrganizer:
         
         # 启动日志
         self.log(f"✅ {APP_TITLE} 启动完成 | {self.build_id} | {self.build_date}", "SUCCESS")
+    def _start_run_log(self, folder_path, website_name):
+        """为一次批处理创建落地日志文件。"""
+        logs_dir = os.path.join(folder_path, 'JFO_Logs')
+        os.makedirs(logs_dir, exist_ok=True)
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_site = ''.join(ch for ch in website_name if ch.isalnum() or ch in ('-', '_')).strip('_') or 'site'
+        self.run_log_path = os.path.join(logs_dir, f'JFO_RUN_{stamp}_{safe_site}.log')
+        with open(self.run_log_path, 'w', encoding='utf-8') as f:
+            f.write(f'# {APP_TITLE}\n')
+            f.write(f'# version: {self.version}\n')
+            f.write(f'# build: {self.build_id}\n')
+            f.write(f'# started_at: {datetime.now().isoformat()}\n')
+            f.write(f'# folder: {folder_path}\n')
+            f.write(f'# website: {website_name}\n\n')
+        return self.run_log_path
+
+    def _write_run_log(self, log_entry):
+        run_log_path = getattr(self, 'run_log_path', None)
+        if not run_log_path:
+            return
+        try:
+            lock = getattr(self, '_run_log_lock', None)
+            if lock is None:
+                lock = threading.Lock()
+                self._run_log_lock = lock
+            with lock:
+                with open(run_log_path, 'a', encoding='utf-8') as f:
+                    f.write(log_entry)
+        except Exception:
+            pass
+
+    def _close_run_log(self):
+        run_log_path = getattr(self, 'run_log_path', None)
+        if run_log_path:
+            try:
+                self._write_run_log(f"# ended_at: {datetime.now().isoformat()}\n")
+            finally:
+                self.run_log_path = None
+
+    def _build_provider_factory(self):
+        from providers import create_provider
+
+        def factory(name):
+            return create_provider(
+                name,
+                log=self.log,
+                session=self.session,
+                anti_crawl=self.anti_crawl,
+                stop_requested=lambda: self.stop_processing,
+            )
+        return factory
+
     def log(self, message, level="INFO"):
         """记录日志（线程安全）。"""
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -652,6 +717,7 @@ class JavFileOrganizer:
         
         icon = icons.get(level, "📝")
         log_entry = f"[{timestamp}] {icon} {message}\n"
+        self._write_run_log(log_entry)
         
         # 在GUI线程中更新日志（实时显示）
         def update_log():
@@ -707,23 +773,29 @@ class JavFileOrganizer:
         """分析文件夹内容"""
         try:
             all_files = os.listdir(folder_path)
+            scan = self._scan_video_files(folder_path)
+            filtered_video_names = scan['accepted']
             video_files = []
             total_size = 0
+            skipped_hidden = len(scan['skipped_hidden'])
+            skipped_small = len(scan['skipped_small'])
             
-            for file in all_files:
+            for file in filtered_video_names:
                 file_path = os.path.join(folder_path, file)
-                if os.path.isfile(file_path):
-                    _, ext = os.path.splitext(file.lower())
-                    if ext in self.video_extensions:
-                        file_size = os.path.getsize(file_path)
-                        video_files.append((file, file_size))
-                        total_size += file_size
+                file_size = os.path.getsize(file_path)
+                video_files.append((file, file_size))
+                total_size += file_size
             
             # 显示详细统计
             self.log(f"📁 已选择文件夹: {folder_path}", "SUCCESS")
             self.log(f"📊 文件夹分析结果:", "INFO")
             self.log(f"📝   📁 总文件数: {len(all_files)}", "INFO")
             self.log(f"📝   🎬 视频文件数: {len(video_files)}", "INFO")
+            if skipped_hidden:
+                self.log(f"📝   🙈 已忽略隐藏/AppleDouble 文件: {skipped_hidden}", "INFO")
+            if skipped_small:
+                min_kb = getattr(self, 'minimum_video_size_bytes', 16 * 1024) // 1024
+                self.log(f"📝   🚫 已忽略异常小视频文件(<{min_kb}KB): {skipped_small}", "INFO")
             self.log(f"📝   💾 总大小: {self.format_size(total_size)}", "INFO")
             
             # 显示前几个视频文件
@@ -754,6 +826,68 @@ class JavFileOrganizer:
             i += 1
         
         return f"{size_bytes:.1f} {size_names[i]}"
+
+    def _should_skip_video_file(self, filename):
+        """是否跳过该文件。
+
+        规则：
+        - macOS AppleDouble 资源叉文件 `._*` 一律跳过
+        - 其他隐藏文件（`.xxx`）一律跳过
+        """
+        if not filename:
+            return True
+        return filename.startswith('._') or filename.startswith('.')
+
+    def _is_suspicious_small_video(self, file_path):
+        """是否是明显可疑的小视频文件。"""
+        try:
+            min_bytes = getattr(self, 'minimum_video_size_bytes', 16 * 1024)
+            return os.path.getsize(file_path) < min_bytes
+        except OSError:
+            return True
+
+    def _scan_video_files(self, folder_path):
+        """扫描可处理的视频文件，并返回过滤统计。"""
+        result = {
+            'accepted': [],
+            'skipped_hidden': [],
+            'skipped_small': [],
+        }
+        for file in os.listdir(folder_path):
+            file_path = os.path.join(folder_path, file)
+            if self._should_skip_video_file(file):
+                result['skipped_hidden'].append(file)
+                continue
+            if not os.path.isfile(file_path):
+                continue
+            _, ext = os.path.splitext(file.lower())
+            if ext not in self.video_extensions:
+                continue
+            if self._is_suspicious_small_video(file_path):
+                result['skipped_small'].append(file)
+                continue
+            result['accepted'].append(file)
+        return result
+
+    def _collect_video_files(self, folder_path):
+        """收集可处理的视频文件（已过滤隐藏/AppleDouble/异常小视频）。"""
+        return self._scan_video_files(folder_path)['accepted']
+
+    def _resolve_provider(self, preferred_website, filename, search_query):
+        """根据文件名/搜索词决定使用哪个 provider。"""
+        from provider_router import route_provider
+
+        decision = route_provider(preferred_website, filename, search_query)
+        provider = decision.get('provider') or preferred_website
+        website_config = dict(self.website_configs.get(provider, {}))
+
+        # 只有当前用户显式选中的 provider 才应用 UI 上的自定义配置。
+        if provider == preferred_website:
+            website_config['search_url'] = self.search_url_var.get()
+            website_config['title_selectors'] = [self.text_selector_var.get()]
+            website_config['image_selectors'] = [self.image_selector_var.get()]
+
+        return decision, provider, website_config
     
     def extract_code_from_title(self, filename):
         """从完整标题中提取番号
@@ -835,95 +969,31 @@ class JavFileOrganizer:
         return series_groups, standalone_files
     
     def process_series_group(self, base_code, files, folder_path, finish_folder, website_config, max_length):
-        """处理一个序列文件组。"""
+        """兼容旧接口：处理一个序列文件组（现统一走原子处理器）。"""
         self.log(f"📦 处理序列文件组: {base_code} (共{len(files)}个文件)", "INFO")
-        
+
         title, image_url = self.extract_content(base_code, website_config)
-        
         if not title:
             self.log(f"⚠️ 序列文件组 {base_code} 提取失败，跳过", "WARNING")
             return 0, False
-        
+
         self.log(f"✅ 序列组提取成功 - 标题: {title[:100]}...", "SUCCESS")
-        
         if max_length:
             first_file = os.path.basename(files[0][0])
             title = self.smart_truncate_filename(title, first_file, max_length)
-        
-        # v1.3: 先下载图片到临时目录
-        temp_image_path = None
-        image_success = False
-        
-        if image_url:
-            try:
-                image_name = f"{title}.jpg"
-                success, temp_image_path, message = self.atomic_processor.download_image_to_temp(image_url, image_name)
-                if success:
-                    self.log(f"✅ 序列组图片下载成功（临时）", "SUCCESS")
-                    image_success = True
-                else:
-                    self.log(f"⚠️ 序列组图片下载失败: {message}", "WARNING")
-                    # 图片下载失败，跳过整个序列组
-                    return 0, False
-            except Exception as e:
-                self.log(f"⚠️ 序列组图片下载失败: {e}", "WARNING")
-                return 0, False
-        
-        # 图片下载成功后，处理所有序列文件
-        success_count = 0
-        for file_path, sequence in files:
-            # v1.3: 每个文件处理前检查中断
-            if self.stop_processing:
-                self.log("⏹️ 用户中断，停止序列组处理", "WARNING")
-                break
-            
-            try:
-                filename = os.path.basename(file_path)
-                file_ext = os.path.splitext(filename)[1]
-                new_filename = self.sanitize_filename(f"{title}-{sequence}{file_ext}")
-                
-                new_path = os.path.join(finish_folder, new_filename)
-                counter = 1
-                base_new_path = new_path
-                while os.path.exists(new_path):
-                    name_part = f"{title}-{sequence}_{counter}"
-                    new_filename = self.sanitize_filename(name_part + file_ext)
-                    new_path = os.path.join(finish_folder, new_filename)
-                    counter += 1
-                
-                # 优先使用 os.rename
-                try:
-                    os.rename(file_path, new_path)
-                except OSError:
-                    shutil.move(file_path, new_path)
-                self.log(f"✅ 序列文件: {filename} -> {new_filename}", "SUCCESS")
-                success_count += 1
-            except Exception as e:
-                self.log(f"❌ 序列文件失败: {filename} - {e}", "ERROR")
-        
-        # v1.3: 所有文件移动成功后，移动图片到最终位置
-        if temp_image_path and temp_image_path.exists() and success_count > 0:
-            try:
-                final_image_name = self.sanitize_filename(f"{title}.jpg")
-                final_image_path = os.path.join(finish_folder, final_image_name)
-                
-                # 检查图片同名冲突
-                if os.path.exists(final_image_path):
-                    counter = 1
-                    base_image_path = final_image_path
-                    while os.path.exists(final_image_path):
-                        name, ext = os.path.splitext(base_image_path)
-                        final_image_path = f"{name}_{counter}{ext}"
-                        counter += 1
-                
-                # 移动图片
-                shutil.move(str(temp_image_path), final_image_path)
-                self.log(f"✅ 序列组图片移动成功: {os.path.basename(final_image_path)}", "SUCCESS")
-            except Exception as e:
-                self.log(f"⚠️ 序列组图片移动失败: {e}", "WARNING")
-                image_success = False
-        
-        return success_count, image_success
+
+        atomic_success, result_info, message = self.atomic_processor.process_series_group_atomic(
+            files, title, image_url, finish_folder
+        )
+        if atomic_success:
+            for target_path in result_info.get('video_paths', []):
+                self.log(f"✅ 序列文件成功: {os.path.basename(target_path)}", "SUCCESS")
+            if result_info.get('image_downloaded') and result_info.get('image_path'):
+                self.log(f"✅ 序列组图片移动成功: {os.path.basename(result_info['image_path'])}", "SUCCESS")
+            return len(result_info.get('video_paths', [])), bool(result_info.get('image_downloaded'))
+
+        self.log(f"❌ 序列文件组失败: {message}", "ERROR")
+        return 0, False
 
     def smart_truncate_filename(self, title, original_filename, max_length):
         """智能截断文件名"""
@@ -981,195 +1051,25 @@ class JavFileOrganizer:
         return title
     
     def extract_content(self, search_query, website_config):
-        """提取网站内容（支持 JavHoo / JavBus / JAVLibrary）。"""
+        """提取网站内容（统一走 provider 接口）。"""
         try:
-            # v1.3: 检查中断标志
             if self.stop_processing:
                 self.log("⏹️ 用户中断，取消网络请求", "WARNING")
                 return None, None
-            
-            # v1.4: JAVLibrary特殊处理
-            if website_config.get('use_special_handler'):
-                return self._extract_javlibrary(search_query, website_config)
-            
-            # 构建搜索URL
-            search_url = website_config['search_url'].format(query=quote(search_query))
-            self.log(f"🔍 搜索URL: {search_url}", "INFO")
-            
-            # v1.9.7: 根据网站选择 session
-            # v1.4.3: 优化 JavHoo 的超时和重试策略
-            # v1.9.7: 根据网站选择 session
-            # JavBus 需要反爬虫 session, JavHoo 使用普通 session
-            if 'javbus' in search_url.lower():
-                response = self.anti_crawl.session.get(search_url, timeout=(5, 15))
-                self.log(f"🔧 使用反爬虫 session (JavBus)", "INFO")
-            else:
-                response = self.session.get(search_url, timeout=(5, 15))
-                self.log(f"🔧 使用普通 session (JavHoo)", "INFO")
-            response.raise_for_status()
-            
-            # 解析HTML
-            soup = BeautifulSoup(response.content, 'html.parser')
 
-            # v1.9.6 调试: 检查页面内容
-            self.log(f"📊 响应状态码: {response.status_code}", "INFO")
-            self.log(f"📊 响应内容长度: {len(response.content)} 字节", "INFO")
+            provider_name = None
+            for key, cfg in self.website_configs.items():
+                if cfg.get('name') == website_config.get('name'):
+                    provider_name = key
+                    break
+            provider_name = provider_name or self.website_var.get()
 
-            # 检查是否成功解析
-            if not soup or not soup.find():
-                self.log(f"❌ HTML 解析失败", "ERROR")
-                return None, None
+            provider = self._build_provider_factory()(provider_name)
+            result = provider.search(search_query)
+            if result.get('ok'):
+                return result.get('title'), result.get('image_url')
 
-            # v1.4.4: 如果配置了 detail_url_pattern，先找搜索结果的详情页链接
-            # 拿到详情页后直接对详情页跑一遍提取（拿到高清封面 + 更准标题）
-            detail_url = None
-            detail_pattern = website_config.get('detail_url_pattern')
-            if detail_pattern:
-                detail_url = self._find_detail_url(soup, search_url, search_query, detail_pattern)
-                if detail_url:
-                    self.log(f"🔗 找到详情页: {detail_url}", "INFO")
-            
-            # v1.9.1 新增：检测验证页面
-            page_title = soup.find('title')
-            if page_title:
-                page_title_text = page_title.get_text().strip().lower()
-                # 检测常见的验证页面标题
-                verification_keywords = [
-                    'age verification',
-                    'verify',
-                    'verification',
-                    '年龄验证',
-                    '验证',
-                    'cloudflare',
-                    'checking your browser',
-                    'just a moment'
-                ]
-                
-                for keyword in verification_keywords:
-                    if keyword in page_title_text:
-                        self.log(f"⚠️ 检测到验证页面: {page_title_text}", "WARNING")
-                        self.log(f"💡 提示: 网站需要人工验证，请尝试:", "INFO")
-                        self.log(f"   1. 在浏览器中打开网站完成验证", "INFO")
-                        self.log(f"   2. 切换到其他网站", "INFO")
-                        self.log(f"   3. 稍后重试", "INFO")
-                        return None, None
-            
-            # v1.9 修复：尝试多个标题选择器
-            title = None
-            title_selectors = website_config.get('title_selectors', ['title'])
-            
-            for selector in title_selectors:
-                try:
-                    if selector == 'title':
-                        # 使用页面标题
-                        title_element = soup.find('title')
-                        if title_element:
-                            title = title_element.get_text().strip()
-                            # 清理标题（移除网站名称等）
-                            # 移除常见的网站后缀
-                            for suffix in ['-JAVHOO', '-JavHoo', ' - JAVHOO', ' - JavHoo', '-javhoo']:
-                                if title.endswith(suffix):
-                                    title = title[:-len(suffix)].strip()
-                            # 如果还有 " - " 分隔符,只在最后一个位置分割
-                            if ' - ' in title:
-                                parts = title.rsplit(' - ', 1)
-                                # 如果最后部分看起来像网站名,则移除
-                                if len(parts) == 2 and len(parts[1]) < 20:
-                                    title = parts[0].strip()
-                            if title:
-                                self.log(f"✅ 使用页面标题提取成功", "SUCCESS")
-                                break
-                    else:
-                        # 使用CSS选择器
-                        title_element = soup.select_one(selector)
-                        if title_element:
-                            title = title_element.get_text().strip()
-                            if title:
-                                self.log(f"✅ 使用选择器 '{selector}' 提取成功", "SUCCESS")
-                                break
-                except Exception as e:
-                    self.log(f"⚠️ 选择器 '{selector}' 失败: {e}", "WARNING")
-                    continue
-            
-            if not title:
-                self.log(f"⚠️ 未找到标题元素，尝试的选择器: {title_selectors}", "WARNING")
-                # v1.9.6 调试: 输出页面标题用于诊断
-                page_title_elem = soup.find('title')
-                if page_title_elem:
-                    self.log(f"📊 页面标题内容: {page_title_elem.get_text()[:100]}", "INFO")
-                else:
-                    self.log(f"❌ 页面没有 <title> 标签", "ERROR")
-                return None, None
-            
-            # v1.9.1 新增：验证标题有效性
-            title_lower = title.lower()
-            invalid_keywords = [
-                'age verification',
-                'verify',
-                'verification',
-                '年龄验证',
-                '验证',
-                'cloudflare',
-                'checking',
-                'just a moment',
-                '404',
-                'not found',
-                'error'
-            ]
-            
-            for keyword in invalid_keywords:
-                if keyword in title_lower:
-                    self.log(f"⚠️ 提取到无效标题: {title}", "WARNING")
-                    self.log(f"💡 可能原因: 验证页面、404错误或网站限制", "INFO")
-                    return None, None
-            
-            # 检查标题长度（太短可能是错误）
-            if len(title.strip()) < 3:
-                self.log(f"⚠️ 标题过短: {title}", "WARNING")
-                return None, None
-            
-            # 提取图片URL
-            image_url = None
-            image_selectors = website_config.get('image_selectors', ['img'])
-            
-            for selector in image_selectors:
-                try:
-                    img_element = soup.select_one(selector)
-                    if img_element:
-                        image_url = img_element.get('src') or img_element.get('data-src')
-                        if image_url:
-                            # 转换为绝对URL
-                            image_url = urljoin(search_url, image_url)
-                            self.log(f"✅ 图片URL: {image_url}", "SUCCESS")
-                            break
-                except Exception as e:
-                    continue
-            
-            if not image_url:
-                self.log(f"⚠️ 未找到图片元素", "WARNING")
-
-            # v1.4.4: 拿到详情页 URL 时，尝试升级到详情页拿更准的标题 + 高清封面
-            # 任何一步失败都保留当前结果（不破坏已有数据）
-            if detail_url and (title or image_url):
-                try:
-                    upgrade_title, upgrade_image = self._fetch_detail_page(
-                        detail_url, search_url, website_config
-                    )
-                    # 详情页拿到的标题更精准时优先用
-                    if upgrade_title and len(upgrade_title) > len(title or ''):
-                        title = upgrade_title
-                        self.log(f"⬆️ 升级标题: {title}", "SUCCESS")
-                    # 详情页封面优先（更高清）
-                    if upgrade_image:
-                        image_url = upgrade_image
-                        self.log(f"⬆️ 升级封面: {image_url}", "SUCCESS")
-                except Exception as e:
-                    self.log(f"⚠️ 详情页升级失败（保留搜索页结果）: {e}", "WARNING")
-
-            return title, image_url
-            
-        except requests.exceptions.RequestException as e:
-            self.log(f"❌ 网络请求失败: {e}", "ERROR")
+            self.log(f"❌ Provider 搜索失败: {result.get('error_type')} - {result.get('message')}", "ERROR")
             return None, None
         except Exception as e:
             self.log(f"❌ 搜索提取失败: {e}", "ERROR")
@@ -1385,87 +1285,60 @@ class JavFileOrganizer:
     def _process_files_worker(self):
         """后台处理线程工作函数。"""
         try:
-            # 设置处理状态
+            from workflow_service import WorkflowService
+
             self.is_processing = True
             self.stop_processing = False
             self.log("🚀 开始处理任务...", "INFO")
-            
+
             folder_path = self.folder_var.get()
             if not folder_path or not os.path.exists(folder_path):
                 self.log("❌ 请先选择有效的文件夹", "ERROR")
                 return
-            
-            # 获取网站配置
+
             website = self.website_var.get()
-            website_config = self.website_configs.get(website, {})
-            
-            # 更新配置
+            website_config = dict(self.website_configs.get(website, {}))
+            dry_run = self.dry_run_var.get() if hasattr(self, 'dry_run_var') else False
             website_config['search_url'] = self.search_url_var.get()
             website_config['title_selectors'] = [self.text_selector_var.get()]
             website_config['image_selectors'] = [self.image_selector_var.get()]
-            
+
             self.log(f"📝 配置信息:", "INFO")
             self.log(f"   网站: {website_config.get('name', website)}", "INFO")
             self.log(f"   搜索URL: {website_config['search_url']}", "INFO")
-            # 扫描视频文件
-            all_files = os.listdir(folder_path)
-            video_files = []
-            
-            for file in all_files:
-                file_path = os.path.join(folder_path, file)
-                if os.path.isfile(file_path):
-                    _, ext = os.path.splitext(file.lower())
-                    if ext in self.video_extensions:
-                        video_files.append(file)
-            
-            if not video_files:
-                self.log("❌ 未找到支持的视频文件", "ERROR")
-                return
-            
+            if dry_run:
+                self.log("🧪 当前为 Dry Run：只审计，不移动文件、不下载图片", "WARNING")
+
+            run_log_path = self._start_run_log(folder_path, website)
+            self.log(f"📝 日志文件: {run_log_path}", "INFO")
+            logs_dir = os.path.dirname(run_log_path)
+
+            scan = self._scan_video_files(folder_path)
+            total_files_preview = len(scan['accepted'])
             batch_count_str = self.batch_count_var.get().strip()
+            batch_count = None
             if batch_count_str:
                 try:
                     batch_count = int(batch_count_str)
                     if batch_count > 0:
-                        video_files = video_files[:batch_count]
-                        self.log(f"📝 批量处理: 限制处理 {len(video_files)} 个文件", "INFO")
+                        total_files_preview = min(total_files_preview, batch_count)
+                        self.log(f"📝 批量处理: 限制处理 {total_files_preview} 个文件", "INFO")
                 except ValueError:
                     self.log("⚠️ 批量处理数量格式错误，将处理全部文件", "WARNING")
-            
-            total_files = len(video_files)
-            
-            # 创建输出文件夹
-            finish_folder = os.path.join(folder_path, "Finish")
-            if not os.path.exists(finish_folder):
-                os.makedirs(finish_folder)
-                self.log(f"✅ 📁 创建输出文件夹: {finish_folder}", "SUCCESS")
-            
-            # 检查磁盘空间
-            try:
-                stat = shutil.disk_usage(finish_folder)
-                free_gb = stat.free / (1024**3)
-                if free_gb < 1.0:  # 少于 1GB 可用空间
-                    self.log(f"⚠️ 磁盘空间不足: 仅剩 {free_gb:.2f} GB", "WARNING")
-                    if free_gb < 0.1:  # 少于 100MB
-                        self.log(f"❌ 磁盘空间严重不足，停止处理", "ERROR")
-                        return
-                else:
-                    self.log(f"✅ 磁盘可用空间: {free_gb:.2f} GB", "SUCCESS")
-            except Exception as e:
-                self.log(f"⚠️ 磁盘空间检查失败: {e}", "WARNING")
-            
-            # 开始处理
-            self.log(f"🔄 🚀 开始处理 {total_files} 个文件", "PROCESSING")
+
+            min_kb = getattr(self, 'minimum_video_size_bytes', 16 * 1024) // 1024
+            if scan['skipped_hidden']:
+                self.log(f"📝 已忽略隐藏/AppleDouble 文件: {len(scan['skipped_hidden'])}", "INFO")
+            if scan['skipped_small']:
+                self.log(f"📝 已忽略异常小视频文件(<{min_kb}KB): {len(scan['skipped_small'])}", "WARNING")
+            if total_files_preview <= 0:
+                self.log("❌ 未找到支持的视频文件", "ERROR")
+                return
+
+            finish_folder = os.path.join(folder_path, 'Finish')
+            self.log(f"🔄 🚀 开始处理 {total_files_preview} 个文件", "PROCESSING")
             self.log(f"📝 🌐 使用网站: {website_config.get('name', website)}", "INFO")
-            
-            # 统计变量
-            success_count = 0
-            failed_count = 0
-            image_success_count = 0
-            image_failed_count = 0
-            start_time = time.time()
-            
-            # 获取文件名长度设置
+
             max_length_str = self.max_filename_length_var.get().strip()
             max_length = None
             if max_length_str:
@@ -1474,201 +1347,120 @@ class JavFileOrganizer:
                     self.log(f"📝 文件名长度限制: {max_length} 字符", "INFO")
                 except ValueError:
                     self.log("⚠️ 文件名长度格式错误，将使用完整长度", "WARNING")
-            
-            # v1.9.2: 检测序列文件
-            video_file_paths = [os.path.join(folder_path, f) for f in video_files]
-            series_groups, standalone_files = self.detect_series_files(video_file_paths)
-            
-            if series_groups:
-                self.log(f"📦 检测到 {len(series_groups)} 个序列文件组", "INFO")
-                for base_code, files in series_groups.items():
-                    self.log(f"   - {base_code}: {len(files)} 个文件", "INFO")
-            if standalone_files:
-                self.log(f"📄 检测到 {len(standalone_files)} 个独立文件", "INFO")
-            
-            processed_count = 0
-            
-            # 处理序列文件组
-            for base_code, files in series_groups.items():
-                if self.stop_processing:
-                    self.log("⏹️ 用户停止处理", "WARNING")
-                    break
-                
-                processed_count += len(files)
-                progress = (processed_count / total_files) * 100
-                self.progress_bar['value'] = progress
-                self.progress_var.set(f"🔄 处理中: {processed_count}/{total_files}")
-                self.progress_percent_var.set(f"{progress:.1f}%")
-                
-                # 计算处理速度
-                elapsed = time.time() - start_time
-                if elapsed > 0:
-                    speed = processed_count / elapsed
-                    remaining = (total_files - processed_count) / speed if speed > 0 else 0
-                    self.speed_var.set(f"⚡ 速度: {speed:.1f} 文件/秒 | ⏱️ 预计剩余: {remaining:.0f} 秒")
-                
-                self.window.update()
-                
-                # 处理序列组
-                group_success, group_image_success = self.process_series_group(
-                    base_code, files, folder_path, finish_folder, website_config, max_length
-                )
-                
-                success_count += group_success
-                failed_count += (len(files) - group_success)
-                
-                if group_image_success:
-                    image_success_count += 1
-                else:
-                    image_failed_count += 1
-                
-                # 短暂延迟 - 优化：减少到 0.3 秒
-                time.sleep(0.3)
-            
-            # 处理独立文件
-            for file_path in standalone_files:
-                if self.stop_processing:
-                    self.log("⏹️ 用户停止处理", "WARNING")
-                    break
-                
-                processed_count += 1
-                progress = (processed_count / total_files) * 100
-                self.progress_bar['value'] = progress
-                self.progress_var.set(f"🔄 处理中: {processed_count}/{total_files}")
-                self.progress_percent_var.set(f"{progress:.1f}%")
-                
-                # 计算处理速度
-                elapsed = time.time() - start_time
-                if elapsed > 0:
-                    speed = processed_count / elapsed
-                    remaining = (total_files - processed_count) / speed if speed > 0 else 0
-                    self.speed_var.set(f"⚡ 速度: {speed:.1f} 文件/秒 | ⏱️ 预计剩余: {remaining:.0f} 秒")
-                
-                self.window.update()
-                
-                filename = os.path.basename(file_path)
-                self.log(f"🔄 处理独立文件: {filename}", "PROCESSING")
-                
-                try:
-                    # v1.9 改进：智能文件名清理
-                    search_query = self.clean_filename_for_search(filename)
-                    self.log(f"🔍 搜索关键词: {search_query}", "INFO")
-                    
-                    # 提取内容
-                    title, image_url = self.extract_content(search_query, website_config)
-                    
-                    if not title:
-                        self.log(f"⚠️ 未找到标题信息，跳过文件: {filename}", "WARNING")
-                        failed_count += 1
-                        continue
-                    
-                    self.log(f"✅ 提取成功 - 标题: {title[:100]}...", "SUCCESS")
-                    
-                    if max_length:
-                        title = self.smart_truncate_filename(title, filename, max_length)
-                    
-                    # 生成新文件名
-                    file_ext = os.path.splitext(filename)[1]
-                    new_filename = f"{title}{file_ext}"
-                    
-                    # v1.9.2 增强：使用完善的文件名清理函数
-                    new_filename = self.sanitize_filename(new_filename)
-                    
-                    # v1.3: 使用原子操作处理文件
-                    atomic_success, result_info, message = self.atomic_processor.process_file_atomic(
-                        file_path, new_filename, image_url, finish_folder
-                    )
-                    
-                    if atomic_success:
-                        success_count += 1
-                        new_path = result_info.get('video_path')
-                        self.log(f"✅ 视频处理成功: {os.path.basename(new_path)}", "SUCCESS")
-                        
-                        if result_info.get('image_downloaded'):
-                            image_success_count += 1
-                            image_path = result_info.get('image_path')
-                            self.log(f"✅ 图片下载成功: {os.path.basename(image_path)}", "SUCCESS")
-                        else:
-                            image_failed_count += 1
-                            if image_url:
-                                self.log(f"⚠️ 图片下载失败或跳过", "WARNING")
-                    else:
-                        failed_count += 1
-                        self.log(f"❌ 处理失败: {message}", "ERROR")
-                    
-                except Exception as e:
-                    self.log(f"❌ 处理文件失败: {filename} - {e}", "ERROR")
-                    failed_count += 1
-                
-                # 智能延迟：根据处理时间动态调整 - 优化：减少延迟
-                elapsed_per_file = time.time() - start_time
-                avg_time = elapsed_per_file / (success_count + failed_count + 1)
-                if avg_time < 0.3:
-                    time.sleep(0.3)  # 处理快时延迟0.3秒避免请求过快
-            
-            # v1.3: 原子操作已经即时下载图片，不需要批量下载
-            # 清理下载队列（如果有残留）
-            if self.image_download_queue:
-                self.log(f"⚠️ 清理下载队列: {len(self.image_download_queue)} 个任务", "WARNING")
-                self.image_download_queue.clear()
-            
-            # 刷新剩余日志
-            # 日志已实时更新
-            
-            # 处理完成统计
-            end_time = time.time()
-            total_time = end_time - start_time
+
+            service = WorkflowService(
+                log=self.log,
+                provider_factory=self._build_provider_factory(),
+                atomic_processor=self.atomic_processor,
+                clean_filename_for_search=self.clean_filename_for_search,
+                sanitize_filename=self.sanitize_filename,
+                detect_series_files=self.detect_series_files,
+                smart_truncate_filename=self.smart_truncate_filename,
+                stop_requested=lambda: self.stop_processing,
+                minimum_video_size_bytes=getattr(self, 'minimum_video_size_bytes', 16 * 1024),
+            )
+
+            result = service.run(
+                folder_path=folder_path,
+                finish_folder=finish_folder,
+                website=website,
+                max_length=max_length,
+                batch_count=batch_count,
+                dry_run=dry_run,
+                log_path=run_log_path,
+                logs_dir=logs_dir,
+            )
+
+            total_files = result['total_files']
+            success_count = result['success_count']
+            failed_count = result['failed_count']
+            planned_count = result['planned_count']
+            skipped_hidden = result['skipped_hidden']
+            skipped_small = result['skipped_small']
+            skipped_provider_count = result['skipped_provider_count']
+            image_success_count = result['image_success_count']
+            image_failed_count = result['image_failed_count']
+            total_time = result['total_time']
             avg_time = total_time / total_files if total_files > 0 else 0
             success_rate = (success_count / total_files * 100) if total_files > 0 else 0
-            
-            self.log(f"✅ 🎉 处理完成！", "SUCCESS")
+            after_manifest_path = result['after_manifest_path']
+            summary_path = result['summary_path']
+
+            self.progress_bar['value'] = 100
+            self.progress_var.set("✅ 处理完成！" if not dry_run else "🧪 审计完成")
+            self.progress_percent_var.set("100%")
+            self.speed_var.set(f"✨ 总用时: {total_time:.1f} 秒 | 平均: {avg_time:.1f} 秒/文件")
+
+            self.log(f"✅ 🎉 {'审计完成' if dry_run else '处理完成！'}", "SUCCESS")
             self.log(f"📝 📊 最终统计:", "INFO")
             self.log(f"📝   📁 总文件数: {total_files}", "INFO")
             self.log(f"📝   ✅ 成功处理: {success_count}", "INFO")
             self.log(f"📝   ❌ 处理失败: {failed_count}", "INFO")
+            if dry_run:
+                self.log(f"📝   🧪 Dry Run 计划处理: {planned_count}", "INFO")
+            if skipped_hidden:
+                self.log(f"📝   🙈 跳过隐藏文件: {skipped_hidden}", "INFO")
+            if skipped_small:
+                self.log(f"📝   🚫 跳过小文件: {skipped_small}", "INFO")
+            if skipped_provider_count:
+                self.log(f"📝   ⚠️ Provider 警告文件数: {skipped_provider_count}", "INFO")
             self.log(f"📝   🖼️ 图片成功: {image_success_count}", "INFO")
             self.log(f"📝   🖼️ 图片失败: {image_failed_count}", "INFO")
             self.log(f"📝   ⏱️ 总用时: {total_time:.1f} 秒", "INFO")
             self.log(f"📝   📈 平均处理时间: {avg_time:.1f} 秒/文件", "INFO")
             self.log(f"📝   📊 成功率: {success_rate:.1f}%", "INFO")
-            
-            # 更新进度
-            self.progress_bar['value'] = 100
-            self.progress_var.set("✅ 处理完成！")
-            self.progress_percent_var.set("100%")
-            self.speed_var.set(f"✨ 总用时: {total_time:.1f} 秒 | 平均: {avg_time:.1f} 秒/文件")
-            
-            # 显示完成消息 - 优化：区分成功和失败
-            if failed_count == 0:
-                # 全部成功
-                messagebox.showinfo("处理完成", 
-                                  f"🎉 所有文件处理完成！\n\n"
-                                  f"📊 统计结果:\n"
-                                  f"✅ 成功: {success_count}/{total_files}\n"
-                                  f"🖼️ 图片: {image_success_count}/{total_files}\n"
-                                  f"⏱️ 用时: {total_time:.1f} 秒\n"
-                                  f"📊 成功率: {success_rate:.1f}%")
+            self.log(f"📝   📄 日志文件: {run_log_path}", "INFO")
+            if after_manifest_path:
+                self.log(f"📝   🧾 处理后清单: {after_manifest_path}", "INFO")
+            if summary_path:
+                self.log(f"📝   📦 运行摘要: {summary_path}", "INFO")
+
+            if dry_run:
+                messagebox.showinfo(
+                    "审计完成",
+                    f"🧪 Dry Run 审计完成\n\n"
+                    f"📊 计划处理: {planned_count}/{total_files}\n"
+                    f"🙈 已忽略隐藏文件: {skipped_hidden}\n"
+                    f"🚫 已忽略异常小文件: {skipped_small}\n"
+                    f"⚠️ Provider 警告文件数: {skipped_provider_count}\n"
+                    f"📄 日志: {run_log_path}\n"
+                    f"📦 摘要: {summary_path}"
+                )
+            elif failed_count == 0:
+                messagebox.showinfo(
+                    "处理完成",
+                    f"🎉 所有文件处理完成！\n\n"
+                    f"📊 统计结果:\n"
+                    f"✅ 成功: {success_count}/{total_files}\n"
+                    f"🖼️ 图片: {image_success_count}/{total_files}\n"
+                    f"⏱️ 用时: {total_time:.1f} 秒\n"
+                    f"📊 成功率: {success_rate:.1f}%"
+                )
             else:
-                # 有失败
-                messagebox.showwarning("处理完成（有错误）", 
-                                     f"⚠️ 处理完成，但有部分文件失败\n\n"
-                                     f"📊 统计结果:\n"
-                                     f"✅ 成功: {success_count}/{total_files}\n"
-                                     f"❌ 失败: {failed_count}/{total_files}\n"
-                                     f"🖼️ 图片: {image_success_count}/{total_files}\n"
-                                     f"⏱️ 用时: {total_time:.1f} 秒\n"
-                                     f"📊 成功率: {success_rate:.1f}%\n\n"
-                                     f"🔍 请查看日志了解失败原因")
-            
+                messagebox.showwarning(
+                    "处理完成（有错误）",
+                    f"⚠️ 处理完成，但有部分文件失败\n\n"
+                    f"📊 统计结果:\n"
+                    f"✅ 成功: {success_count}/{total_files}\n"
+                    f"❌ 失败: {failed_count}/{total_files}\n"
+                    f"🙈 跳过隐藏: {skipped_hidden}\n"
+                    f"🚫 跳过小文件: {skipped_small}\n"
+                    f"⚠️ Provider 警告文件数: {skipped_provider_count}\n"
+                    f"🖼️ 图片: {image_success_count}/{total_files}\n"
+                    f"⏱️ 用时: {total_time:.1f} 秒\n"
+                    f"📊 成功率: {success_rate:.1f}%\n\n"
+                    f"🔍 请查看日志了解失败原因"
+                )
+
         except Exception as e:
             self.log(f"❌ 处理过程中出现错误: {e}", "ERROR")
         finally:
-            # 重置处理状态
             self.is_processing = False
             self.stop_processing = False
             self.start_btn.config(state=tk.NORMAL)
             self.stop_btn.config(state=tk.DISABLED)
             self.status_var.set(STATUS_READY)
+            self._close_run_log()
     
     def test_connection(self):
         """测试当前网站连接。"""
@@ -1776,7 +1568,8 @@ class JavFileOrganizer:
                 'image_selector': self.image_selector_var.get(),
                 'max_filename_length': self.max_filename_length_var.get(),
                 'preserve_actor': self.preserve_actor_var.get(),
-                'batch_count': self.batch_count_var.get()
+                'batch_count': self.batch_count_var.get(),
+                'dry_run': self.dry_run_var.get()
             }
             
             config_path = os.path.join(os.path.dirname(__file__), CONFIG_FILENAME)
