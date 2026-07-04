@@ -217,8 +217,83 @@ class SeleniumJAVLibrary:
             'vl_searchbyid.php',
             'video_title',
             'star',
+            'videothumblist',
+            'class="video"',
         ]
         return any(m in html_lower for m in markers)
+
+    def _normalize_cover_url(self, cover_url):
+        """把 JAVLibrary 返回的各种图片地址统一成可下载 URL。"""
+        cover_url = (cover_url or '').strip()
+        if not cover_url:
+            return ''
+        if cover_url.startswith('http'):
+            return cover_url
+        if cover_url.startswith('//'):
+            return 'https:' + cover_url
+        return 'https://www.javlibrary.com' + cover_url
+
+    def _extract_result_from_soup(self, soup):
+        """从 JAVLibrary 页面中提取 title / cover / actors / release_date。
+
+        同时兼容：
+        1. 旧版详情页结构 (`h3.post-title`, `#video_jacket_img`)
+        2. 当前常见的搜索结果列表页 (`div.videothumblist div.video a`)
+        """
+        result = {}
+
+        # 搜索结果列表页
+        search_result = soup.select_one('div.videothumblist div.video a, div.videos div.video a')
+        if search_result:
+            code_elem = search_result.select_one('div.id')
+            title_elem = search_result.select_one('div.title')
+            title_attr = search_result.get('title', '').strip()
+            code_text = code_elem.get_text().strip() if code_elem else ''
+            title_text = title_elem.get_text().strip() if title_elem else ''
+
+            combined_title = title_attr or title_text
+            if combined_title:
+                if code_text and not combined_title.upper().startswith(code_text.upper()):
+                    combined_title = f"{code_text} {combined_title}".strip()
+                result['title'] = combined_title
+
+            img_elem = search_result.select_one('img')
+            if img_elem:
+                cover_url = img_elem.get('src', '') or img_elem.get('data-src', '')
+                normalized = self._normalize_cover_url(cover_url)
+                if normalized:
+                    result['cover_url'] = normalized
+
+        # 详情页回退
+        if 'title' not in result:
+            title_elem = soup.find('h3', class_='post-title')
+            if title_elem:
+                result['title'] = title_elem.get_text().strip()
+
+        if 'cover_url' not in result:
+            cover_elem = soup.find('img', id='video_jacket_img')
+            if cover_elem:
+                normalized = self._normalize_cover_url(cover_elem.get('src', ''))
+                if normalized:
+                    result['cover_url'] = normalized
+
+        # 详情页才有的扩展字段
+        actors = []
+        actor_elems = soup.find_all('span', class_='star')
+        for elem in actor_elems:
+            actor_name = elem.get_text().strip()
+            if actor_name:
+                actors.append(actor_name)
+        if actors:
+            result['actors'] = actors
+
+        date_elem = soup.find('td', class_='text', string='Release Date:')
+        if date_elem:
+            date_value = date_elem.find_next_sibling('td')
+            if date_value:
+                result['release_date'] = date_value.get_text().strip()
+
+        return result
 
     def verify_cloudflare(self, timeout=180):
         """
@@ -307,79 +382,19 @@ class SeleniumJAVLibrary:
             html = self.driver.page_source
             soup = BeautifulSoup(html, 'html.parser')
             
-            # 提取信息
-            result = {}
+            # 提取信息（纯 helper，方便测试）
+            result = self._extract_result_from_soup(soup)
 
-            # v1.4.7: 先处理新版“搜索结果列表”页面（当前 JAVLibrary 常见返回）
-            # 结构示例：
-            #   <div class="videothumblist">
-            #     <div class="video"><a href="./javxxx.html" title="SSIS-001 ..."><div class="id">SSIS-001</div><img ... src="...ps.jpg"><div class="title">...</div></a>
-            search_result = soup.select_one('div.videothumblist div.video a, div.videos div.video a')
-            if search_result:
-                code_elem = search_result.select_one('div.id')
-                title_elem = search_result.select_one('div.title')
-                title_attr = search_result.get('title', '').strip()
-                code_text = code_elem.get_text().strip() if code_elem else ''
-                title_text = title_elem.get_text().strip() if title_elem else ''
-
-                # 标题优先：a[title] > div.title；并尽量补上番号前缀
-                combined_title = title_attr or title_text
-                if combined_title:
-                    if code_text and not combined_title.upper().startswith(code_text.upper()):
-                        combined_title = f"{code_text} {combined_title}".strip()
-                    result['title'] = combined_title
-                    self.log(f"📝 标题(搜索结果页): {result['title']}", "INFO")
-
-                img_elem = search_result.select_one('img')
-                if img_elem:
-                    cover_url = img_elem.get('src', '') or img_elem.get('data-src', '')
-                    if cover_url:
-                        if cover_url.startswith('http'):
-                            result['cover_url'] = cover_url
-                        elif cover_url.startswith('//'):
-                            result['cover_url'] = 'https:' + cover_url
-                        else:
-                            result['cover_url'] = 'https://www.javlibrary.com' + cover_url
-                        self.log(f"🖼️ 封面(搜索结果页): {result['cover_url']}", "INFO")
-
-            # 兼容旧版“详情页”结构：如果上面没拿到 title / cover，再走旧选择器
-            if 'title' not in result:
-                title_elem = soup.find('h3', class_='post-title')
-                if title_elem:
-                    result['title'] = title_elem.get_text().strip()
-                    self.log(f"📝 标题: {result['title']}", "INFO")
-
-            if 'cover_url' not in result:
-                cover_elem = soup.find('img', id='video_jacket_img')
-                if cover_elem:
-                    cover_url = cover_elem.get('src', '')
-                    # 修复: 检查 URL 是否已经包含协议
-                    if cover_url.startswith('http'):
-                        result['cover_url'] = cover_url
-                    elif cover_url.startswith('//'):
-                        result['cover_url'] = 'https:' + cover_url
-                    else:
-                        result['cover_url'] = 'https://www.javlibrary.com' + cover_url
-                    self.log(f"🖼️ 封面: {result['cover_url']}", "INFO")
-            
-            # 演员
-            actors = []
-            actor_elems = soup.find_all('span', class_='star')
-            for elem in actor_elems:
-                actor_name = elem.get_text().strip()
-                if actor_name:
-                    actors.append(actor_name)
-            if actors:
-                result['actors'] = actors
-                self.log(f"👤 演员: {', '.join(actors)}", "INFO")
-            
-            # 发行日期
-            date_elem = soup.find('td', class_='text', string='Release Date:')
-            if date_elem:
-                date_value = date_elem.find_next_sibling('td')
-                if date_value:
-                    result['release_date'] = date_value.get_text().strip()
-                    self.log(f"📅 发行日期: {result['release_date']}", "INFO")
+            if 'title' in result:
+                source = '搜索结果页' if soup.select_one('div.videothumblist div.video a, div.videos div.video a') else '详情页'
+                self.log(f"📝 标题({source}): {result['title']}", "INFO")
+            if 'cover_url' in result:
+                source = '搜索结果页' if soup.select_one('div.videothumblist div.video a, div.videos div.video a') else '详情页'
+                self.log(f"🖼️ 封面({source}): {result['cover_url']}", "INFO")
+            if 'actors' in result:
+                self.log(f"👤 演员: {', '.join(result['actors'])}", "INFO")
+            if 'release_date' in result:
+                self.log(f"📅 发行日期: {result['release_date']}", "INFO")
             
             if result:
                 self.log("✅ 数据提取成功", "SUCCESS")
