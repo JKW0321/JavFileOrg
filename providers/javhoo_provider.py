@@ -19,6 +19,28 @@ class JavHooProvider(RequestHtmlProvider):
     )
     site_suffixes = ('-JAVHOO', '-JavHoo', ' - JAVHOO', ' - JavHoo', '-javhoo')
 
+    def _invalid_result_reason(self, title, image_url, detail_url, referer):
+        reasons = []
+        title_lower = (title or '').strip().lower()
+        image_lower = (image_url or '').strip().lower()
+        if title_lower.startswith('search results'):
+            reasons.append('search-results-title')
+        if not image_lower:
+            reasons.append('missing-image')
+        elif 'logo' in image_lower or image_lower.endswith('/logo.png'):
+            reasons.append('placeholder-image')
+        if reasons:
+            return 'javhoo invalid result: ' + ','.join(reasons)
+        return ''
+
+    def _should_skip_detail_for_invalid_search(self, invalid_reason, title, image_url):
+        # JavHoo 未命中时常返回 Search Results 标题和站点 logo。
+        # 这种页面上的候选链接经常是无效的 /en/{code}，继续追详情页只会多一次 404/timeout。
+        return (
+            'search-results-title' in invalid_reason and
+            ('placeholder-image' in invalid_reason or 'missing-image' in invalid_reason)
+        )
+
     def _fetch_detail_page(self, detail_url):
         response = self._request(detail_url)
         soup = BeautifulSoup(response.content, 'html.parser')

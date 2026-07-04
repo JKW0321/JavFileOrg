@@ -7,6 +7,7 @@ Selenium JAVLibrary数据抓取模块
 import time
 import os
 import pickle
+from urllib.parse import quote, urljoin
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -33,6 +34,8 @@ class SeleniumJAVLibrary:
         self.cookies_file = os.path.expanduser('~/.jav_organizer/javlibrary_selenium_cookies.pkl')
         self.profile_dir = os.path.expanduser('~/.jav_organizer/javlibrary_chrome_profile')
         self.verified = False
+        self.last_error_type = ''
+        self.last_error_message = ''
     
     def log(self, message, level="INFO"):
         """记录日志"""
@@ -40,70 +43,107 @@ class SeleniumJAVLibrary:
             self.log_callback(message, level)
         else:
             print(f"[{level}] {message}")
+
+    def _profile_lock_files(self, profile_dir):
+        return [
+            os.path.join(profile_dir, name)
+            for name in ('SingletonLock', 'SingletonCookie', 'SingletonSocket')
+            if os.path.exists(os.path.join(profile_dir, name))
+        ]
+
+    def _runtime_profile_dir(self):
+        runtime_root = os.path.expanduser('~/.jav_organizer/javlibrary_runtime_profiles')
+        profile_name = f'profile_{os.getpid()}_{int(time.time())}'
+        return os.path.join(runtime_root, profile_name)
+
+    def _build_chrome_options(self, user_data_dir):
+        chrome_options = Options()
+
+        # v1.4.3: 设置语言为繁体中文
+        chrome_options.add_argument('--lang=zh-TW')
+        chrome_options.add_experimental_option('prefs', {
+            'intl.accept_languages': 'zh-TW,zh-CN,zh,en'
+        })
+
+        os.makedirs(user_data_dir, exist_ok=True)
+        chrome_options.add_argument(f'--user-data-dir={user_data_dir}')
+
+        # 确保完全独立的实例
+        chrome_options.add_argument('--no-first-run')
+        chrome_options.add_argument('--no-default-browser-check')
+        chrome_options.add_argument('--remote-debugging-port=0')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--no-sandbox')
+
+        # v1.4.3: 禁用 ChromeDriver 日志警告
+        chrome_options.add_argument('--log-level=3')
+
+        if self.headless:
+            chrome_options.add_argument('--headless')
+        else:
+            chrome_options.add_argument('--start-maximized')
+            chrome_options.add_argument('--disable-infobars')
+
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        return chrome_options
+
+    def _create_driver(self, user_data_dir):
+        driver = webdriver.Chrome(options=self._build_chrome_options(user_data_dir))
+        try:
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': (
+                    "Object.defineProperty(navigator, 'webdriver', {"
+                    "get: () => undefined"
+                    "});"
+                )
+            })
+        except Exception:
+            pass
+        return driver
     
     def start_browser(self):
         """启动浏览器"""
         if self.driver:
             return True
         
-        try:
-            self.log("🌐 正在启动Chrome浏览器...", "INFO")
-            
-            chrome_options = Options()
-            
-            # v1.4.3: 设置语言为繁体中文
-            chrome_options.add_argument('--lang=zh-TW')
-            chrome_options.add_experimental_option('prefs', {
-                'intl.accept_languages': 'zh-TW,zh-CN,zh,en'
-            })
-            
-            # v1.4.6: 使用持久化 profile 目录，避免每次启动都像“新浏览器”一样重新挑战 Cloudflare
-            os.makedirs(self.profile_dir, exist_ok=True)
-            user_data_dir = self.profile_dir
-            chrome_options.add_argument(f'--user-data-dir={user_data_dir}')
-            
-            # 确保完全独立的实例
-            chrome_options.add_argument('--no-first-run')
-            chrome_options.add_argument('--no-default-browser-check')
-            chrome_options.add_argument('--remote-debugging-port=0')  # 禁用远程调试端口复用
-            
-            # v1.4.3: 禁用 ChromeDriver 日志警告
-            chrome_options.add_argument('--log-level=3')  # 只显示严重错误
-            # 注意: excludeLogging 在某些 ChromeDriver 版本中不支持，已移除
-            
-            if self.headless:
-                chrome_options.add_argument('--headless')
-                self.log("👁️ 使用无头模式", "INFO")
-            else:
-                # 非无头模式：确保窗口可见
-                self.log("👁️ 使用可见窗口模式", "INFO")
-                chrome_options.add_argument('--start-maximized')  # 最大化窗口
-                chrome_options.add_argument('--disable-infobars')  # 禁用信息栏
-            
-            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            
-            self.driver = webdriver.Chrome(options=chrome_options)
-            
-            if not self.headless:
-                # 非无头模式：尝试将窗口置于前台
-                try:
-                    self.driver.maximize_window()
-                    self.log("✅ Chrome已启动（窗口可见）", "INFO")
-                except Exception:
-                    self.log("✅ Chrome已启动", "INFO")
-            else:
-                self.log("✅ Chrome已启动（无头模式）", "INFO")
-            
-            # 尝试加载保存的Cookie
-            self._load_cookies()
-            
-            return True
-            
-        except Exception as e:
-            self.log(f"❌ 无法启动Chrome: {e}", "ERROR")
-            return False
+        self.log("🌐 正在启动Chrome浏览器...", "INFO")
+        self.log("👁️ 使用无头模式" if self.headless else "👁️ 使用可见窗口模式", "INFO")
+
+        os.makedirs(self.profile_dir, exist_ok=True)
+        attempts = []
+        locked_files = self._profile_lock_files(self.profile_dir)
+        if locked_files:
+            self.log("⚠️ 检测到JAVLibrary Chrome profile正在被占用，改用隔离profile启动", "WARNING")
+        else:
+            attempts.append(('固定profile', self.profile_dir))
+        attempts.append(('隔离profile', self._runtime_profile_dir()))
+
+        last_error = None
+        for label, user_data_dir in attempts:
+            try:
+                self.log(f"🌐 Chrome启动尝试: {label}", "INFO")
+                self.driver = self._create_driver(user_data_dir)
+
+                if not self.headless:
+                    try:
+                        self.driver.maximize_window()
+                        self.log("✅ Chrome已启动（窗口可见）", "INFO")
+                    except Exception:
+                        self.log("✅ Chrome已启动", "INFO")
+                else:
+                    self.log("✅ Chrome已启动（无头模式）", "INFO")
+
+                self._load_cookies()
+                return True
+            except Exception as e:
+                last_error = e
+                self.driver = None
+                self.log(f"⚠️ Chrome启动尝试失败（{label}）: {e}", "WARNING")
+
+        self.log(f"❌ 无法启动Chrome: {last_error}", "ERROR")
+        return False
     
     def stop_browser(self):
         """关闭浏览器"""
@@ -134,6 +174,20 @@ class SeleniumJAVLibrary:
         if self.driver:
             self.log("⚠️ 检测到 Selenium 窗口已关闭或 session 失效，正在重启浏览器...", "WARNING")
             self.stop_browser()
+        return self.start_browser()
+
+    def _set_last_error(self, error_type, message):
+        self.last_error_type = error_type
+        self.last_error_message = message
+
+    def _restart_visible_browser(self):
+        """验证页不能在无头模式人工处理，自动切换到可见窗口。"""
+        if not self.headless:
+            return True
+        self.log("⚠️ 无头模式遇到JAVLibrary验证页，正在切换到可见Chrome窗口...", "WARNING")
+        self.stop_browser()
+        self.headless = False
+        self.verified = False
         return self.start_browser()
     
     def _load_cookies(self):
@@ -190,7 +244,21 @@ class SeleniumJAVLibrary:
         title_lower = (title or '').strip().lower()
         html_lower = (html or '').lower()
 
-        # 先认结果页（优先级最高）
+        title_markers = [
+            'attention required',
+            'cloudflare',
+            'just a moment',
+            'please wait',
+            '請稍候',
+            '请稍候',
+            '安全驗證',
+            '安全验证',
+        ]
+        if any(marker.lower() in title_lower for marker in title_markers):
+            return True
+
+        # 正常结果页优先于 HTML body 里的 Cloudflare 字段。
+        # 但像 "請稍候..." 这种标题级验证页必须先判定为验证页。
         result_title_markers = [
             'javlibrary',
             '識別碼搜尋結果',
@@ -202,15 +270,10 @@ class SeleniumJAVLibrary:
         if ('javlibrary' in title_lower) and any(m.lower() in title_lower for m in result_title_markers[1:]):
             return False
 
-        title_markers = [
-            'just a moment',
-            'please wait',
-            '請稍候',
-            '请稍候',
-            '安全驗證',
-            '安全验证',
-        ]
         body_markers = [
+            'attention required',
+            'you have been blocked',
+            'cf-ray',
             'checking your browser',
             'security verification',
             '安全驗證',
@@ -223,23 +286,32 @@ class SeleniumJAVLibrary:
             'cloudflare',
         ]
 
-        if any(marker.lower() in title_lower for marker in title_markers):
-            return True
         if any(marker.lower() in html_lower for marker in body_markers):
             return True
         return False
 
     def _is_result_page(self, html=''):
         """粗略判断当前页面是否已经进入 JAVLibrary 正常结果页。"""
+        if not html:
+            return False
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            return soup.select_one(
+                '#video_jacket_img, #video_title, .post-title, '
+                '.videothumblist, .videos .video, div.video a'
+            ) is not None
+        except Exception:
+            return False
+
+    def _is_no_result_page(self, html=''):
         html_lower = (html or '').lower()
         markers = [
-            'video_jacket_img',
-            'post-title',
-            'vl_searchbyid.php',
-            'video_title',
-            'star',
-            'videothumblist',
-            'class="video"',
+            'no videos found',
+            'no matching videos',
+            '沒有找到',
+            '未找到',
+            '找不到',
+            '沒有符合',
         ]
         return any(m in html_lower for m in markers)
 
@@ -254,7 +326,7 @@ class SeleniumJAVLibrary:
             return 'https:' + cover_url
         return 'https://www.javlibrary.com' + cover_url
 
-    def _extract_result_from_soup(self, soup):
+    def _extract_result_from_soup(self, soup, jav_id=None):
         """从 JAVLibrary 页面中提取 title / cover / actors / release_date。
 
         同时兼容：
@@ -262,9 +334,22 @@ class SeleniumJAVLibrary:
         2. 当前常见的搜索结果列表页 (`div.videothumblist div.video a`)
         """
         result = {}
+        normalized_jav_id = (jav_id or '').strip().upper()
+        normalized_jav_id_key = normalized_jav_id.replace('-', '')
 
         # 搜索结果列表页
-        search_result = soup.select_one('div.videothumblist div.video a, div.videos div.video a')
+        search_results = soup.select('div.videothumblist div.video a, div.videos div.video a, div.video a')
+        search_result = None
+        if normalized_jav_id_key:
+            for candidate in search_results:
+                code_elem = candidate.select_one('div.id, .id')
+                code_text = code_elem.get_text().strip().upper() if code_elem else ''
+                title_text = (candidate.get('title') or candidate.get_text(' ', strip=True) or '').upper()
+                if code_text.replace('-', '') == normalized_jav_id_key or title_text.startswith(normalized_jav_id):
+                    search_result = candidate
+                    break
+        if not search_result and search_results:
+            search_result = search_results[0]
         if search_result:
             code_elem = search_result.select_one('div.id')
             title_elem = search_result.select_one('div.title')
@@ -278,23 +363,40 @@ class SeleniumJAVLibrary:
                     combined_title = f"{code_text} {combined_title}".strip()
                 result['title'] = combined_title
 
+            href = search_result.get('href', '').strip()
+            if href:
+                result['detail_url'] = urljoin('https://www.javlibrary.com/tw/', href)
+
             img_elem = search_result.select_one('img')
             if img_elem:
-                cover_url = img_elem.get('src', '') or img_elem.get('data-src', '')
+                cover_url = (
+                    img_elem.get('src', '') or
+                    img_elem.get('data-src', '') or
+                    img_elem.get('data-original', '') or
+                    img_elem.get('data-lazy-src', '')
+                )
                 normalized = self._normalize_cover_url(cover_url)
                 if normalized:
                     result['cover_url'] = normalized
 
         # 详情页回退
         if 'title' not in result:
-            title_elem = soup.find('h3', class_='post-title')
+            title_elem = soup.select_one('#video_title h3, #video_title .post-title, h3.post-title, .post-title a, .post-title')
             if title_elem:
-                result['title'] = title_elem.get_text().strip()
+                title = title_elem.get_text().strip()
+                if title:
+                    result['title'] = title
 
         if 'cover_url' not in result:
             cover_elem = soup.find('img', id='video_jacket_img')
             if cover_elem:
-                normalized = self._normalize_cover_url(cover_elem.get('src', ''))
+                raw_cover = (
+                    cover_elem.get('src', '') or
+                    cover_elem.get('data-src', '') or
+                    cover_elem.get('data-original', '') or
+                    cover_elem.get('data-lazy-src', '')
+                )
+                normalized = self._normalize_cover_url(raw_cover)
                 if normalized:
                     result['cover_url'] = normalized
 
@@ -315,6 +417,41 @@ class SeleniumJAVLibrary:
                 result['release_date'] = date_value.get_text().strip()
 
         return result
+
+    def _wait_for_search_page_state(self, timeout=8):
+        """等待搜索页进入可判断状态，避免每个番号无条件固定 sleep。"""
+        deadline = time.time() + timeout
+        last_title = ''
+        last_html = ''
+        first_complete_at = None
+
+        while time.time() < deadline:
+            try:
+                last_title = self.driver.title or ''
+                last_html = self.driver.page_source or ''
+                if (
+                    self._is_verification_page(last_title, last_html) or
+                    self._is_result_page(last_html) or
+                    self._is_no_result_page(last_html)
+                ):
+                    return last_title, last_html
+
+                ready_state = ''
+                try:
+                    ready_state = self.driver.execute_script('return document.readyState') or ''
+                except Exception:
+                    pass
+                if ready_state == 'complete':
+                    if first_complete_at is None:
+                        first_complete_at = time.time()
+                    elif time.time() - first_complete_at >= 0.5:
+                        return last_title, last_html
+
+                time.sleep(0.25)
+            except Exception:
+                time.sleep(0.25)
+
+        return last_title, last_html
 
     def verify_cloudflare(self, timeout=180):
         """
@@ -364,38 +501,47 @@ class SeleniumJAVLibrary:
         Returns:
             dict: 包含标题、封面等信息的字典，失败返回None
         """
+        self._set_last_error('', '')
         if not self.ensure_browser():
+            self._set_last_error('browser-error', 'selenium browser could not start')
             return None
         
         try:
             # v1.4.3: 使用繁体中文版本
-            url = f"https://www.javlibrary.com/tw/vl_searchbyid.php?keyword={jav_id}"
-            self.log(f"🔍 搜索: {jav_id}", "INFO")
+            normalized_jav_id = (jav_id or '').strip().upper()
+            url = f"https://www.javlibrary.com/tw/vl_searchbyid.php?keyword={quote(normalized_jav_id)}"
+            self.log(f"🔍 搜索: {normalized_jav_id}", "INFO")
             self.log(f"🔗 URL: {url}", "INFO")
             
+            nav_started = time.time()
             self.driver.get(url)
-            time.sleep(2)
+            page_title, page_html = self._wait_for_search_page_state(timeout=8)
+            self.log(f"⏱️ JAVLibrary页面等待耗时: {time.time() - nav_started:.1f}秒", "INFO")
 
             # v1.4.5: 检查是否需要验证（英文 + 繁中 + 页面 body 标记）
-            page_title = self.driver.title or ''
-            page_html = self.driver.page_source or ''
             if self._is_verification_page(page_title, page_html):
                 self.log(f"⚠️ 需要完成Cloudflare验证，当前标题: {page_title}", "WARNING")
                 if self.headless:
-                    self.log("⚠️ 当前是无头模式，无法人工完成验证；请改为可见窗口模式", "WARNING")
-                    return None
-                if not self.verify_cloudflare():
-                    return None
+                    if not self._restart_visible_browser():
+                        self._set_last_error('verification-required', 'JAVLibrary requires browser verification but visible Chrome could not start')
+                        return None
+                    self.driver.get(url)
+                    page_title, page_html = self._wait_for_search_page_state(timeout=8)
+                if self._is_verification_page(page_title, page_html):
+                    # 保存过 cookie/profile 不代表当前仍然通过验证；遇到验证页时必须重新等待。
+                    self.verified = False
+                    if not self.verify_cloudflare():
+                        self._set_last_error('verification-timeout', f'JAVLibrary verification timed out, title: {page_title}')
+                        return None
                 # v1.4.6: 验证完成后优先复用当前页，避免无条件再次 get(url) 触发二次挑战。
                 page_title = self.driver.title or ''
                 page_html = self.driver.page_source or ''
                 if self._is_verification_page(page_title, page_html):
                     self.driver.get(url)
-                    time.sleep(2)
-                    page_title = self.driver.title or ''
-                    page_html = self.driver.page_source or ''
+                    page_title, page_html = self._wait_for_search_page_state(timeout=8)
                 if self._is_verification_page(page_title, page_html):
                     self.log("❌ 验证后仍停留在安全验证页面", "ERROR")
+                    self._set_last_error('verification-required', f'JAVLibrary still shows verification page, title: {page_title}')
                     return None
 
             # 获取页面HTML
@@ -403,7 +549,7 @@ class SeleniumJAVLibrary:
             soup = BeautifulSoup(html, 'html.parser')
             
             # 提取信息（纯 helper，方便测试）
-            result = self._extract_result_from_soup(soup)
+            result = self._extract_result_from_soup(soup, jav_id=normalized_jav_id)
 
             if 'title' in result:
                 source = '搜索结果页' if soup.select_one('div.videothumblist div.video a, div.videos div.video a') else '详情页'
@@ -419,8 +565,13 @@ class SeleniumJAVLibrary:
             if result:
                 self.log("✅ 数据提取成功", "SUCCESS")
                 return result
+            elif self._is_no_result_page(html):
+                self._set_last_error('not-found', f'JAVLibrary no matching result for {normalized_jav_id}')
+                self.log(f"⚠️ JAVLibrary未搜索到番号: {normalized_jav_id}", "WARNING")
+                return None
             else:
-                self.log("⚠️ 未找到数据", "WARNING")
+                self._set_last_error('parse-error', f'JAVLibrary page parsed empty, title: {page_title}')
+                self.log(f"⚠️ 未找到数据，页面标题: {page_title}", "WARNING")
                 return None
             
         except Exception as e:
@@ -434,6 +585,7 @@ class SeleniumJAVLibrary:
                 self.stop_browser()
                 return self.search_by_id(jav_id, _retry_on_window_error=False)
             self.log(f"❌ 搜索失败: {e}", "ERROR")
+            self._set_last_error('browser-error', str(e))
             return None
 
 

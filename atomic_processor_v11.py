@@ -96,6 +96,58 @@ class AtomicProcessor:
         """将临时图片移动到最终路径，返回最终路径。"""
         shutil.move(str(temp_image_path), final_image_path)
         return final_image_path
+
+    def _fsync_file(self, path: str) -> None:
+        """Force file content and metadata to disk before reporting success."""
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def _fsync_parent_dir(self, path: str) -> None:
+        """Force the parent directory entry update to disk."""
+        parent = os.path.dirname(os.path.abspath(path)) or '.'
+        fd = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def _fsync_committed_path(self, path: str) -> None:
+        self._fsync_file(path)
+        self._fsync_parent_dir(path)
+
+    def _move_video(self, source_path: str, target_path: str) -> None:
+        """移动视频文件，跨文件系统时自动降级到 shutil.move。"""
+        try:
+            os.rename(source_path, target_path)
+        except OSError:
+            shutil.move(source_path, target_path)
+
+    def _rollback_video(self, target_path: str, original_path: str) -> bool:
+        """尽量把已移动的视频放回源路径。"""
+        if not target_path or not os.path.exists(target_path):
+            return True
+        try:
+            self._move_video(target_path, original_path)
+            self._fsync_committed_path(original_path)
+            self._fsync_parent_dir(target_path)
+            return True
+        except Exception:
+            return False
+
+    def _empty_file_result(self, *, status: str = 'failed', reason: str = '',
+                           rollback_ok: Optional[bool] = None) -> Dict[str, Any]:
+        return {
+            'status': status,
+            'reason': reason,
+            'rollback_ok': rollback_ok,
+            'video_moved': False,
+            'image_downloaded': False,
+            'video_path': None,
+            'image_path': None,
+        }
     
     def process_file_atomic(self, file_path: str, new_filename: str, image_url: Optional[str], 
                            finish_folder: str) -> Tuple[bool, Dict[str, Any], str]:
@@ -114,23 +166,22 @@ class AtomicProcessor:
         temp_image_path = None
         new_video_path = None
         final_image_path = None
+        rollback_ok = None
         
         try:
+            if not image_url:
+                message = "缺少图片URL，严格事务模式下不移动源视频"
+                return False, self._empty_file_result(reason=message), message
+
             source_size = os.path.getsize(file_path)
             # 步骤1: 如果有图片URL，先下载到临时目录
-            if image_url:
-                # 生成图片文件名
-                video_basename = os.path.splitext(new_filename)[0]
-                image_filename = f"{video_basename}.jpg"
-                
-                success, temp_image_path, message = self.download_image_to_temp(image_url, image_filename)
-                if not success:
-                    return False, {
-                        'video_moved': False,
-                        'image_downloaded': False,
-                        'video_path': None,
-                        'image_path': None
-                    }, f"图片下载失败: {message}"
+            video_basename = os.path.splitext(new_filename)[0]
+            image_filename = f"{video_basename}.jpg"
+            
+            success, temp_image_path, message = self.download_image_to_temp(image_url, image_filename)
+            if not success:
+                reason = f"图片下载失败: {message}"
+                return False, self._empty_file_result(reason=reason), reason
             
             # 步骤2: 移动视频文件
             new_video_path = os.path.join(finish_folder, new_filename)
@@ -143,12 +194,7 @@ class AtomicProcessor:
                 new_video_path = f"{name}_{counter}{ext}"
                 counter += 1
             
-            # 优先使用 os.rename (同文件系统下极快)
-            try:
-                os.rename(file_path, new_video_path)
-            except OSError:
-                # 跨文件系统时使用 shutil.move
-                shutil.move(file_path, new_video_path)
+            self._move_video(file_path, new_video_path)
             
             # v1.5.1: 移动后做大小校验，防止占位/异常小文件混入 Finish
             moved_size = os.path.getsize(new_video_path)
@@ -156,62 +202,43 @@ class AtomicProcessor:
                 raise RuntimeError(
                     f"视频大小校验失败: source={source_size} bytes, target={moved_size} bytes"
                 )
+            self._fsync_committed_path(new_video_path)
 
             # 步骤3: 如果有临时图片，移动到最终位置
             if temp_image_path and temp_image_path.exists():
-                try:
-                    # 构建最终图片路径（使用实际的视频文件名）
-                    video_basename = os.path.splitext(os.path.basename(new_video_path))[0]
-                    image_filename = f"{video_basename}.jpg"
-                    final_image_path = os.path.join(finish_folder, image_filename)
-                    
-                    # 检查图片同名冲突
-                    if os.path.exists(final_image_path):
-                        counter = 1
-                        base_image_path = final_image_path
-                        while os.path.exists(final_image_path):
-                            name, ext = os.path.splitext(base_image_path)
-                            final_image_path = f"{name}_{counter}{ext}"
-                            counter += 1
-                    
-                    # 移动图片到最终位置
-                    shutil.move(str(temp_image_path), final_image_path)
-                    
-                    return True, {
-                        'video_moved': True,
-                        'video_path': new_video_path,
-                        'image_downloaded': True,
-                        'image_path': final_image_path
-                    }, "文件和图片处理成功"
-                    
-                except Exception as e:
-                    # 图片移动失败，但视频已经成功移动
-                    # 清理临时图片
-                    if temp_image_path and temp_image_path.exists():
-                        temp_image_path.unlink()
-                    
-                    return True, {
-                        'video_moved': True,
-                        'video_path': new_video_path,
-                        'image_downloaded': False,
-                        'image_path': None
-                    }, f"视频处理成功，但图片移动失败: {e}"
+                # 构建最终图片路径（使用实际的视频文件名）
+                video_basename = os.path.splitext(os.path.basename(new_video_path))[0]
+                image_filename = f"{video_basename}.jpg"
+                final_image_path = os.path.join(finish_folder, image_filename)
+                
+                # 检查图片同名冲突
+                if os.path.exists(final_image_path):
+                    counter = 1
+                    base_image_path = final_image_path
+                    while os.path.exists(final_image_path):
+                        name, ext = os.path.splitext(base_image_path)
+                        final_image_path = f"{name}_{counter}{ext}"
+                        counter += 1
+                
+                self._move_temp_image_to_final(temp_image_path, final_image_path)
+                self._fsync_committed_path(final_image_path)
+                
+                return True, {
+                    'status': 'success',
+                    'reason': '',
+                    'rollback_ok': None,
+                    'video_moved': True,
+                    'video_path': new_video_path,
+                    'image_downloaded': True,
+                    'image_path': final_image_path
+                }, "文件和图片处理成功"
             
-            # 没有图片URL的情况
-            return True, {
-                'video_moved': True,
-                'video_path': new_video_path,
-                'image_downloaded': False,
-                'image_path': None
-            }, "文件处理成功（无图片）"
+            raise RuntimeError("图片临时文件缺失，无法完成严格事务")
             
         except Exception as e:
             # 尝试回滚视频文件移动
             if new_video_path and os.path.exists(new_video_path):
-                try:
-                    os.rename(new_video_path, file_path)
-                except:
-                    pass
+                rollback_ok = self._rollback_video(new_video_path, file_path)
             
             # 清理临时图片
             if temp_image_path and temp_image_path.exists():
@@ -221,6 +248,9 @@ class AtomicProcessor:
                     pass
             
             return False, {
+                'status': 'failed' if rollback_ok is not False else 'critical',
+                'reason': f"原子操作失败: {e}",
+                'rollback_ok': rollback_ok,
                 'video_moved': False,
                 'image_downloaded': False,
                 'video_path': None,
@@ -239,15 +269,31 @@ class AtomicProcessor:
         try:
             if not series_files:
                 return False, {'video_paths': [], 'image_path': None, 'image_downloaded': False}, '空序列组'
+            if not image_url:
+                return False, {
+                    'status': 'failed',
+                    'reason': '缺少图片URL，严格事务模式下不移动源视频',
+                    'rollback_ok': None,
+                    'video_paths': [],
+                    'image_path': None,
+                    'image_downloaded': False,
+                }, '缺少图片URL，严格事务模式下不移动源视频'
 
             # 1) 先下载图片到临时目录，确保不会先移动视频后图失败
-            if image_url:
-                success, temp_image_path, message = self.download_image_to_temp(image_url, f"{title}.jpg")
-                if not success:
-                    return False, {'video_paths': [], 'image_path': None, 'image_downloaded': False}, message
+            success, temp_image_path, message = self.download_image_to_temp(image_url, f"{title}.jpg")
+            if not success:
+                return False, {
+                    'status': 'failed',
+                    'reason': message,
+                    'rollback_ok': None,
+                    'video_paths': [],
+                    'image_path': None,
+                    'image_downloaded': False,
+                }, message
 
             # 2) 计算每个视频的最终路径（含重名处理）
             planned = []
+            reserved_targets = set()
             for file_path, sequence in series_files:
                 filename = os.path.basename(file_path)
                 file_ext = os.path.splitext(filename)[1]
@@ -255,24 +301,23 @@ class AtomicProcessor:
                 target_path = os.path.join(finish_folder, new_filename)
                 counter = 1
                 base_target_path = target_path
-                while os.path.exists(target_path):
+                while os.path.exists(target_path) or target_path in reserved_targets:
                     name, ext = os.path.splitext(base_target_path)
                     target_path = f"{name}_{counter}{ext}"
                     counter += 1
                 planned.append((file_path, target_path))
+                reserved_targets.add(target_path)
 
             # 3) 逐个移动并做大小校验；任何一个失败都回滚之前已移动的视频
             for file_path, target_path in planned:
                 source_size = os.path.getsize(file_path)
-                try:
-                    os.rename(file_path, target_path)
-                except OSError:
-                    shutil.move(file_path, target_path)
+                self._move_video(file_path, target_path)
                 moved_size = os.path.getsize(target_path)
                 if moved_size != source_size:
                     raise RuntimeError(
                         f"视频大小校验失败: source={source_size} bytes, target={moved_size} bytes"
                     )
+                self._fsync_committed_path(target_path)
                 moved_videos.append((file_path, target_path))
 
             # 4) 全部视频成功后，再提交图片
@@ -285,8 +330,12 @@ class AtomicProcessor:
                     final_image_path = f"{name}_{counter}{ext}"
                     counter += 1
                 self._move_temp_image_to_final(temp_image_path, final_image_path)
+                self._fsync_committed_path(final_image_path)
 
             return True, {
+                'status': 'success',
+                'reason': '',
+                'rollback_ok': None,
                 'video_paths': [target for _, target in moved_videos],
                 'image_path': final_image_path,
                 'image_downloaded': bool(final_image_path),
@@ -294,16 +343,15 @@ class AtomicProcessor:
 
         except Exception as e:
             # 回滚已经移动的视频
+            rollback_ok = True
             for original_path, target_path in reversed(moved_videos):
-                try:
-                    if os.path.exists(target_path):
-                        os.rename(target_path, original_path)
-                except Exception:
-                    pass
+                if not self._rollback_video(target_path, original_path):
+                    rollback_ok = False
             # 删除最终图片（如果已写出）
             if final_image_path and os.path.exists(final_image_path):
                 try:
                     os.remove(final_image_path)
+                    self._fsync_parent_dir(final_image_path)
                 except Exception:
                     pass
             # 清理临时图片
@@ -313,6 +361,9 @@ class AtomicProcessor:
                 except Exception:
                     pass
             return False, {
+                'status': 'failed' if rollback_ok else 'critical',
+                'reason': f"序列文件组原子处理失败: {e}",
+                'rollback_ok': rollback_ok,
                 'video_paths': [],
                 'image_path': None,
                 'image_downloaded': False,

@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Optional
 
 
@@ -8,12 +8,18 @@ class ProviderResult:
     title: Optional[str] = None
     image_url: Optional[str] = None
     provider: Optional[str] = None
+    query: Optional[str] = None
+    detail_url: Optional[str] = None
+    referer: Optional[str] = None
     error_type: Optional[str] = None
     message: Optional[str] = None
     raw_meta: Dict[str, Any] = field(default_factory=dict)
 
     def get(self, key: str, default=None):
         return getattr(self, key, default)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 class BaseProvider:

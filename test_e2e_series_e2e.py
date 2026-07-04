@@ -8,7 +8,7 @@ v1.4.4 Bug 3 修复的端到端验证。
 
 不依赖网络。在 /tmp 下创建 3 个带完整标题的"序列视频文件"（空文件即可），
 mock extract_content 返回固定 title + 用 PIL 生成一张真实可用的 jpg，
-跑一次完整的 process_series_group，最后断言 Finish/ 目录里有：
+跑一次完整的 WorkflowService 序列处理，最后断言 Finish/ 目录里有：
   - 恰好 1 张 .jpg
   - 恰好 3 个 .mp4，文件名带 -1/-2/-3
   - 视频源文件全部被移走（不在源目录了）
@@ -26,6 +26,8 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jav_file_organizer as jfo_mod
+from atomic_processor_v11 import AtomicProcessor
+from workflow_service import WorkflowService
 
 
 # ---------------------------------------------------------------------------
@@ -74,9 +76,49 @@ def make_dummy_jpg(path: str):
 
 
 def make_dummy_video(path: str, size_bytes: int = 1024):
-    """写一个伪视频文件（空内容也行，process_series_group 不读内容）"""
+    """写一个伪视频文件。"""
     with open(path, 'wb') as f:
         f.write(b'\x00' * size_bytes)
+
+
+class DummyProvider:
+    def __init__(self, title, image_url='http://fake/image.jpg'):
+        self.title = title
+        self.image_url = image_url
+
+    def search(self, query):
+        return {
+            'ok': True,
+            'title': self.title,
+            'image_url': self.image_url,
+            'provider': 'dummy',
+            'error_type': None,
+            'message': None,
+        }
+
+
+def run_series_workflow(obj, src, finish, title, download_image):
+    obj.download_image = download_image
+    obj.atomic_processor = AtomicProcessor(obj.download_image, obj.sanitize_filename)
+    service = WorkflowService(
+        log=obj.log,
+        provider_factory=lambda name: DummyProvider(title),
+        atomic_processor=obj.atomic_processor,
+        clean_filename_for_search=obj.clean_filename_for_search,
+        sanitize_filename=obj.sanitize_filename,
+        detect_series_files=obj.detect_series_files,
+        smart_truncate_filename=obj.smart_truncate_filename,
+        stop_requested=lambda: False,
+        minimum_video_size_bytes=1,
+    )
+    return service.run(
+        folder_path=str(src),
+        finish_folder=str(finish),
+        website='javhoo',
+        max_length=None,
+        batch_count=None,
+        dry_run=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -107,21 +149,10 @@ def test_series_with_full_title():
         dummy_jpg_path = str(Path(tmp) / 'fake_image.jpg')
         make_dummy_jpg(dummy_jpg_path)
 
-        # Mock extract_content：返回固定 title + image_url
-        def fake_extract_content(search_query, website_config):
-            return ('ABF-139 美少女と、貸し切り温泉と、濃密性交と。', 'http://fake/image.jpg')
-
         # Mock download_image：把 dummy jpg 复制到目标路径
         def fake_download_image(url, dest_path):
             shutil.copy(dummy_jpg_path, dest_path)
             return True
-
-        obj.extract_content = fake_extract_content
-        obj.download_image = fake_download_image
-
-        # 初始化 atomic_processor（它要 download_func + sanitize_func）
-        from atomic_processor_v11 import AtomicProcessor
-        obj.atomic_processor = AtomicProcessor(obj.download_image, obj.sanitize_filename)
 
         # detect → 应该识别成 1 个序列组，3 个文件
         groups, standalone = obj.detect_series_files([str(src / n) for n in video_names])
@@ -130,20 +161,18 @@ def test_series_with_full_title():
         assert standalone == [], f"期望 standalone 为空，实际 {standalone}"
         print(f"  ✅ detect_series_files 正确识别成 1 个序列组")
 
-        # 跑 process_series_group
-        website_config = {'name': 'fake'}
-        success_count, image_success = obj.process_series_group(
-            base_code='ABF-139',
-            files=groups['ABF-139'],
-            folder_path=str(src),
-            finish_folder=str(finish),
-            website_config=website_config,
-            max_length=None,
+        # 跑 WorkflowService
+        result = run_series_workflow(
+            obj,
+            src,
+            finish,
+            'ABF-139 美少女と、貸し切り温泉と、濃密性交と。',
+            fake_download_image,
         )
 
         # === 断言 ===
         # 1. 3 个视频全部成功移动
-        assert success_count == 3, f"期望 3 个视频成功，实际 {success_count}"
+        assert result['success_count'] == 3, f"期望 3 个视频成功，实际 {result['success_count']}"
         print(f"  ✅ success_count = 3")
 
         # 2. Finish 目录里恰好 1 张 jpg + 3 个 mp4
@@ -207,18 +236,9 @@ def test_series_alpha_with_download_site_prefix():
         dummy_jpg_path = str(Path(tmp) / 'fake.jpg')
         make_dummy_jpg(dummy_jpg_path)
 
-        def fake_extract_content(q, cfg):
-            return ('RBD-011 美少女と、貸し切り温泉', 'http://fake/image.jpg')
-
         def fake_download_image(url, dest):
             shutil.copy(dummy_jpg_path, dest)
             return True
-
-        obj.extract_content = fake_extract_content
-        obj.download_image = fake_download_image
-
-        from atomic_processor_v11 import AtomicProcessor
-        obj.atomic_processor = AtomicProcessor(obj.download_image, obj.sanitize_filename)
 
         # detect
         groups, standalone = obj.detect_series_files([str(src / n) for n in video_names])
@@ -227,14 +247,14 @@ def test_series_alpha_with_download_site_prefix():
         print(f"  ✅ 下载站前缀 + 字母后缀被正确识别成组")
 
         # 处理
-        obj.process_series_group(
-            base_code='RBD-011',
-            files=groups['RBD-011'],
-            folder_path=str(src),
-            finish_folder=str(finish),
-            website_config={'name': 'fake'},
-            max_length=None,
+        result = run_series_workflow(
+            obj,
+            src,
+            finish,
+            'RBD-011 美少女と、貸し切り温泉',
+            fake_download_image,
         )
+        assert result['success_count'] == 3
 
         finish_files = sorted(os.listdir(finish))
         jpgs = [f for f in finish_files if f.endswith('.jpg')]

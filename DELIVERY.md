@@ -1,21 +1,25 @@
-# 📦 交付清单 - v1.5.0-Selenium
+# 📦 交付清单 - v1.5.4
 
 ## 当前正式交付物
 
 ### 桌面可执行文件
-- **JAVFileOrganizer-v1.5.0.app** — 当前正式 macOS 基线包
+- **JAVFileOrganizer-v1.5.4.app** — 当前 macOS 基线包，运行时版本为 `v1.5.4`
 
 ### 核心源码
 - `jav_file_organizer.py`
 - `selenium_javlibrary.py`
 - `filename_utils.py`
 - `atomic_processor_v11.py`
+- `workflow_service.py`
+- `manifest_utils.py`
+- `providers/`
 - `requirements.txt`
 
 ### 主文档
 - `README.md`
 - `QUICKSTART.md`
 - `TEST_GUIDE.md`
+- `MAINTENANCE.md`
 - `FINAL_DELIVERY.md`
 
 ---
@@ -28,16 +32,18 @@
 4. 序列文件识别 / 共享封面修复
 5. 网站名前缀清理修复
 6. Tk9 + PyInstaller macOS 打包修复
-7. 版本号统一为 `v1.5.0-Selenium`
+7. Dry Run / manifest / run summary 审计能力
+8. Provider 模块化与 JavHoo 封面选择修复
 
 ---
 
 ## 基线版本信息
 
-- **版本号**: v1.5.0-Selenium
-- **构建标识**: baseline-unified-tk9-selenium
-- **构建日期**: 2026-07-04
-- **正式桌面包**: `JAVFileOrganizer-v1.5.0.app`
+- **Git 维护版本**: v1.5.4
+- **运行时版本**: v1.5.4
+- **构建标识**: baseline-v1.5.4
+- **构建日期**: 2026-07-05
+- **正式桌面包**: `JAVFileOrganizer-v1.5.4.app`
 
 ---
 
@@ -46,5 +52,11 @@
 程序启动日志应显示：
 
 ```text
-✅ JAV 文件整理工具 v1.5.0-Selenium 启动完成 | baseline-unified-tk9-selenium | 2026-07-04
+✅ JAV 文件整理工具 v1.5.4 启动完成 | baseline-v1.5.4 | 2026-07-05
+```
+
+默认离线回归应通过：
+
+```bash
+python3 run_baseline_tests.py
 ```

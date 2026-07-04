@@ -1,12 +1,15 @@
-# JAV File Organizer v1.5.0-Selenium 最终交付版本
+# JAV File Organizer 历史交付记录
 
-**版本**: v1.5.0-Selenium  
-**构建标识**: baseline-unified-tk9-selenium  
-**交付日期**: 2026-07-04
+**历史交付版本**: v1.5.0  
+**当前 Git 维护版本**: v1.5.4  
+**构建标识**: baseline-v1.5.4  
+**交付日期**: 2026-07-05
 
 ---
 
-## ✅ 当前基线已解决的问题
+> 说明：本文保留 v1.5.0 桌面基线的交付记录。当前源码维护说明以 `README.md`、`DELIVERY.md`、`TEST_GUIDE.md` 和 `MAINTENANCE.md` 为准。
+
+## ✅ v1.5.0 基线已解决的问题
 
 ### 运行与 GUI
 1. ✅ Tk 8.5 / system Python 下 ttk 黑屏问题 → 改为 Tk9 打包基线
@@ -50,13 +53,13 @@
 ### macOS 正式包
 
 ```text
-JAVFileOrganizer-v1.5.0.app
+JAVFileOrganizer-v1.5.4.app
 ```
 
 ### 启动成功标志
 
 ```text
-✅ JAV 文件整理工具 v1.5.0-Selenium 启动完成 | baseline-unified-tk9-selenium | 2026-07-04
+✅ JAV 文件整理工具 v1.5.4 启动完成 | baseline-v1.5.4 | 2026-07-05
 ```
 
 ### JAVLibrary 首次使用
@@ -70,7 +73,7 @@ JAVFileOrganizer-v1.5.0.app
 
 ## 📁 当前文档策略
 
-- `README.md` / `QUICKSTART.md` / `TEST_GUIDE.md`：当前基线文档
+- `README.md` / `QUICKSTART.md` / `TEST_GUIDE.md` / `MAINTENANCE.md`：当前维护文档
 - `BUGFIX_*.md` / `PERFORMANCE_*.md` / `TEST_REPORT*.md`：历史修复与测试记录
 
-当前正式版本说明以本文档和 `README.md` 为准。
+当前正式源码维护说明以 `README.md` 和 `MAINTENANCE.md` 为准。

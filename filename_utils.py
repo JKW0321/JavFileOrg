@@ -27,6 +27,7 @@ __all__ = [
     'clean_filename_for_search',
     'sanitize_filename',
     'extract_series_info',
+    'analyze_unknown_filename',
 ]
 
 
@@ -128,6 +129,33 @@ _SERIES_PATTERNS = [
 ]
 
 
+def _stem_for_filename_analysis(filename: str) -> str:
+    cleaned = strip_site_markers(filename)
+    if '.' in cleaned:
+        stem = cleaned.rsplit('.', 1)[0]
+    else:
+        stem = cleaned
+    return strip_site_markers(stem).strip()
+
+
+def _extract_series_info_from_stem(stem: str):
+    for pattern, is_alpha_seq in _SERIES_PATTERNS:
+        match = pattern.search(stem)
+        if match:
+            base_raw = match.group(1)
+            # 标准化：字母数字之间加连字符 (RBD011 -> RBD-011)
+            base_normalized = re.sub(r'([a-zA-Z]+)(\d+)', r'\1-\2', base_raw).upper()
+
+            if is_alpha_seq:
+                letter = match.group(2).lower()
+                sequence = str(ord(letter) - ord('a') + 1)
+            else:
+                sequence = match.group(2)
+
+            return base_normalized, sequence
+    return None, None
+
+
 def extract_series_info(filename):
     """从文件名中提取序列文件信息。
 
@@ -150,31 +178,15 @@ def extract_series_info(filename):
     # v1.4.4: 先 strip 网站名前缀 (4k2.com@, hhd800.com@ 等含 . 的域名)
     # 再做扩展名处理 — 顺序反了会截错，例如 '4k2.com@ABF-139-1 美少女'
     # 直接 rsplit('.', 1)[0] 会得到 '4k2'。
-    cleaned = strip_site_markers(filename)
+    stem = _stem_for_filename_analysis(filename)
 
-    # 去掉扩展名
-    if '.' in cleaned:
-        stem = cleaned.rsplit('.', 1)[0]
-    else:
-        stem = cleaned
+    base, sequence = _extract_series_info_from_stem(stem)
+    if base:
+        return base, sequence
 
-    # v1.4.4: 再次 strip 是无害的，但保留以便任何边界情况
-    stem = strip_site_markers(stem)
-
-    for pattern, is_alpha_seq in _SERIES_PATTERNS:
-        match = pattern.search(stem)
-        if match:
-            base_raw = match.group(1)
-            # 标准化：字母数字之间加连字符 (RBD011 -> RBD-011)
-            base_normalized = re.sub(r'([a-zA-Z]+)(\d+)', r'\1-\2', base_raw).upper()
-
-            if is_alpha_seq:
-                letter = match.group(2).lower()
-                sequence = str(ord(letter) - ord('a') + 1)
-            else:
-                sequence = match.group(2)
-
-            return base_normalized, sequence
+    candidate = analyze_unknown_filename(filename)
+    if candidate and candidate.get('usable_for_search') and candidate.get('sequence'):
+        return candidate.get('normalized_code'), candidate.get('sequence')
 
     return None, None
 
@@ -203,6 +215,137 @@ _CODE_PATTERNS = [
 ]
 
 
+def _prepare_name_for_code_extract(filename: str) -> str:
+    name = os.path.splitext(filename)[0]
+    name = strip_site_markers(name)
+    name = re.sub(r'_\[4K[}\]]', '', name)
+    return _SUFFIX_PATTERN.sub('', name)
+
+
+def _normalize_extracted_code(code: str) -> str:
+    if '-' not in code and '_' not in code:
+        code = re.sub(r'([a-zA-Z]+)(\d+)', r'\1-\2', code)
+    return code.replace('_', '-').upper()
+
+
+def _extract_code_from_prepared_name(name: str):
+    for pattern in _CODE_PATTERNS:
+        match = re.search(pattern, name, re.IGNORECASE)
+        if match:
+            return _normalize_extracted_code(match.group(1))
+    return None
+
+
+def _candidate(rule_id, filename, normalized_code, *, confidence, usable_for_search,
+               reason, sequence=None, pattern_shape=None):
+    return {
+        'rule_id': rule_id,
+        'source_name': os.path.basename(filename) if filename else filename,
+        'normalized_code': normalized_code,
+        'sequence': sequence,
+        'confidence': confidence,
+        'usable_for_search': usable_for_search,
+        'reason': reason,
+        'pattern_shape': pattern_shape or rule_id,
+    }
+
+
+def analyze_unknown_filename(filename: str):
+    """分析现有规则未覆盖的文件名，并返回可审计的候选规则。
+
+    返回值是 dict 或 None。高置信候选 (`usable_for_search=True`) 会被
+    `extract_code_from_text` / `clean_filename_for_search` 使用；低置信候选只
+    用于写入候选规则库，避免把误判带入真实移动/重命名事务。
+    """
+    if not filename:
+        return None
+
+    stem = _stem_for_filename_analysis(filename)
+    if not stem:
+        return None
+
+    standard_base, _standard_seq = _extract_series_info_from_stem(stem)
+    if standard_base:
+        return None
+    if _extract_code_from_prepared_name(_prepare_name_for_code_extract(filename)):
+        return None
+
+    compact = re.sub(r'[\[\]()【】]', ' ', stem)
+
+    fc2 = re.search(
+        r'\bFC2[-_\s]*(?:PPV[-_\s]*)?(\d{5,8})(?:[-_\s]+(\d{1,3}))?\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if fc2:
+        return _candidate(
+            'fc2_ppv',
+            filename,
+            f"FC2-PPV-{fc2.group(1)}",
+            sequence=fc2.group(2),
+            confidence=0.95,
+            usable_for_search=True,
+            reason='matched FC2/FC2-PPV numeric code',
+            pattern_shape='FC2[-_ ]PPV?[-_ ]<5-8 digits>[-_ ]<optional sequence>',
+        )
+
+    tokyo_hot = re.search(
+        r'\bTOKYO[-_\s]*HOT[-_\s]*([A-Z]\d{3,6})(?:[-_\s]+(\d{1,3}))?\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if tokyo_hot:
+        return _candidate(
+            'tokyo_hot',
+            filename,
+            f"TOKYO-HOT-{tokyo_hot.group(1).upper()}",
+            sequence=tokyo_hot.group(2),
+            confidence=0.93,
+            usable_for_search=True,
+            reason='matched TOKYO-HOT code',
+            pattern_shape='TOKYO[-_ ]HOT[-_ ]<letter+digits>[-_ ]<optional sequence>',
+        )
+
+    known_multi = re.search(
+        r'\b(1PONDO|10MUSUME|CARIB|CARIBBEANCOM|PACOPACOM)'
+        r'[-_\s]+([A-Z]?\d{4,8})[-_\s]+(\d{2,5})(?:[-_\s]+(\d{1,3}))?\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if known_multi:
+        prefix = known_multi.group(1).upper()
+        normalized = f"{prefix}-{known_multi.group(2).upper()}-{known_multi.group(3)}"
+        return _candidate(
+            'known_multi_segment',
+            filename,
+            normalized,
+            sequence=known_multi.group(4),
+            confidence=0.9,
+            usable_for_search=True,
+            reason='matched known multi-segment code family',
+            pattern_shape='<known prefix>[-_ ]<date/id digits>[-_ ]<part digits>[-_ ]<optional sequence>',
+        )
+
+    generic = re.search(
+        r'\b([A-Z][A-Z0-9]{2,12})[-_\s]+(\d{6,8})[-_\s]+(\d{2,5})\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if generic:
+        normalized = f"{generic.group(1).upper()}-{generic.group(2)}-{generic.group(3)}"
+        return _candidate(
+            'generic_multi_segment',
+            filename,
+            normalized,
+            confidence=0.72,
+            usable_for_search=False,
+            reason='possible multi-segment code, needs confirmation before auto-use',
+            pattern_shape='<alpha/alnum prefix>[-_ ]<6-8 digits>[-_ ]<2-5 digits>',
+        )
+
+    return None
+
+
 def extract_code_from_text(filename: str):
     """从文件名中提取番号。返回大写标准格式 (如 'ABF-139')，找不到返回 None。
 
@@ -219,29 +362,14 @@ def extract_code_from_text(filename: str):
     if not filename:
         return None
 
-    # 先去掉扩展名
-    name = os.path.splitext(filename)[0]
+    name = _prepare_name_for_code_extract(filename)
+    extracted = _extract_code_from_prepared_name(name)
+    if extracted:
+        return extracted
 
-    # v1.4.4: 用 strip_site_markers 替代手写的 @ 前缀清理，覆盖更全
-    name = strip_site_markers(name)
-
-    # 移除质量标记
-    name = re.sub(r'_\[4K[}\]]', '', name)
-
-    # 移除常见版本后缀 (-C, -c, -U, -u, -uc, -UC, -ch, -CH, -AI, -ai)
-    # 这样 pattern 2 才能正确处理 'ABF-139-C' → 'ABF-139'
-    name = _SUFFIX_PATTERN.sub('', name)
-
-    for pattern in _CODE_PATTERNS:
-        match = re.search(pattern, name, re.IGNORECASE)
-        if match:
-            code = match.group(1)
-            # 标准化：加连字符
-            if '-' not in code and '_' not in code:
-                code = re.sub(r'([a-zA-Z]+)(\d+)', r'\1-\2', code)
-            # 下划线 → 连字符
-            code = code.replace('_', '-')
-            return code.upper()
+    candidate = analyze_unknown_filename(filename)
+    if candidate and candidate.get('usable_for_search'):
+        return candidate.get('normalized_code')
 
     return None
 
@@ -272,6 +400,10 @@ def clean_filename_for_search(filename: str) -> str:
     extracted = extract_code_from_text(filename)
     if extracted:
         return extracted.lower()
+
+    candidate = analyze_unknown_filename(filename)
+    if candidate and not candidate.get('usable_for_search'):
+        return ''
 
     # 降级路径
     name = os.path.splitext(filename)[0]

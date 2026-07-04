@@ -31,7 +31,7 @@ def test_dry_run_does_not_move_files():
         organizer = make_organizer(folder, finish)
         organizer.dry_run_var.set(True)
         organizer.extract_content = lambda *a, **kw: (_ for _ in ()).throw(AssertionError('dry-run should not call provider'))
-        organizer._process_files_worker()
+        organizer._process_files_worker(organizer._capture_processing_request())
 
         assert (folder / 'ABF-139-1 美少女 第1話.mp4').exists()
         assert (folder / 'SONE-753.mp4').exists()

@@ -183,9 +183,9 @@ def make_organizer(folder_path, finish_path):
     obj.stop_processing = False
 
     # version / metadata（兼容 _process_files_worker 的 log）
-    obj.version = 'v1.5.0-Selenium'
-    obj.build_id = 'baseline-unified-tk9-selenium'
-    obj.build_date = '2026-07-04'
+    obj.version = 'v1.5.4'
+    obj.build_id = 'baseline-v1.5.4'
+    obj.build_date = '2026-07-05'
 
     # video_extensions（_process_files_worker 需要）
     obj.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
@@ -203,7 +203,7 @@ def make_organizer(folder_path, finish_path):
 
 def main():
     print("=" * 70)
-    print("JAV 文件整理工具 v1.5.0-Selenium — GUI 完整流程演示")
+    print("JAV 文件整理工具 v1.5.4 — GUI 完整流程演示")
     print("=" * 70)
     print()
     print("模拟场景：")
@@ -236,8 +236,7 @@ def main():
         (folder / 'SONE-753.mp4').write_bytes(b'\x00' * (512 * 1024))
 
         organizer = make_organizer(folder, finish)
-        # _process_files_worker 从 self.folder_var.get() 读路径，无参数
-        organizer._process_files_worker()
+        organizer._process_files_worker(organizer._capture_processing_request())
 
         # 在临时目录被销毁前，把 Finish 内容 dump 到永久位置
         import shutil

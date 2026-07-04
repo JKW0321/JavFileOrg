@@ -1,6 +1,7 @@
 # 🚀 快速开始指南
 
-**当前基线版本：v1.5.0-Selenium**
+**当前 Git 维护版本：v1.5.4**  
+**运行时版本：v1.5.4**
 
 ## 安装与启动
 
@@ -16,7 +17,7 @@ python3 jav_file_organizer.py
 桌面正式包：
 
 ```text
-JAVFileOrganizer-v1.5.0.app
+JAVFileOrganizer-v1.5.4.app
 ```
 
 ## 首次使用 JAVLibrary
@@ -41,8 +42,10 @@ JAVLibrary 相关持久化目录：
 
 ## 启动成功标志
 
+当前源码维护 tag 和程序启动日志统一为：
+
 ```text
-✅ JAV 文件整理工具 v1.5.0-Selenium 启动完成 | baseline-unified-tk9-selenium | 2026-07-04
+✅ JAV 文件整理工具 v1.5.4 启动完成 | baseline-v1.5.4 | 2026-07-05
 ```
 
 需要更完整说明请看 `README.md`。

@@ -31,6 +31,7 @@ from filename_utils import (
     clean_filename_for_search,
     sanitize_filename,
     extract_series_info,
+    analyze_unknown_filename,
 )
 
 
@@ -161,6 +162,41 @@ class TestCleanFilenameForSearch:
 
     def test_empty(self):
         assert clean_filename_for_search("") == ""
+
+
+class TestAdaptiveFilenameRules:
+    def test_fc2_ppv_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("FC2-PPV-1234567.mp4")
+
+        assert candidate['rule_id'] == 'fc2_ppv'
+        assert candidate['normalized_code'] == 'FC2-PPV-1234567'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("FC2-PPV-1234567.mp4") == "fc2-ppv-1234567"
+
+    def test_fc2_ppv_series_candidate(self):
+        base, seq = extract_series_info("FC2-PPV-1234567-2.mp4")
+
+        assert base == "FC2-PPV-1234567"
+        assert seq == "2"
+
+    def test_known_multi_segment_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("1pondo-010123_001.mp4")
+
+        assert candidate['rule_id'] == 'known_multi_segment'
+        assert candidate['normalized_code'] == '1PONDO-010123-001'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("1pondo-010123_001.mp4") == "1pondo-010123-001"
+
+    def test_generic_multi_segment_candidate_needs_review(self):
+        candidate = analyze_unknown_filename("STUDIOX-20260705-001.mp4")
+
+        assert candidate['rule_id'] == 'generic_multi_segment'
+        assert candidate['normalized_code'] == 'STUDIOX-20260705-001'
+        assert candidate['usable_for_search'] is False
+        assert clean_filename_for_search("STUDIOX-20260705-001.mp4") == ""
+
+    def test_standard_rule_does_not_create_candidate(self):
+        assert analyze_unknown_filename("ABF-139.mp4") is None
 
 
 # =========================================================================
@@ -329,5 +365,3 @@ class TestDetectSeriesFiles:
         ]
         groups, standalone = obj.detect_series_files(files)
         assert 'ABF-139' in groups, f"期望识别成序列组，实际 groups={groups}, standalone={standalone}"
-
-

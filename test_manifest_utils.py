@@ -44,7 +44,7 @@ def test_write_json_report_roundtrip():
 
 def test_build_run_summary_contains_core_fields():
     summary = build_run_summary(
-        version='v1.5.0-Selenium',
+        version='v1.5.4',
         website='javlibrary',
         folder='/tmp/x',
         total_files=10,
@@ -58,7 +58,7 @@ def test_build_run_summary_contains_core_fields():
         before_manifest_path='/tmp/before.json',
         after_manifest_path='/tmp/after.json',
     )
-    assert summary['version'] == 'v1.5.0-Selenium'
+    assert summary['version'] == 'v1.5.4'
     assert summary['website'] == 'javlibrary'
     assert summary['counts']['total_files'] == 10
     assert summary['counts']['success_count'] == 7

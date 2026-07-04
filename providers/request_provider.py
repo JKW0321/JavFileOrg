@@ -1,3 +1,4 @@
+import time
 from urllib.parse import quote, urljoin
 
 import requests
@@ -11,6 +12,7 @@ class RequestHtmlProvider(BaseProvider):
     title_selectors = ('title',)
     image_selectors = ('img',)
     detail_url_pattern = None
+    search_page_is_detail = False
     use_anti_crawl_session = False
     site_suffixes = ()
 
@@ -21,9 +23,14 @@ class RequestHtmlProvider(BaseProvider):
 
     def _request(self, url: str):
         session = self._get_session()
-        response = session.get(url, timeout=(5, 15))
-        response.raise_for_status()
-        return response
+        started = time.monotonic()
+        try:
+            response = session.get(url, timeout=(5, 15))
+            response.raise_for_status()
+            return response
+        finally:
+            elapsed = time.monotonic() - started
+            self.log(f'⏱️ {self.name} HTTP耗时 {elapsed:.1f}秒: {url}', 'INFO')
 
     def _clean_title(self, title: str) -> str:
         title = (title or '').strip()
@@ -79,16 +86,29 @@ class RequestHtmlProvider(BaseProvider):
                 break
         return title, image_url
 
+    def _invalid_result_reason(self, title, image_url, detail_url, referer):
+        return ''
+
+    def _should_skip_detail_for_invalid_search(self, invalid_reason, title, image_url):
+        return False
+
     def search(self, query: str) -> ProviderResult:
         if self.should_stop():
-            return ProviderResult(ok=False, provider=self.name, error_type='cancelled', message='user stopped')
+            return ProviderResult(ok=False, provider=self.name, query=query, error_type='cancelled', message='user stopped')
         search_url = self.search_url.format(query=quote(query))
         self.log(f'🔍 搜索URL: {search_url}', 'INFO')
         try:
             response = self._request(search_url)
             soup = BeautifulSoup(response.content, 'html.parser')
             if not soup or not soup.find():
-                return ProviderResult(ok=False, provider=self.name, error_type='parse-error', message='empty html')
+                return ProviderResult(
+                    ok=False,
+                    provider=self.name,
+                    query=query,
+                    referer=search_url,
+                    error_type='parse-error',
+                    message='empty html',
+                )
             title = None
             for selector in self.title_selectors:
                 try:
@@ -107,7 +127,14 @@ class RequestHtmlProvider(BaseProvider):
                 except Exception:
                     continue
             if not title or len(title.strip()) < 3:
-                return ProviderResult(ok=False, provider=self.name, error_type='not-found', message='title not found')
+                return ProviderResult(
+                    ok=False,
+                    provider=self.name,
+                    query=query,
+                    referer=search_url,
+                    error_type='not-found',
+                    message='title not found',
+                )
             image_url = None
             for selector in self.image_selectors:
                 try:
@@ -120,7 +147,22 @@ class RequestHtmlProvider(BaseProvider):
                 except Exception:
                     continue
             detail_url = self._find_detail_url(soup, search_url, query)
-            if detail_url and (title or image_url):
+            if self.search_page_is_detail and not detail_url:
+                detail_url = search_url
+            invalid_reason = self._invalid_result_reason(title, image_url, detail_url, search_url)
+            if invalid_reason and self._should_skip_detail_for_invalid_search(invalid_reason, title, image_url):
+                return ProviderResult(
+                    ok=False,
+                    title=title,
+                    image_url=image_url,
+                    provider=self.name,
+                    query=query,
+                    detail_url=detail_url,
+                    referer=search_url,
+                    error_type='invalid-result',
+                    message=invalid_reason,
+                )
+            if detail_url and detail_url != search_url and (title or image_url):
                 try:
                     upgrade_title, upgrade_image = self._fetch_detail_page(detail_url)
                     if upgrade_title and len(upgrade_title) > len(title or ''):
@@ -129,8 +171,43 @@ class RequestHtmlProvider(BaseProvider):
                         image_url = upgrade_image
                 except Exception as e:
                     self.log(f'⚠️ 详情页升级失败（保留搜索页结果）: {e}', 'WARNING')
-            return ProviderResult(ok=True, title=title, image_url=image_url, provider=self.name)
+            invalid_reason = self._invalid_result_reason(title, image_url, detail_url, search_url)
+            if invalid_reason:
+                return ProviderResult(
+                    ok=False,
+                    title=title,
+                    image_url=image_url,
+                    provider=self.name,
+                    query=query,
+                    detail_url=detail_url,
+                    referer=search_url,
+                    error_type='invalid-result',
+                    message=invalid_reason,
+                )
+            return ProviderResult(
+                ok=True,
+                title=title,
+                image_url=image_url,
+                provider=self.name,
+                query=query,
+                detail_url=detail_url,
+                referer=search_url,
+            )
         except requests.exceptions.RequestException as e:
-            return ProviderResult(ok=False, provider=self.name, error_type='network-error', message=str(e))
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                referer=search_url,
+                error_type='network-error',
+                message=str(e),
+            )
         except Exception as e:
-            return ProviderResult(ok=False, provider=self.name, error_type='provider-error', message=str(e))
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                referer=search_url,
+                error_type='provider-error',
+                message=str(e),
+            )
