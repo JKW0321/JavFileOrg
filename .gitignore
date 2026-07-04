@@ -1,0 +1,35 @@
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Virtual environments
+.venv/
+.venv*/
+
+# PyInstaller build outputs
+build/
+build*/
+dist/
+dist*/
+*.spec
+
+# macOS bundles / metadata
+*.app/
+.DS_Store
+
+# Local screenshots / temp outputs
+*.png
+*.jpg
+*.jpeg
+*.log
+
+# Local config / cookies / browser profile
+config.json
+config_v*.json
+javlibrary_cookies.json
+*.pkl
+
+# Local test artifacts
+htmlcov/
+.coverage

@@ -1,0 +1,1864 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+JAV File Organizer — 基线统一版本
+
+说明：
+- 这个文件历史上混入了多个阶段的版本号（v1.0 / v1.1 / v1.4.0 / v1.4.3 / v1.9.x）
+- 从本次起，界面、启动信息、状态栏、构建信息统一使用同一组常量
+- 历史注释保留用于追溯修复来源，但“当前版本”只认下方 BASELINE 常量
+"""
+
+
+# 网站 Logo 图标 (Base64 编码)
+JAVBUS_ICON = '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'
+JAVHOO_ICON = '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'
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext
+import os
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+import time
+import re
+from datetime import datetime
+import json
+import shutil
+
+# 立即导入所有必需模块，避免v1.8的导入问题
+try:
+    import requests
+    from bs4 import BeautifulSoup
+    from urllib.parse import urljoin, quote, urlparse
+    import random
+    from PIL import Image, ImageTk
+    print("✅ 所有模块导入成功")
+except ImportError as e:
+    print(f"❌ 模块导入失败: {e}")
+    print("请安装依赖: pip install requests beautifulsoup4 pillow lxml")
+    sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# 基线版本：界面 / 日志 / 启动信息 / 构建信息统一从这里取值
+# ---------------------------------------------------------------------------
+BASELINE_VERSION = "v1.5.0-Selenium"
+BASELINE_BUILD_DATE = "2026-07-04"
+BASELINE_BUILD_ID = "baseline-unified-tk9-selenium"
+APP_TITLE = f"JAV 文件整理工具 {BASELINE_VERSION}"
+STATUS_READY = f"就绪 - {BASELINE_VERSION}"
+CONFIG_FILENAME = "config.json"
+
+
+class OptimizedAntiCrawlHandler:
+    """优化的反爬处理器 - 修复版"""
+    
+    def __init__(self, log_callback=None):
+        self.session = requests.Session()
+        self.log_callback = log_callback  # v1.4.3: 接收日志回调函数
+        
+        # v1.4.3: 初始化Selenium JAVLibrary
+        self.selenium_javlibrary = None
+        try:
+            from selenium_javlibrary import SeleniumJAVLibrary
+            # v1.4.6: 如果已经有保存的 cookies，则优先无头；否则第一次可见窗口方便人工过 Cloudflare。
+            cookies_file = os.path.expanduser('~/.jav_organizer/javlibrary_selenium_cookies.pkl')
+            has_cookies = os.path.exists(cookies_file)
+            self.selenium_javlibrary = SeleniumJAVLibrary(log_callback=self.log, headless=has_cookies)
+            if has_cookies:
+                self.log("✅ Selenium JAVLibrary已初始化（检测到已保存 Cookie，使用无头模式）", "INFO")
+            else:
+                self.log("✅ Selenium JAVLibrary已初始化（首次使用，显示浏览器窗口）", "INFO")
+        except ImportError:
+            self.log("⚠️ Selenium未安装，JAVLibrary将无法使用", "WARNING")
+            self.log("💡 安装: pip install selenium", "INFO")
+        
+        self.setup_session()
+        
+        # 交通法规题目答案库（智能匹配）
+        self.traffic_answers = {
+            # 基于关键词的智能匹配
+            '超车': 'C',
+            '变更车道': 'A', 
+            '转弯': 'A',
+            '直行': 'D',
+            '停车': 'D',
+            '限速': 'C',
+            '标志': 'B',
+            '信号灯': 'A',
+            '行人': 'A',
+            '安全': 'A'
+        }
+    
+    def setup_session(self):
+        """设置Session配置"""
+        # 设置请求头
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        })
+        
+        # v1.4.3: 优化连接池配置
+        from urllib3.util.retry import Retry
+        
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+        )
+        
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=20,
+            pool_maxsize=50,
+            max_retries=retry_strategy,
+            pool_block=False
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+    
+    def solve_verification(self, url):
+        """解决验证问题"""
+        try:
+            print("🔍 正在访问JavBus...")
+            response = self.anti_crawl.session.get(url, timeout=(5, 15))
+            
+            if '驾驶证考试' in response.text or '交通法规' in response.text:
+                print("🧠 检测到智能验证，开始自动解答...")
+                return self._solve_traffic_quiz(response.text)
+            else:
+                print("✅ 无需验证，直接访问")
+                return True
+                
+        except Exception as e:
+            print(f"❌ 验证过程出错: {e}")
+            return False
+    
+    def _solve_traffic_quiz(self, html_content):
+        """解决交通法规测验"""
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 查找所有题目
+            questions = soup.find_all('div', class_='question')
+            if not questions:
+                # 尝试其他可能的选择器
+                questions = soup.find_all('p', string=lambda text: text and '？' in text)
+            
+            answers = {}
+            
+            for i, question in enumerate(questions[:5]):  # 最多处理5道题
+                question_text = question.get_text(strip=True)
+                print(f"📝 题目 {i+1}: {question_text[:50]}...")
+                
+                # 智能分析答案
+                answer = self._analyze_question(question_text)
+                answers[f'q{i+1}'] = answer
+                print(f"🎯 选择答案: {answer}")
+            
+            # 提交答案
+            return self._submit_answers(answers)
+            
+        except Exception as e:
+            print(f"❌ 解析题目失败: {e}")
+            return False
+    
+    def _analyze_question(self, question_text):
+        """智能分析题目答案"""
+        # 策略1: 关键词匹配
+        for keyword, answer in self.traffic_answers.items():
+            if keyword in question_text:
+                return answer
+        
+        # 策略2: 长度分析（较长的选项通常是正确答案）
+        if len(question_text) > 30:
+            return 'C'
+        
+        # 策略3: 数字分析
+        if any(num in question_text for num in ['18', '70', '100', '50']):
+            return 'A'
+        
+        # 策略4: 安全原则（选择最安全的选项）
+        if any(word in question_text for word in ['安全', '减速', '停车', '让行']):
+            return 'A'
+        
+        # 策略5: 默认选择（基于统计学）
+        return random.choice(['A', 'B', 'C', 'D'])
+    
+    def _submit_answers(self, answers):
+        """提交答案"""
+        try:
+            # 构造提交数据
+            submit_data = answers.copy()
+            submit_data['submit'] = '提交答案'
+            
+            # 提交答案
+            response = self.anti_crawl.session.post(
+                'https://www.javbus.com/quiz/submit',
+                data=submit_data,
+                timeout=(5, 15)
+            )
+            
+            if response.status_code == 200:
+                print("✅ 验证通过！")
+                return True
+            else:
+                print(f"❌ 提交失败: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ 提交答案失败: {e}")
+            return False
+    
+    def get_page_content(self, url):
+        """获取页面内容"""
+        try:
+            # 先尝试解决验证
+            if not self.solve_verification(url):
+                print("❌ 验证失败")
+                return None
+            
+            # 获取实际页面内容
+            response = self.anti_crawl.session.get(url, timeout=(5, 15))
+            response.raise_for_status()
+            
+            return response.text
+            
+        except Exception as e:
+            print(f"❌ 获取页面失败: {e}")
+            return None
+    
+    def download_image(self, image_url, save_path):
+        """下载图片"""
+        try:
+            # 设置正确的请求头
+            headers = {
+                'Referer': 'https://www.javbus.com/',
+                'User-Agent': self.session.headers['User-Agent']
+            }
+            
+            # 流式下载
+            response = self.anti_crawl.session.get(image_url, headers=headers, stream=True, timeout=(5, 15))
+            response.raise_for_status()
+            
+            # 保存图片
+            with open(save_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ 下载图片失败: {e}")
+            return False
+    
+    def log(self, message, level="INFO"):
+        """日志输出（反爬虫处理器）。"""
+        if self.log_callback:
+            # 如果有回调函数，使用回调
+            self.log_callback(message, level)
+        else:
+            # 否则直接打印
+            icons = {
+                "INFO": "📝",
+                "SUCCESS": "✅",
+                "WARNING": "⚠️",
+                "ERROR": "❌"
+            }
+            icon = icons.get(level, "📝")
+            print(f"{icon} {message}")
+
+
+class JavFileOrganizer:
+    """JAV File Organizer 基线版本实现。"""
+    
+    def __init__(self):
+        self.version = BASELINE_VERSION
+        self.build_date = BASELINE_BUILD_DATE
+        self.build_id = BASELINE_BUILD_ID
+        self.window = None
+        self.session = None
+        self.anti_crawl = None  # v1.9.3: 延迟初始化，等待 GUI 创建后
+        self.is_processing = False
+        self.stop_processing = False
+        
+        # v1.1 优化: 线程安全和性能优化相关属性
+        self.metadata_cache = {}  # 元数据缓存
+        self.cache_expire_time = 3600  # 缓存过期时间（秒）
+        self.image_download_queue = []  # 图片下载队列
+        
+        # v1.3 原子操作处理器（在定义 download_image 和 sanitize_filename 方法后初始化）
+        self.atomic_processor = None
+        
+        # 网站配置 - v1.9 修复版
+        self.website_configs = {
+            'javhoo': {
+                'name': 'JavHoo - 稳定快速',
+                'search_url': 'https://www.javhoo.com/search/{query}',   # v1.4.4: 改 /en/{query} → /search/{query}（实测新 URL）
+                'detail_url_pattern': 'https://www.javhoo.com/{code_lower}',  # v1.4.4 新增：搜索后跳详情页拿高清封面
+                'title_selectors': [
+                    'article h2 a',  # v1.4.4: 搜索结果里的标题链接（最准）
+                    'h1',             # 详情页标题
+                    'title',          # 兜底
+                ],
+                'image_selectors': [
+                    'article img[data-src]',      # 搜索结果封面（懒加载）
+                    'article .thumbnail img',
+                    'img[src*="pics.javhoo.net"]',
+                    'a.dt-single-image img',
+                    '.movie-poster img',
+                ],
+                'requires_verification': False
+            },
+            'javbus': {
+                'name': 'JavBus - 内容丰富，智能验证',
+                'search_url': 'https://www.javbus.com/{query}',
+                'title_selectors': [
+                    'title',
+                    'h3',
+                    '.movie-title',
+                    '.title'
+                ],
+                'image_selectors': [
+                    '.bigImage img',
+                    'img[title]',
+                    '.movie-poster img'
+                ],
+                'requires_verification': True
+            },
+            'javlibrary': {
+                'name': 'JAVLibrary - 数据完整，高清封面',
+                'search_url': 'https://www.javlibrary.com/en/vl_searchbyid.php?keyword={query}',
+                'title_selectors': [
+                    'title',
+                    'h3.post-title',
+                    '.post-title'
+                ],
+                'image_selectors': [
+                    '#video_jacket_img',
+                    'img#video_jacket_img',
+                    '.video-cover img'
+                ],
+                'requires_verification': True,
+                'use_special_handler': True  # v1.4: 使用特殊处理器
+            }
+        }
+        
+        # 支持的视频格式
+        self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
+        
+        # 初始化GUI
+        self.init_gui()
+        
+        # 初始化网络会话
+        self.init_session()
+    
+    def init_session(self):
+        """初始化网络会话。"""
+        self.session = requests.Session()
+        
+        # 设置请求头
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        })
+        
+        # v1.4.3: 优化连接池配置，提高稳定性和速度
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        
+        # 配置重试策略 - 优化版：减少重试次数，快速失败
+        retry_strategy = Retry(
+            total=2,  # 减少重试次数：快速失败
+            backoff_factor=0.5,  # 减少退避时间
+            status_forcelist=[429, 500, 502, 503, 504],  # 需要重试的状态码
+            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]  # 允许重试的方法
+        )
+        
+        adapter = HTTPAdapter(
+            pool_connections=10,  # 连接池大小
+            pool_maxsize=20,  # 最大连接数
+            max_retries=retry_strategy,
+            pool_block=False  # 不阻塞
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+        
+        # v1.3: 初始化原子操作处理器
+        from atomic_processor_v11 import AtomicProcessor
+        self.atomic_processor = AtomicProcessor(self.download_image, self.sanitize_filename)
+    
+    def init_gui(self):
+        """初始化 GUI 界面。"""
+        self.window = tk.Tk()
+        self.window.title(APP_TITLE)
+        self.window.geometry("1000x700")
+        self.window.resizable(True, True)
+        
+        # 创建主框架 - 双列布局
+        main_frame = ttk.Frame(self.window)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # 左列：配置和设置
+        left_frame = ttk.Frame(main_frame)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        
+        # 右列：控制和日志
+        right_frame = ttk.Frame(main_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        
+        # === 左列内容 ===
+        
+        # 文件夹选择
+        folder_frame = ttk.LabelFrame(left_frame, text="📁 文件夹选择", padding=10)
+        folder_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        folder_input_frame = ttk.Frame(folder_frame)
+        folder_input_frame.pack(fill=tk.X)
+        
+        self.folder_var = tk.StringVar()
+        folder_entry = ttk.Entry(folder_input_frame, textvariable=self.folder_var, font=("Arial", 10))
+        folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        folder_btn = ttk.Button(folder_input_frame, text="选择文件夹", command=self.select_folder)
+        folder_btn.pack(side=tk.RIGHT)
+        
+        # 网站选择
+        website_frame = ttk.LabelFrame(left_frame, text="🌐 网站选择", padding=10)
+        website_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.website_var = tk.StringVar(value='javbus')
+        
+        # 加载网站 logo
+        try:
+            import base64
+            from PIL import Image, ImageTk
+            from io import BytesIO
+            
+            # JavBus logo
+            javbus_data = base64.b64decode(JAVBUS_ICON)
+            javbus_img = Image.open(BytesIO(javbus_data))
+            self.javbus_photo = ImageTk.PhotoImage(javbus_img)
+            
+            # JavHoo logo
+            javhoo_data = base64.b64decode(JAVHOO_ICON)
+            javhoo_img = Image.open(BytesIO(javhoo_data))
+            self.javhoo_photo = ImageTk.PhotoImage(javhoo_img)
+            
+            # 创建单选按钮 - 使用 Grid 布局对齐 logo
+            row = 0
+            for key, config in self.website_configs.items():
+                # 单选按钮
+                rb = ttk.Radiobutton(website_frame, text=config['name'], 
+                                   variable=self.website_var, value=key)
+                rb.grid(row=row, column=0, sticky=tk.W, pady=2)
+                
+                # Logo 标签(固定在第 1 列)
+                if key == 'javhoo':
+                    logo_label = ttk.Label(website_frame, image=self.javhoo_photo)
+                    logo_label.grid(row=row, column=1, sticky=tk.W, padx=(10, 0))
+                elif key == 'javbus':
+                    logo_label = ttk.Label(website_frame, image=self.javbus_photo)
+                    logo_label.grid(row=row, column=1, sticky=tk.W, padx=(10, 0))
+                
+                row += 1
+        except Exception as e:
+            print(f"⚠️ 无法加载网站图标: {e}")
+            # 降级方案:只显示文字
+            for key, config in self.website_configs.items():
+                rb = ttk.Radiobutton(website_frame, text=config['name'], 
+                                   variable=self.website_var, value=key)
+                rb.pack(anchor=tk.W, pady=2)
+        
+        # 网站配置
+        config_frame = ttk.LabelFrame(left_frame, text="⚙️ 网站配置", padding=10)
+        config_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # 搜索URL
+        ttk.Label(config_frame, text="搜索URL:").pack(anchor=tk.W)
+        self.search_url_var = tk.StringVar(value="https://www.javhoo.com/search/{query}")   # v1.4.4
+        search_url_entry = ttk.Entry(config_frame, textvariable=self.search_url_var, font=("Arial", 9))
+        search_url_entry.pack(fill=tk.X, pady=(2, 5))
+        
+        # 文字选择器
+        ttk.Label(config_frame, text="文字选择器:").pack(anchor=tk.W)
+        self.text_selector_var = tk.StringVar(value="title")
+        text_selector_entry = ttk.Entry(config_frame, textvariable=self.text_selector_var, font=("Arial", 9))
+        text_selector_entry.pack(fill=tk.X, pady=(2, 5))
+        
+        # 图片选择器
+        ttk.Label(config_frame, text="图片选择器:").pack(anchor=tk.W)
+        self.image_selector_var = tk.StringVar(value="a.dt-single-image img")
+        image_selector_entry = ttk.Entry(config_frame, textvariable=self.image_selector_var, font=("Arial", 9))
+        image_selector_entry.pack(fill=tk.X, pady=(2, 10))
+        
+        # 配置按钮
+        config_btn_frame = ttk.Frame(config_frame)
+        config_btn_frame.pack(anchor=tk.CENTER)
+        
+        save_config_btn = ttk.Button(config_btn_frame, text="💾 保存配置", command=self.save_config)
+        save_config_btn.pack(side=tk.LEFT, padx=5)
+        
+        reset_config_btn = ttk.Button(config_btn_frame, text="🔄 重置默认", command=self.reset_config)
+        reset_config_btn.pack(side=tk.LEFT, padx=5)
+        
+        process_frame = ttk.LabelFrame(left_frame, text="🔧 处理设置", padding=10)
+        process_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # 文件名长度设置
+        length_frame = ttk.Frame(process_frame)
+        length_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Label(length_frame, text="最大文件名长度:").pack(side=tk.LEFT)
+        self.max_filename_length_var = tk.StringVar(value="80")
+        length_entry = ttk.Entry(length_frame, textvariable=self.max_filename_length_var, width=10)
+        length_entry.pack(side=tk.LEFT, padx=(5, 5))
+        ttk.Label(length_frame, text="字符 (留空=不限制)").pack(side=tk.LEFT)
+        
+        # 演员名保留选项
+        self.preserve_actor_var = tk.BooleanVar(value=True)
+        preserve_cb = ttk.Checkbutton(process_frame, text="✅ 超出长度时优先保留演员名称", 
+                                    variable=self.preserve_actor_var)
+        preserve_cb.pack(anchor=tk.W, pady=(0, 5))
+        
+        # v1.9 简化：只用输入框控制批量处理
+        batch_frame = ttk.Frame(process_frame)
+        batch_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        ttk.Label(batch_frame, text="批量处理数量:").pack(side=tk.LEFT)
+        self.batch_count_var = tk.StringVar()
+        batch_entry = ttk.Entry(batch_frame, textvariable=self.batch_count_var, width=10)
+        batch_entry.pack(side=tk.LEFT, padx=(5, 5))
+        ttk.Label(batch_frame, text="个文件 (留空=处理全部)").pack(side=tk.LEFT)
+        
+        # === 右列内容 ===
+        
+        # 操作控制
+        control_frame = ttk.LabelFrame(right_frame, text="🎮 操作控制", padding=10)
+        control_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # 控制按钮 - 一行平均分布
+        btn_frame = ttk.Frame(control_frame)
+        btn_frame.pack(fill=tk.X)
+        
+        self.test_btn = ttk.Button(btn_frame, text="📡 测试连接", command=self.test_connection)
+        self.test_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        
+        self.start_btn = ttk.Button(btn_frame, text="🚀 开始处理", command=self.start_processing)
+        self.start_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        
+        self.stop_btn = ttk.Button(btn_frame, text="⏹️ 停止处理", command=self.stop_processing_func, state=tk.DISABLED)
+        self.stop_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        
+        clear_log_btn = ttk.Button(btn_frame, text="🗑️ 清空日志", command=self.clear_log)
+        clear_log_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        
+        # 进度显示
+        progress_frame = ttk.LabelFrame(right_frame, text="📊 处理进度", padding=10)
+        progress_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # 进度信息区域
+        progress_info_frame = ttk.Frame(progress_frame)
+        progress_info_frame.pack(fill=tk.X, pady=(0, 8))
+        
+        # 左侧：状态文本
+        self.progress_var = tk.StringVar(value="🟢 就绪")
+        progress_label = ttk.Label(progress_info_frame, textvariable=self.progress_var, 
+                                   font=("Arial", 11, "bold"), foreground="#2E7D32")
+        progress_label.pack(side=tk.LEFT)
+        
+        # 右侧：百分比显示
+        self.progress_percent_var = tk.StringVar(value="0%")
+        percent_label = ttk.Label(progress_info_frame, textvariable=self.progress_percent_var,
+                                 font=("Arial", 11, "bold"), foreground="#1976D2")
+        percent_label.pack(side=tk.RIGHT)
+        
+        # 进度条容器（添加边框效果）
+        progress_container = ttk.Frame(progress_frame, relief=tk.SUNKEN, borderwidth=1)
+        progress_container.pack(fill=tk.X)
+        
+        # 自定义进度条样式
+        style = ttk.Style()
+        style.theme_use('clam')  # 使用 clam 主题以支持更多自定义
+        style.configure("Custom.Horizontal.TProgressbar",
+                       troughcolor='#E0E0E0',      # 背景色（浅灰）
+                       background='#4CAF50',        # 进度条颜色（绿色）
+                       bordercolor='#BDBDBD',       # 边框颜色
+                       lightcolor='#66BB6A',        # 高光色
+                       darkcolor='#388E3C',         # 阴影色
+                       thickness=25)                # 进度条高度
+        
+        self.progress_bar = ttk.Progressbar(progress_container, 
+                                           mode='determinate',
+                                           style="Custom.Horizontal.TProgressbar")
+        self.progress_bar.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        
+        # 处理速度显示
+        self.speed_var = tk.StringVar(value="")
+        speed_label = ttk.Label(progress_frame, textvariable=self.speed_var,
+                               font=("Arial", 9), foreground="#757575")
+        speed_label.pack(anchor=tk.W, pady=(5, 0))
+        
+        # 处理日志
+        log_frame = ttk.LabelFrame(right_frame, text="📝 处理日志", padding=10)
+        log_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=20, font=("Consolas", 9))
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+        
+        # 状态栏
+        self.status_var = tk.StringVar(value=STATUS_READY)
+        status_bar = ttk.Label(self.window, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # 绑定网站选择变化事件
+        # v1.4.5: Tk 9 / Python 3.12+ 下旧式 trace('w', ...) 可能报错：
+        #   bad option "variable": must be add, info, or remove
+        # 优先用 trace_add，旧版 Tk 再降级到 trace。
+        try:
+            self.website_var.trace_add('write', lambda *args: self.on_website_change())
+        except AttributeError:
+            self.website_var.trace('w', self.on_website_change)
+        self.on_website_change()  # 初始化配置
+        
+        # v1.4.3: 初始化反爬虫处理器（GUI 创建后）
+        self.anti_crawl = OptimizedAntiCrawlHandler(log_callback=self.log)
+        
+        # 启动日志
+        self.log(f"✅ {APP_TITLE} 启动完成 | {self.build_id} | {self.build_date}", "SUCCESS")
+    def log(self, message, level="INFO"):
+        """记录日志（线程安全）。"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        # 根据级别添加图标
+        icons = {
+            "INFO": "📝",
+            "SUCCESS": "✅", 
+            "WARNING": "⚠️",
+            "ERROR": "❌",
+            "PROCESSING": "🔄"
+        }
+        
+        icon = icons.get(level, "📝")
+        log_entry = f"[{timestamp}] {icon} {message}\n"
+        
+        # 在GUI线程中更新日志（实时显示）
+        def update_log():
+            self.log_text.insert(tk.END, log_entry)
+            
+            # 根据级别设置颜色
+            if level == "ERROR":
+                start_line = self.log_text.index(tk.END + "-2l")
+                end_line = self.log_text.index(tk.END + "-1l")
+                self.log_text.tag_add("error", start_line, end_line)
+                self.log_text.tag_config("error", foreground="red")
+            elif level == "SUCCESS":
+                start_line = self.log_text.index(tk.END + "-2l")
+                end_line = self.log_text.index(tk.END + "-1l")
+                self.log_text.tag_add("success", start_line, end_line)
+                self.log_text.tag_config("success", foreground="green")
+            
+            self.log_text.see(tk.END)
+            self.window.update_idletasks()
+        
+        # 使用 after 确保在主线程中执行
+        if threading.current_thread() == threading.main_thread():
+            update_log()
+        else:
+            self.window.after(0, update_log)
+    
+    def on_website_change(self, *args):
+        """网站选择变化时更新配置。"""
+        website = self.website_var.get()
+        config = self.website_configs.get(website, {})
+        
+        # 更新配置字段
+        self.search_url_var.set(config.get('search_url', ''))
+        
+        # v1.9 修复：使用多个选择器中的第一个
+        title_selectors = config.get('title_selectors', ['title'])
+        self.text_selector_var.set(title_selectors[0])
+        
+        image_selectors = config.get('image_selectors', ['img'])
+        self.image_selector_var.set(image_selectors[0])
+        
+        self.log(f"🌐 切换到网站: {config.get('name', website)}", "INFO")
+    
+    def select_folder(self):
+        """选择文件夹。"""
+        folder = filedialog.askdirectory(title="选择包含视频文件的文件夹")
+        if folder:
+            self.folder_var.set(folder)
+            
+            self.analyze_folder(folder)
+    
+    def analyze_folder(self, folder_path):
+        """分析文件夹内容"""
+        try:
+            all_files = os.listdir(folder_path)
+            video_files = []
+            total_size = 0
+            
+            for file in all_files:
+                file_path = os.path.join(folder_path, file)
+                if os.path.isfile(file_path):
+                    _, ext = os.path.splitext(file.lower())
+                    if ext in self.video_extensions:
+                        file_size = os.path.getsize(file_path)
+                        video_files.append((file, file_size))
+                        total_size += file_size
+            
+            # 显示详细统计
+            self.log(f"📁 已选择文件夹: {folder_path}", "SUCCESS")
+            self.log(f"📊 文件夹分析结果:", "INFO")
+            self.log(f"📝   📁 总文件数: {len(all_files)}", "INFO")
+            self.log(f"📝   🎬 视频文件数: {len(video_files)}", "INFO")
+            self.log(f"📝   💾 总大小: {self.format_size(total_size)}", "INFO")
+            
+            # 显示前几个视频文件
+            if video_files:
+                self.log(f"📝 视频文件列表:", "INFO")
+                for i, (filename, size) in enumerate(video_files[:10], 1):
+                    size_str = self.format_size(size)
+                    self.log(f"📝    {i}. {filename} ({size_str})", "INFO")
+                
+                if len(video_files) > 10:
+                    self.log(f"📝    ... 还有 {len(video_files) - 10} 个文件", "INFO")
+            else:
+                self.log("⚠️ 未找到支持的视频文件", "WARNING")
+                self.log(f"📝 支持的格式: {', '.join(self.video_extensions)}", "INFO")
+            
+        except Exception as e:
+            self.log(f"❌ 分析文件夹失败: {e}", "ERROR")
+    
+    def format_size(self, size_bytes):
+        """格式化文件大小"""
+        if size_bytes == 0:
+            return "0 B"
+        
+        size_names = ["B", "KB", "MB", "GB", "TB"]
+        i = 0
+        while size_bytes >= 1024 and i < len(size_names) - 1:
+            size_bytes /= 1024.0
+            i += 1
+        
+        return f"{size_bytes:.1f} {size_names[i]}"
+    
+    def extract_code_from_title(self, filename):
+        """从完整标题中提取番号
+
+        thin wrapper around filename_utils.extract_code_from_text, 仅加日志。
+
+        支持格式 (与 v1.3.2 一致):
+        - "ABF-139 美少女.mp4"          -> "ABF-139"
+        - "ABF139 标题.mp4"             -> "ABF-139"
+        - "[ABF-139] 标题.mp4"          -> "ABF-139"
+        - "(ABF-139) 标题.mp4"          -> "ABF-139"
+        - "标题 ABF-139.mp4"            -> "ABF-139"
+        - "4k2.com@ABF-139 标题.mp4"    -> "ABF-139"  (v1.4.4: 走统一的 strip_site_markers)
+        - "ABF-139-1 标题.mp4"          -> "ABF-139-1"
+        - "ABF-139a 标题.mp4"           -> "ABF-139A"
+        """
+        from filename_utils import extract_code_from_text
+        code = extract_code_from_text(filename)
+        if code:
+            self.log(f"📝 从标题提取番号: {filename} -> {code}", "INFO")
+        return code
+
+    def clean_filename_for_search(self, filename):
+        """清理文件名用于搜索 - v1.4.4 改用共享纯函数
+
+        thin wrapper around filename_utils.clean_filename_for_search(), 仅加日志。
+        """
+        from filename_utils import clean_filename_for_search as _clean
+        result = _clean(filename)
+        self.log(f"📝 文件名处理: {filename} -> {result}", "INFO")
+        return result
+    
+    def sanitize_filename(self, filename):
+        """清理文件名中的非法字符 - v1.4.4 改用共享纯函数
+
+        thin wrapper around filename_utils.sanitize_filename().
+        保留为实例方法的原因：AtomicProcessor 需要传 self.sanitize_filename 作为回调。
+
+        行为变更 (v1.4.4)：
+        - 下载站前缀 (4k2.com@xxx) 现在能被正确清理
+        - [javbus] / (javbus) / javbus - xxx 等格式现在也能清理
+        """
+        from filename_utils import sanitize_filename as _sanitize
+        return _sanitize(filename)
+    
+
+    def extract_series_info(self, filename):
+        """v1.4.4: thin wrapper around filename_utils.extract_series_info
+
+        修复：原版 4 个正则都用 ^...$，要求 stem 完全是 ABC-123-N 形式。
+        实际文件名常常是 ABF-139-1 美少女 第1話.mp4 这种带完整标题的，
+        原版一个都识别不到，导致每集都走单文件路径、各自下载封面。
+
+        新版：去掉 ^$ 锚点，用 re.search 匹配 stem 中任意位置的 ABC-123-N。
+        """
+        from filename_utils import extract_series_info as _extract
+        return _extract(filename)
+    
+    def detect_series_files(self, file_list):
+        """检测并分组序列文件。"""
+        series_groups = {}
+        standalone_files = []
+        
+        for file_path in file_list:
+            filename = os.path.basename(file_path)
+            name_without_ext = os.path.splitext(filename)[0]
+            base_code, sequence = self.extract_series_info(name_without_ext)
+            
+            if base_code:
+                if base_code not in series_groups:
+                    series_groups[base_code] = []
+                series_groups[base_code].append((file_path, sequence))
+            else:
+                standalone_files.append(file_path)
+        
+        for base_code in series_groups:
+            series_groups[base_code].sort(key=lambda x: int(x[1]))
+        
+        return series_groups, standalone_files
+    
+    def process_series_group(self, base_code, files, folder_path, finish_folder, website_config, max_length):
+        """处理一个序列文件组。"""
+        self.log(f"📦 处理序列文件组: {base_code} (共{len(files)}个文件)", "INFO")
+        
+        title, image_url = self.extract_content(base_code, website_config)
+        
+        if not title:
+            self.log(f"⚠️ 序列文件组 {base_code} 提取失败，跳过", "WARNING")
+            return 0, False
+        
+        self.log(f"✅ 序列组提取成功 - 标题: {title[:100]}...", "SUCCESS")
+        
+        if max_length:
+            first_file = os.path.basename(files[0][0])
+            title = self.smart_truncate_filename(title, first_file, max_length)
+        
+        # v1.3: 先下载图片到临时目录
+        temp_image_path = None
+        image_success = False
+        
+        if image_url:
+            try:
+                image_name = f"{title}.jpg"
+                success, temp_image_path, message = self.atomic_processor.download_image_to_temp(image_url, image_name)
+                if success:
+                    self.log(f"✅ 序列组图片下载成功（临时）", "SUCCESS")
+                    image_success = True
+                else:
+                    self.log(f"⚠️ 序列组图片下载失败: {message}", "WARNING")
+                    # 图片下载失败，跳过整个序列组
+                    return 0, False
+            except Exception as e:
+                self.log(f"⚠️ 序列组图片下载失败: {e}", "WARNING")
+                return 0, False
+        
+        # 图片下载成功后，处理所有序列文件
+        success_count = 0
+        for file_path, sequence in files:
+            # v1.3: 每个文件处理前检查中断
+            if self.stop_processing:
+                self.log("⏹️ 用户中断，停止序列组处理", "WARNING")
+                break
+            
+            try:
+                filename = os.path.basename(file_path)
+                file_ext = os.path.splitext(filename)[1]
+                new_filename = self.sanitize_filename(f"{title}-{sequence}{file_ext}")
+                
+                new_path = os.path.join(finish_folder, new_filename)
+                counter = 1
+                base_new_path = new_path
+                while os.path.exists(new_path):
+                    name_part = f"{title}-{sequence}_{counter}"
+                    new_filename = self.sanitize_filename(name_part + file_ext)
+                    new_path = os.path.join(finish_folder, new_filename)
+                    counter += 1
+                
+                # 优先使用 os.rename
+                try:
+                    os.rename(file_path, new_path)
+                except OSError:
+                    shutil.move(file_path, new_path)
+                self.log(f"✅ 序列文件: {filename} -> {new_filename}", "SUCCESS")
+                success_count += 1
+            except Exception as e:
+                self.log(f"❌ 序列文件失败: {filename} - {e}", "ERROR")
+        
+        # v1.3: 所有文件移动成功后，移动图片到最终位置
+        if temp_image_path and temp_image_path.exists() and success_count > 0:
+            try:
+                final_image_name = self.sanitize_filename(f"{title}.jpg")
+                final_image_path = os.path.join(finish_folder, final_image_name)
+                
+                # 检查图片同名冲突
+                if os.path.exists(final_image_path):
+                    counter = 1
+                    base_image_path = final_image_path
+                    while os.path.exists(final_image_path):
+                        name, ext = os.path.splitext(base_image_path)
+                        final_image_path = f"{name}_{counter}{ext}"
+                        counter += 1
+                
+                # 移动图片
+                shutil.move(str(temp_image_path), final_image_path)
+                self.log(f"✅ 序列组图片移动成功: {os.path.basename(final_image_path)}", "SUCCESS")
+            except Exception as e:
+                self.log(f"⚠️ 序列组图片移动失败: {e}", "WARNING")
+                image_success = False
+        
+        return success_count, image_success
+
+    def smart_truncate_filename(self, title, original_filename, max_length):
+        """智能截断文件名"""
+        if not max_length or max_length <= 0:
+            return title
+        
+        original_name = os.path.splitext(original_filename)[0]
+        min_length = max(len(original_name), 10)  # 至少保留原始文件名长度
+        
+        if max_length < min_length:
+            self.log(f"⚠️ 设置长度 {max_length} 小于原始文件名长度 {len(original_name)},调整为 {min_length}", "WARNING")
+            max_length = min_length
+        
+        if len(title) <= max_length:
+            return title
+        
+        # 尝试保留演员名称(通常在最后)
+        if self.preserve_actor_var.get():
+            # 查找可能的演员名称(日文名字模式)
+            actor_pattern = r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]{2,6}$'
+            actor_match = re.search(actor_pattern, title)
+            
+            if actor_match:
+                actor_name = actor_match.group()
+                # 计算可用长度: 总长度 - 原始文件名 - 演员名 - 2个空格
+                available_length = max_length - len(original_name) - len(actor_name) - 2
+                
+                if available_length > 5:  # 至少保留5个字符的中间内容
+                    # 从标题中提取中间部分
+                    title_middle = title[len(original_name):title.rfind(actor_name)].strip()
+                    
+                    # 确保中间部分不超过可用长度
+                    if len(title_middle) > available_length:
+                        title_middle = title_middle[:available_length-3] + "..."
+                    
+                    # 组合结果并确保总长度不超过限制
+                    result = f"{original_name} {title_middle} {actor_name}".strip()
+                    
+                    # 最终检查:如果还是超长,强制截断
+                    if len(result) > max_length:
+                        result = result[:max_length-3] + "..."
+                    
+                    self.log(f"📝 智能截断: 保留演员名 '{actor_name}'", "INFO")
+                    return result
+        
+        # 简单截断,但确保包含原始文件名
+        if len(title) > max_length:
+            # 确保原始文件名在开头
+            if not title.startswith(original_name):
+                title = f"{original_name} {title}"
+            
+            if len(title) > max_length:
+                title = title[:max_length-3] + "..."
+        
+        return title
+    
+    def extract_content(self, search_query, website_config):
+        """提取网站内容（支持 JavHoo / JavBus / JAVLibrary）。"""
+        try:
+            # v1.3: 检查中断标志
+            if self.stop_processing:
+                self.log("⏹️ 用户中断，取消网络请求", "WARNING")
+                return None, None
+            
+            # v1.4: JAVLibrary特殊处理
+            if website_config.get('use_special_handler'):
+                return self._extract_javlibrary(search_query, website_config)
+            
+            # 构建搜索URL
+            search_url = website_config['search_url'].format(query=quote(search_query))
+            self.log(f"🔍 搜索URL: {search_url}", "INFO")
+            
+            # v1.9.7: 根据网站选择 session
+            # v1.4.3: 优化 JavHoo 的超时和重试策略
+            # v1.9.7: 根据网站选择 session
+            # JavBus 需要反爬虫 session, JavHoo 使用普通 session
+            if 'javbus' in search_url.lower():
+                response = self.anti_crawl.session.get(search_url, timeout=(5, 15))
+                self.log(f"🔧 使用反爬虫 session (JavBus)", "INFO")
+            else:
+                response = self.session.get(search_url, timeout=(5, 15))
+                self.log(f"🔧 使用普通 session (JavHoo)", "INFO")
+            response.raise_for_status()
+            
+            # 解析HTML
+            soup = BeautifulSoup(response.content, 'html.parser')
+
+            # v1.9.6 调试: 检查页面内容
+            self.log(f"📊 响应状态码: {response.status_code}", "INFO")
+            self.log(f"📊 响应内容长度: {len(response.content)} 字节", "INFO")
+
+            # 检查是否成功解析
+            if not soup or not soup.find():
+                self.log(f"❌ HTML 解析失败", "ERROR")
+                return None, None
+
+            # v1.4.4: 如果配置了 detail_url_pattern，先找搜索结果的详情页链接
+            # 拿到详情页后直接对详情页跑一遍提取（拿到高清封面 + 更准标题）
+            detail_url = None
+            detail_pattern = website_config.get('detail_url_pattern')
+            if detail_pattern:
+                detail_url = self._find_detail_url(soup, search_url, search_query, detail_pattern)
+                if detail_url:
+                    self.log(f"🔗 找到详情页: {detail_url}", "INFO")
+            
+            # v1.9.1 新增：检测验证页面
+            page_title = soup.find('title')
+            if page_title:
+                page_title_text = page_title.get_text().strip().lower()
+                # 检测常见的验证页面标题
+                verification_keywords = [
+                    'age verification',
+                    'verify',
+                    'verification',
+                    '年龄验证',
+                    '验证',
+                    'cloudflare',
+                    'checking your browser',
+                    'just a moment'
+                ]
+                
+                for keyword in verification_keywords:
+                    if keyword in page_title_text:
+                        self.log(f"⚠️ 检测到验证页面: {page_title_text}", "WARNING")
+                        self.log(f"💡 提示: 网站需要人工验证，请尝试:", "INFO")
+                        self.log(f"   1. 在浏览器中打开网站完成验证", "INFO")
+                        self.log(f"   2. 切换到其他网站", "INFO")
+                        self.log(f"   3. 稍后重试", "INFO")
+                        return None, None
+            
+            # v1.9 修复：尝试多个标题选择器
+            title = None
+            title_selectors = website_config.get('title_selectors', ['title'])
+            
+            for selector in title_selectors:
+                try:
+                    if selector == 'title':
+                        # 使用页面标题
+                        title_element = soup.find('title')
+                        if title_element:
+                            title = title_element.get_text().strip()
+                            # 清理标题（移除网站名称等）
+                            # 移除常见的网站后缀
+                            for suffix in ['-JAVHOO', '-JavHoo', ' - JAVHOO', ' - JavHoo', '-javhoo']:
+                                if title.endswith(suffix):
+                                    title = title[:-len(suffix)].strip()
+                            # 如果还有 " - " 分隔符,只在最后一个位置分割
+                            if ' - ' in title:
+                                parts = title.rsplit(' - ', 1)
+                                # 如果最后部分看起来像网站名,则移除
+                                if len(parts) == 2 and len(parts[1]) < 20:
+                                    title = parts[0].strip()
+                            if title:
+                                self.log(f"✅ 使用页面标题提取成功", "SUCCESS")
+                                break
+                    else:
+                        # 使用CSS选择器
+                        title_element = soup.select_one(selector)
+                        if title_element:
+                            title = title_element.get_text().strip()
+                            if title:
+                                self.log(f"✅ 使用选择器 '{selector}' 提取成功", "SUCCESS")
+                                break
+                except Exception as e:
+                    self.log(f"⚠️ 选择器 '{selector}' 失败: {e}", "WARNING")
+                    continue
+            
+            if not title:
+                self.log(f"⚠️ 未找到标题元素，尝试的选择器: {title_selectors}", "WARNING")
+                # v1.9.6 调试: 输出页面标题用于诊断
+                page_title_elem = soup.find('title')
+                if page_title_elem:
+                    self.log(f"📊 页面标题内容: {page_title_elem.get_text()[:100]}", "INFO")
+                else:
+                    self.log(f"❌ 页面没有 <title> 标签", "ERROR")
+                return None, None
+            
+            # v1.9.1 新增：验证标题有效性
+            title_lower = title.lower()
+            invalid_keywords = [
+                'age verification',
+                'verify',
+                'verification',
+                '年龄验证',
+                '验证',
+                'cloudflare',
+                'checking',
+                'just a moment',
+                '404',
+                'not found',
+                'error'
+            ]
+            
+            for keyword in invalid_keywords:
+                if keyword in title_lower:
+                    self.log(f"⚠️ 提取到无效标题: {title}", "WARNING")
+                    self.log(f"💡 可能原因: 验证页面、404错误或网站限制", "INFO")
+                    return None, None
+            
+            # 检查标题长度（太短可能是错误）
+            if len(title.strip()) < 3:
+                self.log(f"⚠️ 标题过短: {title}", "WARNING")
+                return None, None
+            
+            # 提取图片URL
+            image_url = None
+            image_selectors = website_config.get('image_selectors', ['img'])
+            
+            for selector in image_selectors:
+                try:
+                    img_element = soup.select_one(selector)
+                    if img_element:
+                        image_url = img_element.get('src') or img_element.get('data-src')
+                        if image_url:
+                            # 转换为绝对URL
+                            image_url = urljoin(search_url, image_url)
+                            self.log(f"✅ 图片URL: {image_url}", "SUCCESS")
+                            break
+                except Exception as e:
+                    continue
+            
+            if not image_url:
+                self.log(f"⚠️ 未找到图片元素", "WARNING")
+
+            # v1.4.4: 拿到详情页 URL 时，尝试升级到详情页拿更准的标题 + 高清封面
+            # 任何一步失败都保留当前结果（不破坏已有数据）
+            if detail_url and (title or image_url):
+                try:
+                    upgrade_title, upgrade_image = self._fetch_detail_page(
+                        detail_url, search_url, website_config
+                    )
+                    # 详情页拿到的标题更精准时优先用
+                    if upgrade_title and len(upgrade_title) > len(title or ''):
+                        title = upgrade_title
+                        self.log(f"⬆️ 升级标题: {title}", "SUCCESS")
+                    # 详情页封面优先（更高清）
+                    if upgrade_image:
+                        image_url = upgrade_image
+                        self.log(f"⬆️ 升级封面: {image_url}", "SUCCESS")
+                except Exception as e:
+                    self.log(f"⚠️ 详情页升级失败（保留搜索页结果）: {e}", "WARNING")
+
+            return title, image_url
+            
+        except requests.exceptions.RequestException as e:
+            self.log(f"❌ 网络请求失败: {e}", "ERROR")
+            return None, None
+        except Exception as e:
+            self.log(f"❌ 搜索提取失败: {e}", "ERROR")
+            return None, None
+    
+    def _extract_javlibrary(self, search_query, website_config):
+        """
+        v1.4.3: JAVLibrary使用Selenium抓取
+        """
+        # 使用Selenium
+        if self.anti_crawl and self.anti_crawl.selenium_javlibrary:
+            self.log("🌐 使用Selenium访问JAVLibrary", "INFO")
+            try:
+                result = self.anti_crawl.selenium_javlibrary.search_by_id(search_query)
+                if result:
+                    self.log("✅ Selenium获取数据成功", "SUCCESS")
+                    return result.get('title', ''), result.get('cover_url', '')
+                else:
+                    self.log("❌ Selenium未能获取数据", "ERROR")
+                    return None, None
+            except Exception as e:
+                self.log(f"❌ Selenium失败: {e}", "ERROR")
+                return None, None
+        else:
+            self.log("❌ Selenium未初始化，无法访问JAVLibrary", "ERROR")
+            self.log("💡 请安装: pip install selenium", "INFO")
+            return None, None
+
+    # ------------------------------------------------------------------
+    # v1.4.4: JavHoo 等支持详情页升级的辅助方法
+    # ------------------------------------------------------------------
+
+    def _find_detail_url(self, soup, search_url, search_query, detail_pattern):
+        """从搜索结果页里挑出第一个匹配 search_query 的详情页链接。
+
+        策略：从 <article> 里找 <h2><a> 或第一个 <a>，href 转绝对 URL，
+        再用 detail_pattern（包含 {code_lower} 占位符）验证 URL 结构。
+        """
+        try:
+            code_lower = search_query.lower()
+            expected_url = detail_pattern.format(code_lower=code_lower)
+
+            # 候选 1：搜索结果里的第一个 article 链接
+            candidates = []
+            for a in soup.select('article h2 a, article .thumbnail a, article a'):
+                href = a.get('href', '')
+                if not href or href.startswith('#'):
+                    continue
+                abs_url = urljoin(search_url, href)
+                if abs_url not in candidates:
+                    candidates.append(abs_url)
+                if len(candidates) >= 3:
+                    break
+
+            # 候选 2：用 detail_pattern 直接构造（兜底）
+            if expected_url and expected_url not in candidates:
+                candidates.append(expected_url)
+
+            for url in candidates:
+                # 验证：URL 应该跟搜索词相关（code 小写形式出现在 URL 里）
+                if code_lower.replace('-', '') in url.lower().replace('-', '').replace('/', ''):
+                    return url
+
+            # 没有匹配的，兜底返回第一个候选
+            return candidates[0] if candidates else None
+        except Exception as e:
+            self.log(f"⚠️ 解析详情页 URL 失败: {e}", "WARNING")
+            return None
+
+    def _fetch_detail_page(self, detail_url, search_url, website_config):
+        """访问详情页，提取更精准的标题和高清封面。
+
+        返回: (title, image_url)，任一为 None 表示没拿到。
+        任何异常向外抛，由调用方负责兜底。
+        """
+        # 选 session
+        if 'javbus' in detail_url.lower():
+            response = self.anti_crawl.session.get(detail_url, timeout=(5, 10))
+        else:
+            response = self.session.get(detail_url, timeout=(5, 10))
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+        if not soup or not soup.find():
+            return None, None
+
+        # 标题：优先 h1
+        title = None
+        h1 = soup.find('h1')
+        if h1:
+            title = h1.get_text().strip()
+        if not title:
+            # 兜底：<title> 标签去掉网站后缀
+            t = soup.find('title')
+            if t:
+                title = t.get_text().strip()
+                for suf in ['-JAVHOO', '-JavHoo', ' - JAVHOO', ' - JavHoo', '-javhoo']:
+                    if title.endswith(suf):
+                        title = title[:-len(suf)].strip()
+
+        # 封面：找 pics.javhoo.net 域名的图（通常是高清）
+        image_url = None
+        for img in soup.find_all('img'):
+            src = img.get('data-src') or img.get('src') or ''
+            if 'pics.javhoo.net' in src and src.lower().endswith(('.jpg', '.jpeg', '.png')):
+                # 跳过 logo
+                if 'logo' in src.lower():
+                    continue
+                image_url = urljoin(detail_url, src)
+                break
+
+        # 兜底：任何一个看起来像封面的 img
+        if not image_url:
+            for img in soup.find_all('img'):
+                src = img.get('data-src') or img.get('src') or ''
+                if src and not src.startswith('data:') and 'logo' not in src.lower():
+                    image_url = urljoin(detail_url, src)
+                    break
+
+        return title, image_url
+    
+    def download_image(self, image_url, save_path, max_retries=3):
+        """下载图片：带重试、超时和完整性检查。"""
+        import time
+        
+        for attempt in range(max_retries):
+            try:
+                # v1.3: 检查中断标志
+                if self.stop_processing:
+                    return False
+                
+                # 设置正确的请求头
+                headers = {
+                    'Referer': 'https://www.javbus.com/',
+                    'User-Agent': self.session.headers['User-Agent'],
+                    'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive'
+                }
+                
+                # v1.4.3: 增加超时时间，使用更大的 chunk
+                response = self.anti_crawl.session.get(
+                    image_url, 
+                    headers=headers, 
+                    timeout=(10, 60),  # (connect timeout, read timeout)
+                    stream=True
+                )
+                response.raise_for_status()
+                
+                # 流式下载，使用更大的 chunk 提高速度
+                with open(save_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=65536):  # 64KB chunks
+                        if chunk:
+                            f.write(chunk)
+                
+                # 验证文件完整性
+                if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
+                    self.log(f"✅ 图片下载成功: {os.path.basename(save_path)}", "SUCCESS")
+                    return True
+                else:
+                    raise Exception("下载的文件为空")
+                
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    # 指数退避：1秒、2秒、4秒
+                    wait_time = 2 ** attempt
+                    self.log(f"⚠️ 图片下载失败 (尝试 {attempt + 1}/{max_retries}): {e}", "WARNING")
+                    self.log(f"🔄 {wait_time}秒后重试...", "INFO")
+                    time.sleep(wait_time)
+                    # 清理不完整的文件
+                    if os.path.exists(save_path):
+                        try:
+                            os.remove(save_path)
+                        except:
+                            pass
+                else:
+                    self.log(f"❌ 图片下载失败 (已重试 {max_retries} 次): {e}", "ERROR")
+                    return False
+        
+        return False
+    
+
+    def download_image_batch(self, download_tasks):
+        """批量下载图片 - 使用线程池"""
+        if not download_tasks:
+            return 0, 0
+        
+        success_count = 0
+        failed_count = 0
+        
+        # 使用线程池并发下载，限制5个并发
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            # 提交所有下载任务
+            future_to_task = {
+                executor.submit(self.download_image, url, path): (url, path)
+                for url, path in download_tasks
+            }
+            
+            # 等待完成
+            for future in as_completed(future_to_task):
+                url, path = future_to_task[future]
+                try:
+                    if future.result():
+                        success_count += 1
+                    else:
+                        failed_count += 1
+                except Exception as e:
+                    self.log(f"❌ 图片下载异常: {e}", "ERROR")
+                    failed_count += 1
+        
+        return success_count, failed_count
+
+    def _process_files_worker(self):
+        """后台处理线程工作函数。"""
+        try:
+            # 设置处理状态
+            self.is_processing = True
+            self.stop_processing = False
+            self.log("🚀 开始处理任务...", "INFO")
+            
+            folder_path = self.folder_var.get()
+            if not folder_path or not os.path.exists(folder_path):
+                self.log("❌ 请先选择有效的文件夹", "ERROR")
+                return
+            
+            # 获取网站配置
+            website = self.website_var.get()
+            website_config = self.website_configs.get(website, {})
+            
+            # 更新配置
+            website_config['search_url'] = self.search_url_var.get()
+            website_config['title_selectors'] = [self.text_selector_var.get()]
+            website_config['image_selectors'] = [self.image_selector_var.get()]
+            
+            self.log(f"📝 配置信息:", "INFO")
+            self.log(f"   网站: {website_config.get('name', website)}", "INFO")
+            self.log(f"   搜索URL: {website_config['search_url']}", "INFO")
+            # 扫描视频文件
+            all_files = os.listdir(folder_path)
+            video_files = []
+            
+            for file in all_files:
+                file_path = os.path.join(folder_path, file)
+                if os.path.isfile(file_path):
+                    _, ext = os.path.splitext(file.lower())
+                    if ext in self.video_extensions:
+                        video_files.append(file)
+            
+            if not video_files:
+                self.log("❌ 未找到支持的视频文件", "ERROR")
+                return
+            
+            batch_count_str = self.batch_count_var.get().strip()
+            if batch_count_str:
+                try:
+                    batch_count = int(batch_count_str)
+                    if batch_count > 0:
+                        video_files = video_files[:batch_count]
+                        self.log(f"📝 批量处理: 限制处理 {len(video_files)} 个文件", "INFO")
+                except ValueError:
+                    self.log("⚠️ 批量处理数量格式错误，将处理全部文件", "WARNING")
+            
+            total_files = len(video_files)
+            
+            # 创建输出文件夹
+            finish_folder = os.path.join(folder_path, "Finish")
+            if not os.path.exists(finish_folder):
+                os.makedirs(finish_folder)
+                self.log(f"✅ 📁 创建输出文件夹: {finish_folder}", "SUCCESS")
+            
+            # 检查磁盘空间
+            try:
+                stat = shutil.disk_usage(finish_folder)
+                free_gb = stat.free / (1024**3)
+                if free_gb < 1.0:  # 少于 1GB 可用空间
+                    self.log(f"⚠️ 磁盘空间不足: 仅剩 {free_gb:.2f} GB", "WARNING")
+                    if free_gb < 0.1:  # 少于 100MB
+                        self.log(f"❌ 磁盘空间严重不足，停止处理", "ERROR")
+                        return
+                else:
+                    self.log(f"✅ 磁盘可用空间: {free_gb:.2f} GB", "SUCCESS")
+            except Exception as e:
+                self.log(f"⚠️ 磁盘空间检查失败: {e}", "WARNING")
+            
+            # 开始处理
+            self.log(f"🔄 🚀 开始处理 {total_files} 个文件", "PROCESSING")
+            self.log(f"📝 🌐 使用网站: {website_config.get('name', website)}", "INFO")
+            
+            # 统计变量
+            success_count = 0
+            failed_count = 0
+            image_success_count = 0
+            image_failed_count = 0
+            start_time = time.time()
+            
+            # 获取文件名长度设置
+            max_length_str = self.max_filename_length_var.get().strip()
+            max_length = None
+            if max_length_str:
+                try:
+                    max_length = int(max_length_str)
+                    self.log(f"📝 文件名长度限制: {max_length} 字符", "INFO")
+                except ValueError:
+                    self.log("⚠️ 文件名长度格式错误，将使用完整长度", "WARNING")
+            
+            # v1.9.2: 检测序列文件
+            video_file_paths = [os.path.join(folder_path, f) for f in video_files]
+            series_groups, standalone_files = self.detect_series_files(video_file_paths)
+            
+            if series_groups:
+                self.log(f"📦 检测到 {len(series_groups)} 个序列文件组", "INFO")
+                for base_code, files in series_groups.items():
+                    self.log(f"   - {base_code}: {len(files)} 个文件", "INFO")
+            if standalone_files:
+                self.log(f"📄 检测到 {len(standalone_files)} 个独立文件", "INFO")
+            
+            processed_count = 0
+            
+            # 处理序列文件组
+            for base_code, files in series_groups.items():
+                if self.stop_processing:
+                    self.log("⏹️ 用户停止处理", "WARNING")
+                    break
+                
+                processed_count += len(files)
+                progress = (processed_count / total_files) * 100
+                self.progress_bar['value'] = progress
+                self.progress_var.set(f"🔄 处理中: {processed_count}/{total_files}")
+                self.progress_percent_var.set(f"{progress:.1f}%")
+                
+                # 计算处理速度
+                elapsed = time.time() - start_time
+                if elapsed > 0:
+                    speed = processed_count / elapsed
+                    remaining = (total_files - processed_count) / speed if speed > 0 else 0
+                    self.speed_var.set(f"⚡ 速度: {speed:.1f} 文件/秒 | ⏱️ 预计剩余: {remaining:.0f} 秒")
+                
+                self.window.update()
+                
+                # 处理序列组
+                group_success, group_image_success = self.process_series_group(
+                    base_code, files, folder_path, finish_folder, website_config, max_length
+                )
+                
+                success_count += group_success
+                failed_count += (len(files) - group_success)
+                
+                if group_image_success:
+                    image_success_count += 1
+                else:
+                    image_failed_count += 1
+                
+                # 短暂延迟 - 优化：减少到 0.3 秒
+                time.sleep(0.3)
+            
+            # 处理独立文件
+            for file_path in standalone_files:
+                if self.stop_processing:
+                    self.log("⏹️ 用户停止处理", "WARNING")
+                    break
+                
+                processed_count += 1
+                progress = (processed_count / total_files) * 100
+                self.progress_bar['value'] = progress
+                self.progress_var.set(f"🔄 处理中: {processed_count}/{total_files}")
+                self.progress_percent_var.set(f"{progress:.1f}%")
+                
+                # 计算处理速度
+                elapsed = time.time() - start_time
+                if elapsed > 0:
+                    speed = processed_count / elapsed
+                    remaining = (total_files - processed_count) / speed if speed > 0 else 0
+                    self.speed_var.set(f"⚡ 速度: {speed:.1f} 文件/秒 | ⏱️ 预计剩余: {remaining:.0f} 秒")
+                
+                self.window.update()
+                
+                filename = os.path.basename(file_path)
+                self.log(f"🔄 处理独立文件: {filename}", "PROCESSING")
+                
+                try:
+                    # v1.9 改进：智能文件名清理
+                    search_query = self.clean_filename_for_search(filename)
+                    self.log(f"🔍 搜索关键词: {search_query}", "INFO")
+                    
+                    # 提取内容
+                    title, image_url = self.extract_content(search_query, website_config)
+                    
+                    if not title:
+                        self.log(f"⚠️ 未找到标题信息，跳过文件: {filename}", "WARNING")
+                        failed_count += 1
+                        continue
+                    
+                    self.log(f"✅ 提取成功 - 标题: {title[:100]}...", "SUCCESS")
+                    
+                    if max_length:
+                        title = self.smart_truncate_filename(title, filename, max_length)
+                    
+                    # 生成新文件名
+                    file_ext = os.path.splitext(filename)[1]
+                    new_filename = f"{title}{file_ext}"
+                    
+                    # v1.9.2 增强：使用完善的文件名清理函数
+                    new_filename = self.sanitize_filename(new_filename)
+                    
+                    # v1.3: 使用原子操作处理文件
+                    atomic_success, result_info, message = self.atomic_processor.process_file_atomic(
+                        file_path, new_filename, image_url, finish_folder
+                    )
+                    
+                    if atomic_success:
+                        success_count += 1
+                        new_path = result_info.get('video_path')
+                        self.log(f"✅ 视频处理成功: {os.path.basename(new_path)}", "SUCCESS")
+                        
+                        if result_info.get('image_downloaded'):
+                            image_success_count += 1
+                            image_path = result_info.get('image_path')
+                            self.log(f"✅ 图片下载成功: {os.path.basename(image_path)}", "SUCCESS")
+                        else:
+                            image_failed_count += 1
+                            if image_url:
+                                self.log(f"⚠️ 图片下载失败或跳过", "WARNING")
+                    else:
+                        failed_count += 1
+                        self.log(f"❌ 处理失败: {message}", "ERROR")
+                    
+                except Exception as e:
+                    self.log(f"❌ 处理文件失败: {filename} - {e}", "ERROR")
+                    failed_count += 1
+                
+                # 智能延迟：根据处理时间动态调整 - 优化：减少延迟
+                elapsed_per_file = time.time() - start_time
+                avg_time = elapsed_per_file / (success_count + failed_count + 1)
+                if avg_time < 0.3:
+                    time.sleep(0.3)  # 处理快时延迟0.3秒避免请求过快
+            
+            # v1.3: 原子操作已经即时下载图片，不需要批量下载
+            # 清理下载队列（如果有残留）
+            if self.image_download_queue:
+                self.log(f"⚠️ 清理下载队列: {len(self.image_download_queue)} 个任务", "WARNING")
+                self.image_download_queue.clear()
+            
+            # 刷新剩余日志
+            # 日志已实时更新
+            
+            # 处理完成统计
+            end_time = time.time()
+            total_time = end_time - start_time
+            avg_time = total_time / total_files if total_files > 0 else 0
+            success_rate = (success_count / total_files * 100) if total_files > 0 else 0
+            
+            self.log(f"✅ 🎉 处理完成！", "SUCCESS")
+            self.log(f"📝 📊 最终统计:", "INFO")
+            self.log(f"📝   📁 总文件数: {total_files}", "INFO")
+            self.log(f"📝   ✅ 成功处理: {success_count}", "INFO")
+            self.log(f"📝   ❌ 处理失败: {failed_count}", "INFO")
+            self.log(f"📝   🖼️ 图片成功: {image_success_count}", "INFO")
+            self.log(f"📝   🖼️ 图片失败: {image_failed_count}", "INFO")
+            self.log(f"📝   ⏱️ 总用时: {total_time:.1f} 秒", "INFO")
+            self.log(f"📝   📈 平均处理时间: {avg_time:.1f} 秒/文件", "INFO")
+            self.log(f"📝   📊 成功率: {success_rate:.1f}%", "INFO")
+            
+            # 更新进度
+            self.progress_bar['value'] = 100
+            self.progress_var.set("✅ 处理完成！")
+            self.progress_percent_var.set("100%")
+            self.speed_var.set(f"✨ 总用时: {total_time:.1f} 秒 | 平均: {avg_time:.1f} 秒/文件")
+            
+            # 显示完成消息 - 优化：区分成功和失败
+            if failed_count == 0:
+                # 全部成功
+                messagebox.showinfo("处理完成", 
+                                  f"🎉 所有文件处理完成！\n\n"
+                                  f"📊 统计结果:\n"
+                                  f"✅ 成功: {success_count}/{total_files}\n"
+                                  f"🖼️ 图片: {image_success_count}/{total_files}\n"
+                                  f"⏱️ 用时: {total_time:.1f} 秒\n"
+                                  f"📊 成功率: {success_rate:.1f}%")
+            else:
+                # 有失败
+                messagebox.showwarning("处理完成（有错误）", 
+                                     f"⚠️ 处理完成，但有部分文件失败\n\n"
+                                     f"📊 统计结果:\n"
+                                     f"✅ 成功: {success_count}/{total_files}\n"
+                                     f"❌ 失败: {failed_count}/{total_files}\n"
+                                     f"🖼️ 图片: {image_success_count}/{total_files}\n"
+                                     f"⏱️ 用时: {total_time:.1f} 秒\n"
+                                     f"📊 成功率: {success_rate:.1f}%\n\n"
+                                     f"🔍 请查看日志了解失败原因")
+            
+        except Exception as e:
+            self.log(f"❌ 处理过程中出现错误: {e}", "ERROR")
+        finally:
+            # 重置处理状态
+            self.is_processing = False
+            self.stop_processing = False
+            self.start_btn.config(state=tk.NORMAL)
+            self.stop_btn.config(state=tk.DISABLED)
+            self.status_var.set(STATUS_READY)
+    
+    def test_connection(self):
+        """测试当前网站连接。"""
+        website = self.website_var.get()
+        website_config = self.website_configs.get(website, {})
+        
+        # 更新配置
+        website_config['search_url'] = self.search_url_var.get()
+        website_config['title_selectors'] = [self.text_selector_var.get()]
+        
+        self.log(f"🧪 测试连接到: {website_config.get('name', website)}", "INFO")
+        
+        # 使用测试查询（v1.4.5: 按站点选择已知更稳的番号）
+        test_query_map = {
+            'javhoo': 'SONE-753',
+            'javbus': 'SONE-753',
+            'javlibrary': 'SSIS-001',
+        }
+        test_query = test_query_map.get(website, 'SONE-753')
+        
+        def test_thread():
+            title = None
+            image_url = None
+            error_msg = None
+            
+            try:
+                title, image_url = self.extract_content(test_query, website_config)
+            except Exception as e:
+                error_msg = str(e)
+                self.log(f"❌ extract_content 异常: {error_msg}", "ERROR")
+            
+            # v1.9.8: 改进错误处理 - 在主线程中显示消息框
+            if title:
+                self.log(f"✅ 连接测试成功！", "SUCCESS")
+                self.log(f"📝 测试标题: {title[:100]}...", "INFO")
+                if image_url:
+                    self.log(f"📝 测试图片: {image_url}", "INFO")
+                
+                self.log("🔧 测试文件名处理功能:", "INFO")
+                
+                test_filenames = [
+                    "rbk-115c.avi",
+                    "START321U.mp4", 
+                    "rbk111.mkv",
+                    "DASS-663.avi"
+                ]
+                
+                for test_file in test_filenames:
+                    cleaned = self.clean_filename_for_search(test_file)
+                    self.log(f"📝   {test_file} -> {cleaned}", "INFO")
+                
+                # 使用 after 在主线程中显示消息框
+                self.window.after(0, lambda: messagebox.showinfo("测试成功", 
+                    f"✅ 连接测试成功！\n\n网站: {website_config.get('name', website)}\n测试查询: {test_query}\n提取标题: {title[:50]}..."))
+            elif error_msg:
+                self.log(f"❌ 连接测试异常: {error_msg}", "ERROR")
+                self.window.after(0, lambda: messagebox.showerror("测试异常", 
+                    f"❌ 连接测试异常\n\n错误: {error_msg}"))
+            else:
+                # v1.4.5: JAVLibrary 常见失败是 Cloudflare 验证页，不是网站配置错。
+                if website == 'javlibrary':
+                    self.log(f"⚠️ JAVLibrary 测试未提取到内容，通常是 Cloudflare 验证未完成", "WARNING")
+                    self.window.after(0, lambda: messagebox.showwarning(
+                        "JAVLibrary 需要验证",
+                        "⚠️ JAVLibrary 测试未提取到内容。\n\n"
+                        "这通常不是网站配置错误，而是 Cloudflare 安全验证尚未完成。\n\n"
+                        "请检查是否弹出了 Chrome 浏览器：\n"
+                        "1. 在浏览器中完成 Cloudflare 验证\n"
+                        "2. 验证通过后，再点一次“测试连接”\n"
+                        "3. 如果没有弹出浏览器，请告诉我“JAVLibrary 不弹浏览器”"
+                    ))
+                else:
+                    self.log(f"❌ 连接测试失败：未能提取内容", "ERROR")
+                    self.window.after(0, lambda: messagebox.showerror("测试失败", 
+                        "❌ 连接测试失败\n\n请检查网站配置和网络连接"))
+        
+        # 在后台线程中执行测试
+        threading.Thread(target=test_thread, daemon=True).start()
+    
+    def start_processing(self):
+        """开始处理。"""
+        if self.is_processing:
+            self.log("⚠️ 正在处理中，请等待完成", "WARNING")
+            return
+        
+        self.log("🎬 准备开始处理...", "INFO")
+        self.start_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL)
+        self.status_var.set("处理中...")
+        
+        # 直接在后台线程中调用 _process_files_worker
+        threading.Thread(target=self._process_files_worker, daemon=True).start()
+    
+    def stop_processing_func(self):
+        """停止处理"""
+        self.stop_processing = True
+        self.log("⏹️ 正在停止处理...", "WARNING")
+    
+    def save_config(self):
+        """保存配置"""
+        try:
+            config = {
+                'search_url': self.search_url_var.get(),
+                'text_selector': self.text_selector_var.get(),
+                'image_selector': self.image_selector_var.get(),
+                'max_filename_length': self.max_filename_length_var.get(),
+                'preserve_actor': self.preserve_actor_var.get(),
+                'batch_count': self.batch_count_var.get()
+            }
+            
+            config_path = os.path.join(os.path.dirname(__file__), CONFIG_FILENAME)
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            
+            self.log("💾 配置保存成功", "SUCCESS")
+            messagebox.showinfo("保存成功", "✅ 配置已保存")
+            
+        except Exception as e:
+            self.log(f"❌ 配置保存失败: {e}", "ERROR")
+            messagebox.showerror("保存失败", f"❌ 配置保存失败\n\n错误: {e}")
+    
+    def reset_config(self):
+        """重置配置"""
+        website = self.website_var.get()
+        config = self.website_configs.get(website, {})
+        
+        self.search_url_var.set(config.get('search_url', ''))
+        title_selectors = config.get('title_selectors', ['title'])
+        self.text_selector_var.set(title_selectors[0])
+        image_selectors = config.get('image_selectors', ['img'])
+        self.image_selector_var.set(image_selectors[0])
+        
+        self.max_filename_length_var.set('')
+        self.preserve_actor_var.set(True)
+        self.batch_count_var.set('')
+        
+        self.log("🔄 配置已重置为默认值", "INFO")
+        messagebox.showinfo("重置完成", "✅ 配置已重置为默认值")
+    
+    def clear_log(self):
+        """清空日志"""
+        self.log_text.delete(1.0, tk.END)
+        self.log("🗑️ 日志已清空", "INFO")
+    
+    def run(self):
+        """运行程序"""
+        # v1.4.3: 清理Selenium浏览器
+        def on_closing():
+            if hasattr(self, "anti_crawl") and self.anti_crawl and \
+               hasattr(self.anti_crawl, "selenium_javlibrary") and self.anti_crawl.selenium_javlibrary:
+                self.log("🔒 正在关闭Selenium浏览器...", "INFO")
+                self.anti_crawl.selenium_javlibrary.stop_browser()
+            self.window.destroy()
+
+        self.window.protocol("WM_DELETE_WINDOW", on_closing)
+
+        try:
+            self.window.mainloop()
+        except KeyboardInterrupt:
+            self.log("👋 程序被用户中断", "INFO")
+        except Exception as e:
+            self.log(f"❌ 程序运行异常: {e}", "ERROR")
+def main():
+    """主函数"""
+    print(f"🚀 启动 {APP_TITLE}")
+    print("=" * 50)
+    print(f"🏷️ 基线版本: {BASELINE_VERSION}")
+    print(f"🧱 构建标识: {BASELINE_BUILD_ID}")
+    print(f"📅 构建日期: {BASELINE_BUILD_DATE}")
+    print("🆕 当前基线能力:")
+    print("  ✅ 支持JAVLibrary数据源")
+    print("  ✅ 高清封面图片")
+    print("  ✅ 多数据源备用 (JavHoo/JavBus/JAVLibrary)")
+    print("  ✅ 从完整标题提取番号")
+    print("  ✅ 网站前缀和质量标记移除")
+    print("  ✅ 增强序列文件识别")
+    print()
+    
+    try:
+        app = JavFileOrganizer()
+        app.run()
+    except Exception as e:
+        print(f"❌ 程序启动失败: {e}")
+        # v1.4.5: windowed / PyInstaller 环境没有 stdin，input() 会 EOFError
+        try:
+            if sys.stdin and sys.stdin.isatty():
+                input("按回车键退出...")
+        except Exception:
+            pass
+
+if __name__ == "__main__":
+    main()
+
