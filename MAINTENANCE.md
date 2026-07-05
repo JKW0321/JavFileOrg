@@ -2,14 +2,14 @@
 
 ## Current State
 
-- Git maintenance version: `v1.5.4`
-- Runtime version: `v1.5.4`
+- Git maintenance version: `v1.5.5`
+- Runtime version: `v1.5.5`
 - Main branch: `main`
 - Remote: `origin`
 - Default non-network regression: `python3 run_baseline_tests.py`
 - Architecture principles: `ARCHITECTURE_PRINCIPLES.md`
 
-The visible app version and Git tag are now aligned at `v1.5.4`; the runtime version should remain a plain semantic version without suffixes.
+The visible app version and Git tag are now aligned at `v1.5.5`; the runtime version should remain a plain semantic version without suffixes.
 
 ## Before Changing Code
 
@@ -67,5 +67,6 @@ For a new macOS app build:
 
 1. Decide the new visible runtime version.
 2. Update `BASELINE_VERSION`, `BASELINE_BUILD_ID`, and docs together.
-3. Verify GUI launch and the default regression.
-4. Record the app bundle name in `DELIVERY.md`.
+3. Run `./build_release.sh` from the repository root.
+4. Verify GUI launch and the default regression.
+5. Record the app bundle name in `DELIVERY.md`.

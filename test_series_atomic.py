@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """Atomic series transaction tests."""
 import tempfile
+import errno
 from pathlib import Path
 
 from PIL import Image
@@ -71,6 +72,58 @@ def test_process_file_atomic_fsyncs_committed_outputs():
         assert ok is True, message
         assert 'SONE-753 TITLE.mp4' in p.synced
         assert 'SONE-753 TITLE.jpg' in p.synced
+
+
+def test_move_video_cross_filesystem_commits_from_target_temp_file():
+    class CrossDeviceProcessor(AtomicProcessor):
+        def _rename_video(self, source_path, target_path):
+            raise OSError(errno.EXDEV, 'cross-device link')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / 'src'
+        out = root / 'Finish'
+        src.mkdir()
+        out.mkdir()
+        f1 = src / 'SONE-753.mp4'
+        target = out / 'SONE-753 TITLE.mp4'
+        f1.write_bytes(b'a' * 1024 * 32)
+        p = CrossDeviceProcessor(_dummy_download, _sanitize)
+
+        p._move_video(str(f1), str(target))
+
+        assert not f1.exists()
+        assert target.read_bytes() == b'a' * 1024 * 32
+        assert not list(out.glob('*.jfo-tmp'))
+
+
+def test_recover_pending_transaction_removes_duplicate_target_and_keeps_source():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / 'src'
+        out = root / 'Finish'
+        src.mkdir()
+        out.mkdir()
+        source = src / 'SONE-753.mp4'
+        target = out / 'SONE-753 TITLE.mp4'
+        source.write_bytes(b'a' * 1024 * 32)
+        target.write_bytes(b'a' * 1024 * 32)
+        p = AtomicProcessor(_dummy_download, _sanitize)
+        journal_path = p._transaction_journal_path(str(source), str(target))
+        p._write_transaction_journal(journal_path, {
+            'status': 'target-committed',
+            'source_path': str(source),
+            'target_path': str(target),
+            'temp_path': None,
+            'source_size': source.stat().st_size,
+        })
+
+        actions = p.recover_pending_transactions(str(out))
+
+        assert actions == ['rolled-back-duplicate-target']
+        assert source.exists()
+        assert not target.exists()
+        assert not journal_path.exists()
 
 
 def test_process_file_atomic_rolls_back_if_fsync_fails():

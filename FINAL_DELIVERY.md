@@ -1,8 +1,8 @@
 # JAV File Organizer 历史交付记录
 
-**历史交付版本**: v1.5.0  
-**当前 Git 维护版本**: v1.5.4  
-**构建标识**: baseline-v1.5.4  
+**历史交付版本**: v1.5.0
+**当前 Git 维护版本**: v1.5.5
+**构建标识**: baseline-v1.5.5
 **交付日期**: 2026-07-05
 
 ---
@@ -53,13 +53,13 @@
 ### macOS 正式包
 
 ```text
-JAVFileOrganizer-v1.5.4.app
+JAVFileOrganizer-v1.5.5.app
 ```
 
 ### 启动成功标志
 
 ```text
-✅ JAV 文件整理工具 v1.5.4 启动完成 | baseline-v1.5.4 | 2026-07-05
+✅ JAV 文件整理工具 v1.5.5 启动完成 | baseline-v1.5.5 | 2026-07-05
 ```
 
 ### JAVLibrary 首次使用

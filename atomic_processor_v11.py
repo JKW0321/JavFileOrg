@@ -7,6 +7,9 @@
 import os
 import shutil
 import tempfile
+import errno
+import hashlib
+import json
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Any, List
 from PIL import Image
@@ -118,21 +121,175 @@ class AtomicProcessor:
         self._fsync_file(path)
         self._fsync_parent_dir(path)
 
-    def _move_video(self, source_path: str, target_path: str) -> None:
-        """移动视频文件，跨文件系统时自动降级到 shutil.move。"""
+    def _transaction_dir_for_target(self, target_path: str) -> Path:
+        return Path(os.path.dirname(os.path.abspath(target_path)) or '.') / '.jfo_transactions'
+
+    def _transaction_journal_path(self, source_path: str, target_path: str) -> Path:
+        key = f'{os.path.abspath(source_path)}\0{os.path.abspath(target_path)}'
+        digest = hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]
+        return self._transaction_dir_for_target(target_path) / f'{digest}.json'
+
+    def _write_transaction_journal(self, journal_path: Path, payload: Dict[str, Any]) -> None:
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = journal_path.with_suffix('.json.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, journal_path)
+        self._fsync_parent_dir(str(journal_path))
+
+    def _remove_transaction_journal(self, journal_path: Path) -> None:
+        if journal_path.exists():
+            journal_path.unlink()
+            self._fsync_parent_dir(str(journal_path))
         try:
-            os.rename(source_path, target_path)
-        except OSError:
-            shutil.move(source_path, target_path)
+            if journal_path.parent.exists() and not any(journal_path.parent.iterdir()):
+                journal_path.parent.rmdir()
+                self._fsync_parent_dir(str(journal_path.parent))
+        except Exception:
+            pass
+
+    def _same_size(self, left: str, right: str, expected_size: Optional[int] = None) -> bool:
+        if not (os.path.exists(left) and os.path.exists(right)):
+            return False
+        left_size = os.path.getsize(left)
+        right_size = os.path.getsize(right)
+        if expected_size is not None and left_size != expected_size:
+            return False
+        return left_size == right_size
+
+    def _recover_transaction(self, journal_path: Path) -> str:
+        with open(journal_path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+        source_path = payload.get('source_path')
+        target_path = payload.get('target_path')
+        temp_path = payload.get('temp_path')
+        expected_size = payload.get('source_size')
+        expected_size = int(expected_size) if expected_size is not None else None
+
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+            self._fsync_parent_dir(temp_path)
+
+        source_exists = bool(source_path and os.path.exists(source_path))
+        target_exists = bool(target_path and os.path.exists(target_path))
+
+        if source_exists and target_exists:
+            if self._same_size(source_path, target_path, expected_size):
+                os.remove(target_path)
+                self._fsync_parent_dir(target_path)
+                self._remove_transaction_journal(journal_path)
+                return 'rolled-back-duplicate-target'
+            return 'unresolved-size-mismatch'
+
+        if source_exists and not target_exists:
+            self._remove_transaction_journal(journal_path)
+            return 'source-preserved'
+
+        if target_exists and not source_exists:
+            self._remove_transaction_journal(journal_path)
+            return 'target-already-committed'
+
+        self._remove_transaction_journal(journal_path)
+        return 'nothing-left'
+
+    def recover_pending_transactions(self, finish_folder: str) -> List[str]:
+        journal_dir = Path(finish_folder) / '.jfo_transactions'
+        if not journal_dir.exists():
+            return []
+        actions = []
+        for journal_path in sorted(journal_dir.glob('*.json')):
+            try:
+                actions.append(self._recover_transaction(journal_path))
+            except Exception as exc:
+                actions.append(f'recovery-failed:{journal_path.name}:{exc}')
+        return actions
+
+    def _rename_video(self, source_path: str, target_path: str) -> None:
+        os.rename(source_path, target_path)
+
+    def _copy_across_filesystems(self, source_path: str, target_path: str) -> None:
+        """Copy through a temp file in the target directory, then commit by rename."""
+        target_dir = os.path.dirname(os.path.abspath(target_path)) or '.'
+        target_name = os.path.basename(target_path)
+        journal_path = self._transaction_journal_path(source_path, target_path)
+        source_size = os.path.getsize(source_path)
+        temp_path = None
+        try:
+            self._write_transaction_journal(journal_path, {
+                'status': 'copying',
+                'source_path': source_path,
+                'target_path': target_path,
+                'temp_path': None,
+                'source_size': source_size,
+            })
+            fd, temp_path = tempfile.mkstemp(
+                prefix=f'.{target_name}.',
+                suffix='.jfo-tmp',
+                dir=target_dir,
+            )
+            os.close(fd)
+            self._write_transaction_journal(journal_path, {
+                'status': 'copying',
+                'source_path': source_path,
+                'target_path': target_path,
+                'temp_path': temp_path,
+                'source_size': source_size,
+            })
+            shutil.copy2(source_path, temp_path)
+            if os.path.getsize(temp_path) != source_size:
+                raise RuntimeError('跨文件系统复制大小校验失败')
+            self._fsync_committed_path(temp_path)
+            os.rename(temp_path, target_path)
+            temp_path = None
+            self._fsync_parent_dir(target_path)
+            self._write_transaction_journal(journal_path, {
+                'status': 'target-committed',
+                'source_path': source_path,
+                'target_path': target_path,
+                'temp_path': None,
+                'source_size': source_size,
+            })
+            os.unlink(source_path)
+            self._fsync_parent_dir(source_path)
+            self._remove_transaction_journal(journal_path)
+        except Exception:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                    self._fsync_parent_dir(temp_path)
+                except Exception:
+                    pass
+            raise
+
+    def _move_video(self, source_path: str, target_path: str) -> None:
+        """移动视频文件；跨文件系统时用目标目录临时文件提交，避免半成品目标文件。"""
+        try:
+            self._rename_video(source_path, target_path)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            self._copy_across_filesystems(source_path, target_path)
 
     def _rollback_video(self, target_path: str, original_path: str) -> bool:
         """尽量把已移动的视频放回源路径。"""
         if not target_path or not os.path.exists(target_path):
             return True
         try:
+            journal_path = self._transaction_journal_path(original_path, target_path)
+            if os.path.exists(original_path):
+                if os.path.getsize(original_path) == os.path.getsize(target_path):
+                    os.remove(target_path)
+                    self._fsync_parent_dir(target_path)
+                    self._fsync_committed_path(original_path)
+                    self._remove_transaction_journal(journal_path)
+                    return True
+                return False
             self._move_video(target_path, original_path)
             self._fsync_committed_path(original_path)
             self._fsync_parent_dir(target_path)
+            self._remove_transaction_journal(journal_path)
             return True
         except Exception:
             return False
@@ -173,6 +330,7 @@ class AtomicProcessor:
                 message = "缺少图片URL，严格事务模式下不移动源视频"
                 return False, self._empty_file_result(reason=message), message
 
+            self.recover_pending_transactions(finish_folder)
             source_size = os.path.getsize(file_path)
             # 步骤1: 如果有图片URL，先下载到临时目录
             video_basename = os.path.splitext(new_filename)[0]
@@ -279,6 +437,7 @@ class AtomicProcessor:
                     'image_downloaded': False,
                 }, '缺少图片URL，严格事务模式下不移动源视频'
 
+            self.recover_pending_transactions(finish_folder)
             # 1) 先下载图片到临时目录，确保不会先移动视频后图失败
             success, temp_image_path, message = self.download_image_to_temp(image_url, f"{title}.jpg")
             if not success:

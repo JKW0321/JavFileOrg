@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
+from app_metadata import BASELINE_VERSION
 from manifest_utils import build_run_summary, scan_folder_manifest, write_json_report
 from provider_router import route_provider
 from providers import create_provider
@@ -14,12 +16,34 @@ from providers import create_provider
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
 
 
+@dataclass(frozen=True)
+class WorkflowDependencies:
+    provider_factory: Callable
+    atomic_processor: object
+    clean_filename_for_search: Callable
+    sanitize_filename: Callable
+    detect_series_files: Callable
+    smart_truncate_filename: Callable
+    stop_requested: Callable | None = None
+    progress_callback: Callable | None = None
+
+
 class WorkflowService:
     def __init__(self, *, log: Callable, provider_factory=None, atomic_processor=None,
                  clean_filename_for_search=None, sanitize_filename=None,
                  detect_series_files=None, smart_truncate_filename=None,
                  stop_requested=None, minimum_video_size_bytes: int = 16 * 1024,
-                 progress_callback=None):
+                 progress_callback=None, app_version: str = BASELINE_VERSION,
+                 dependencies: WorkflowDependencies | None = None):
+        if dependencies:
+            provider_factory = provider_factory or dependencies.provider_factory
+            atomic_processor = atomic_processor or dependencies.atomic_processor
+            clean_filename_for_search = clean_filename_for_search or dependencies.clean_filename_for_search
+            sanitize_filename = sanitize_filename or dependencies.sanitize_filename
+            detect_series_files = detect_series_files or dependencies.detect_series_files
+            smart_truncate_filename = smart_truncate_filename or dependencies.smart_truncate_filename
+            stop_requested = stop_requested or dependencies.stop_requested
+            progress_callback = progress_callback or dependencies.progress_callback
         self.log = log
         self.provider_factory = provider_factory or (lambda name: create_provider(name, log=log))
         self.atomic_processor = atomic_processor
@@ -30,6 +54,20 @@ class WorkflowService:
         self.stop_requested = stop_requested or (lambda: False)
         self.minimum_video_size_bytes = minimum_video_size_bytes
         self.progress_callback = progress_callback or (lambda completed, total, label='': None)
+        self.app_version = app_version
+        self._validate_dependencies()
+
+    def _validate_dependencies(self):
+        required = {
+            'atomic_processor': self.atomic_processor,
+            'clean_filename_for_search': self.clean_filename_for_search,
+            'sanitize_filename': self.sanitize_filename,
+            'detect_series_files': self.detect_series_files,
+            'smart_truncate_filename': self.smart_truncate_filename,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise ValueError(f'WorkflowService missing required dependencies: {", ".join(missing)}')
 
     def _emit_progress(self, completed, total, label=''):
         try:
@@ -67,6 +105,16 @@ class WorkflowService:
             os.makedirs(finish_folder)
             self.log(f'✅ 📁 创建输出文件夹: {finish_folder}', 'SUCCESS')
         return finish_folder
+
+    def _cleanup_empty_finish_folder(self, finish_folder, dry_run, success_count):
+        if dry_run or success_count:
+            return
+        try:
+            if os.path.isdir(finish_folder) and not os.listdir(finish_folder):
+                os.rmdir(finish_folder)
+                self.log(f'🧹 未成功处理文件，已清理空输出文件夹: {finish_folder}', 'INFO')
+        except Exception as e:
+            self.log(f'⚠️ 空输出文件夹清理失败: {e}', 'WARNING')
 
     def _new_file_result(self, *, source_path, status, provider=None, query=None,
                          reason='', group=None, sequence=None, target_video_path=None,
@@ -202,7 +250,7 @@ class WorkflowService:
         )
         stats = self._derive_result_stats(file_results, total_files)
         summary = build_run_summary(
-            version='workflow-service', website=website, folder=folder_path,
+            version=self.app_version, website=website, folder=folder_path,
             total_files=total_files, success_count=stats['success_count'], failed_count=stats['failed_count'],
             skipped_hidden=stats['skipped_hidden'], skipped_small=stats['skipped_small'],
             skipped_provider=stats['skipped_provider_count'], dry_run=dry_run, log_path=log_path,
@@ -247,19 +295,32 @@ class WorkflowService:
                 elapsed += retry_elapsed
                 self._attach_provider_elapsed(result, elapsed)
                 self.log(f'⏱️ Provider重试耗时: provider={provider_name} | query={query} | {retry_elapsed:.1f}秒 | 累计 {elapsed:.1f}秒', 'INFO')
-            cache[cache_key] = {
-                'provider': provider_name,
-                'query': query,
-                'timestamp': datetime.now().isoformat(),
-                'source_url': result.get('referer') or result.get('detail_url'),
-                'result': result,
-                'elapsed_seconds': elapsed,
-            }
+            if self._should_cache_provider_result(result):
+                cache[cache_key] = {
+                    'provider': provider_name,
+                    'query': query,
+                    'timestamp': datetime.now().isoformat(),
+                    'source_url': result.get('referer') or result.get('detail_url'),
+                    'result': result,
+                    'elapsed_seconds': elapsed,
+                }
+            return result
         else:
             elapsed = cache[cache_key].get('elapsed_seconds')
             if elapsed is not None:
                 self.log(f'⏱️ Provider缓存命中: provider={provider_name} | query={query} | 原搜索耗时 {elapsed:.1f}秒', 'INFO')
         return cache[cache_key]['result']
+
+    def _should_cache_provider_result(self, result):
+        if result.get('ok'):
+            return True
+        return result.get('error_type') not in {
+            'verification-timeout',
+            'verification-required',
+            'browser-error',
+            'network-error',
+            'cancelled',
+        }
 
     def _attach_provider_elapsed(self, result, elapsed):
         raw_meta = result.get('raw_meta') or {}
@@ -416,7 +477,6 @@ class WorkflowService:
                 total_files=total_files,
             )
 
-        finish_folder = self._safe_finish_folder(folder_path, finish_folder, dry_run)
         video_file_paths = [os.path.join(folder_path, f) for f in video_files]
         series_groups, standalone_files = self.detect_series_files(video_file_paths)
         series_items = list(series_groups.items())
@@ -509,6 +569,7 @@ class WorkflowService:
             if max_length:
                 title = self.smart_truncate_filename(title, os.path.basename(files[0][0]), max_length)
             atomic_started = time.time()
+            finish_folder = self._safe_finish_folder(folder_path, finish_folder, dry_run)
             ok, payload, message = self.atomic_processor.process_series_group_atomic(files, title, result.get('image_url'), finish_folder)
             atomic_elapsed = round(time.time() - atomic_started, 3)
             file_elapsed = round(time.time() - item_started, 3)
@@ -668,6 +729,7 @@ class WorkflowService:
             file_ext = os.path.splitext(filename)[1]
             new_filename = self.sanitize_filename(f'{title}{file_ext}')
             atomic_started = time.time()
+            finish_folder = self._safe_finish_folder(folder_path, finish_folder, dry_run)
             ok, payload, message = self.atomic_processor.process_file_atomic(file_path, new_filename, result.get('image_url'), finish_folder)
             atomic_elapsed = round(time.time() - atomic_started, 3)
             file_elapsed = round(time.time() - item_started, 3)
@@ -725,6 +787,7 @@ class WorkflowService:
                 self._emit_progress(completed_units, total_files, filename)
 
         stats = self._derive_result_stats(file_results, total_files)
+        self._cleanup_empty_finish_folder(finish_folder, dry_run, stats['success_count'])
 
         paths = self._empty_paths()
         if logs_dir:

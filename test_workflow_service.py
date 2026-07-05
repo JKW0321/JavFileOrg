@@ -139,6 +139,36 @@ def test_workflow_dry_run_keeps_source_files():
         assert summary['counts']['file_result_counts'] == {'planned': 2}
 
 
+def test_workflow_run_summary_uses_injected_app_version():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs = root / 'JFO_Logs'
+        (root / 'SONE-753.mp4').write_bytes(b'a' * 32768)
+        provider = DummyProvider()
+        svc = WorkflowService(
+            log=lambda *a, **k: None,
+            provider_factory=lambda name: provider,
+            atomic_processor=AtomicProcessor(_download, _sanitize),
+            clean_filename_for_search=clean_filename_for_search,
+            sanitize_filename=_sanitize,
+            detect_series_files=lambda files: ({}, files),
+            smart_truncate_filename=lambda title, original, max_length: title,
+            stop_requested=lambda: False,
+            minimum_video_size_bytes=16384,
+            app_version='v1.5.4',
+        )
+        result = svc.run(
+            folder_path=str(root),
+            finish_folder=str(root / 'Finish'),
+            website='javhoo',
+            dry_run=True,
+            logs_dir=str(logs),
+        )
+
+        summary = json.loads(Path(result['summary_path']).read_text(encoding='utf-8'))
+        assert summary['version'] == 'v1.5.4'
+
+
 def test_workflow_writes_filename_rule_candidates():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -277,7 +307,7 @@ def test_workflow_series_provider_invalid_result_keeps_sources_and_audit():
         assert provider.calls == ['JBD-131']
         assert f1.exists()
         assert f2.exists()
-        assert not any((root / 'Finish').iterdir())
+        assert not (root / 'Finish').exists()
         file_results = json.loads(Path(result['file_results_path']).read_text(encoding='utf-8'))
         failures = [item for item in file_results['results'] if item['status'] == 'failed']
         assert len(failures) == 2
@@ -360,6 +390,44 @@ def test_provider_search_cache_keeps_metadata():
     assert entry['timestamp']
     assert entry['source_url'] == 'http://example/search/sone-753'
     assert entry['result'] is first
+
+
+def test_provider_search_does_not_cache_retryable_failures():
+    class AlwaysVerificationFailureProvider:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            return {
+                'ok': False,
+                'title': None,
+                'image_url': None,
+                'provider': 'javlibrary',
+                'detail_url': None,
+                'referer': f'https://www.javlibrary.com/tw/vl_searchbyid.php?keyword={query}',
+                'error_type': 'verification-timeout',
+                'message': 'verification timed out',
+            }
+
+    provider = AlwaysVerificationFailureProvider()
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda name: provider,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+        stop_requested=lambda: False,
+    )
+    cache = {}
+
+    svc._provider_search(cache, 'javlibrary', provider, 'JBD-131')
+    svc._provider_search(cache, 'javlibrary', provider, 'JBD-131')
+
+    assert provider.calls == ['JBD-131', 'JBD-131', 'JBD-131', 'JBD-131']
+    assert cache == {}
 
 
 def test_workflow_cancelled_files_are_audited():
@@ -525,3 +593,57 @@ def test_workflow_file_results_record_provider_failure():
         summary = json.loads(Path(result['summary_path']).read_text(encoding='utf-8'))
         assert summary['counts']['failed_count'] == 1
         assert summary['counts']['file_result_counts'] == {'failed': 1}
+
+
+def test_workflow_cleans_empty_finish_after_atomic_failure():
+    class SuccessfulProvider:
+        def search(self, query):
+            return {
+                'ok': True,
+                'title': 'SONE-753 TITLE',
+                'image_url': 'http://example/image.jpg',
+                'provider': 'javhoo',
+                'detail_url': None,
+                'referer': None,
+                'error_type': None,
+                'message': None,
+            }
+
+    class FailingAtomic:
+        def process_file_atomic(self, file_path, new_filename, image_url, finish_folder):
+            return False, {
+                'status': 'failed',
+                'reason': 'simulated atomic failure',
+                'rollback_ok': True,
+                'image_downloaded': False,
+            }, 'simulated atomic failure'
+
+        def process_series_group_atomic(self, files, title, image_url, finish_folder):
+            raise AssertionError('not used')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs = root / 'JFO_Logs'
+        (root / 'SONE-753.mp4').write_bytes(b'a' * 32768)
+        svc = WorkflowService(
+            log=lambda *a, **k: None,
+            provider_factory=lambda name: SuccessfulProvider(),
+            atomic_processor=FailingAtomic(),
+            clean_filename_for_search=clean_filename_for_search,
+            sanitize_filename=_sanitize,
+            detect_series_files=lambda files: ({}, files),
+            smart_truncate_filename=lambda title, original, max_length: title,
+            stop_requested=lambda: False,
+            minimum_video_size_bytes=16384,
+        )
+
+        result = svc.run(
+            folder_path=str(root),
+            finish_folder=str(root / 'Finish'),
+            website='javhoo',
+            dry_run=False,
+            logs_dir=str(logs),
+        )
+
+        assert result['failed_count'] == 1
+        assert not (root / 'Finish').exists()

@@ -26,6 +26,15 @@ from datetime import datetime
 import json
 import shutil
 
+from app_metadata import (
+    APP_TITLE,
+    BASELINE_BUILD_DATE,
+    BASELINE_BUILD_ID,
+    BASELINE_VERSION,
+    CONFIG_FILENAME,
+    STATUS_READY,
+)
+
 # 立即导入所有必需模块，避免v1.8的导入问题
 try:
     import requests
@@ -35,17 +44,6 @@ except ImportError as e:
     print(f"❌ 模块导入失败: {e}")
     print("请安装依赖: pip install requests beautifulsoup4 pillow lxml")
     sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# 基线版本：界面 / 日志 / 启动信息 / 构建信息统一从这里取值
-# ---------------------------------------------------------------------------
-BASELINE_VERSION = "v1.5.4"
-BASELINE_BUILD_DATE = "2026-07-05"
-BASELINE_BUILD_ID = "baseline-v1.5.4"
-APP_TITLE = f"JAV 文件整理工具 {BASELINE_VERSION}"
-STATUS_READY = f"就绪 - {BASELINE_VERSION}"
-CONFIG_FILENAME = "config.json"
 
 
 @dataclass(frozen=True)
@@ -969,12 +967,17 @@ class JavFileOrganizer:
     def _show_messagebox(self, kind, title, message):
         """Show a messagebox without letting Tk environment failures break processing."""
         try:
+            parent = getattr(self, 'window', None)
+            if parent is not None and not hasattr(parent, 'tk'):
+                self.log(f"📝 跳过提示窗口（非真实 Tk 环境）: {title}", "INFO")
+                return
+            options = {'parent': parent} if parent is not None else {}
             if kind == 'warning':
-                messagebox.showwarning(title, message)
+                messagebox.showwarning(title, message, **options)
             elif kind == 'error':
-                messagebox.showerror(title, message)
+                messagebox.showerror(title, message, **options)
             else:
-                messagebox.showinfo(title, message)
+                messagebox.showinfo(title, message, **options)
         except Exception as e:
             message = str(e).splitlines()[0] if str(e) else repr(e)
             self.log(f"⚠️ 无法显示提示窗口: {message}", "WARNING")
@@ -1158,7 +1161,7 @@ class JavFileOrganizer:
         """后台处理线程工作函数。"""
         ui_completion_scheduled = False
         try:
-            from workflow_service import WorkflowService
+            from workflow_service import WorkflowDependencies, WorkflowService
 
             self.is_processing = True
             self._reset_stop_signal()
@@ -1223,8 +1226,7 @@ class JavFileOrganizer:
                 except ValueError:
                     self.log("⚠️ 文件名长度格式错误，将使用完整长度", "WARNING")
 
-            service = WorkflowService(
-                log=self.log,
+            workflow_dependencies = WorkflowDependencies(
                 provider_factory=self._build_provider_factory(),
                 atomic_processor=self.atomic_processor,
                 clean_filename_for_search=self.clean_filename_for_search,
@@ -1232,8 +1234,13 @@ class JavFileOrganizer:
                 detect_series_files=self.detect_series_files,
                 smart_truncate_filename=self.smart_truncate_filename,
                 stop_requested=self._is_stop_requested,
-                minimum_video_size_bytes=getattr(self, 'minimum_video_size_bytes', 16 * 1024),
                 progress_callback=self._update_processing_progress,
+            )
+            service = WorkflowService(
+                log=self.log,
+                dependencies=workflow_dependencies,
+                minimum_video_size_bytes=getattr(self, 'minimum_video_size_bytes', 16 * 1024),
+                app_version=self.version,
             )
 
             result = service.run(
