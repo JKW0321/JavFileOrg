@@ -879,6 +879,14 @@ class JavFileOrganizer:
         """
         from filename_utils import extract_series_info as _extract
         return _extract(filename)
+
+    @staticmethod
+    def _series_sort_key(sequence):
+        text = str(sequence or '')
+        match = re.search(r'\d+', text)
+        if match:
+            return (0, int(match.group(0)), text)
+        return (1, text)
     
     def detect_series_files(self, file_list):
         """检测并分组序列文件。"""
@@ -898,7 +906,7 @@ class JavFileOrganizer:
                 standalone_files.append(file_path)
         
         for base_code in series_groups:
-            series_groups[base_code].sort(key=lambda x: int(x[1]))
+            series_groups[base_code].sort(key=lambda x: self._series_sort_key(x[1]))
         
         return series_groups, standalone_files
     

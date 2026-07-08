@@ -268,6 +268,16 @@ class TestAdaptiveFilenameRules:
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("s-cute-593_maria_04.mp4") == "s-cute-593-maria"
 
+    def test_s_cute_letter_prefixed_suffix_is_not_series_sequence(self):
+        candidate = analyze_unknown_filename("s-cute-649_yuuna_k01.mp4")
+
+        assert candidate['rule_id'] == 's_cute'
+        assert candidate['normalized_code'] == 'S-CUTE-649-YUUNA'
+        assert candidate['sequence'] is None
+        assert candidate['usable_for_search'] is True
+        assert extract_series_info("s-cute-649_yuuna_k01.mp4") == (None, None)
+        assert clean_filename_for_search("s-cute-649_yuuna_k01.mp4") == "s-cute-649-yuuna"
+
     def test_night24_candidate_can_use_parent_path_context(self):
         candidate = analyze_unknown_filename("DMS Night24 013 (5013) 高田弘美/013.avi")
 

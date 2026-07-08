@@ -405,7 +405,8 @@ def analyze_unknown_filename(filename: str):
         normalized = f"S-CUTE-{s_cute.group(1)}"
         if s_cute.group(2):
             normalized = f"{normalized}-{s_cute.group(2).upper()}"
-        sequence = s_cute.group(3)
+        raw_sequence = s_cute.group(3)
+        sequence = raw_sequence if raw_sequence and raw_sequence.isdigit() else None
         return _candidate(
             's_cute',
             filename,
