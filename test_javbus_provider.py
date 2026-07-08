@@ -55,7 +55,7 @@ def test_javbus_uses_anti_crawl_session_and_returns_audit_fields():
     assert result.detail_url == 'https://www.javbus.com/SONE-753'
     assert result.referer == 'https://www.javbus.com/SONE-753'
     assert direct_session.calls == []
-    assert anti_session.calls == [('https://www.javbus.com/SONE-753', (5, 15))]
+    assert anti_session.calls == [('https://www.javbus.com/SONE-753', (5, 10))]
 
 
 def test_javbus_rejects_age_verification_page():

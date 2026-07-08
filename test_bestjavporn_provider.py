@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import requests
+
 from providers.bestjavporn_provider import BestJavPornProvider
 from providers.factory import create_provider
 
@@ -53,6 +55,61 @@ def test_bestjavporn_search_upgrades_to_detail_page():
         'https://www.bestjavporn.com/ja/?s=ABF-311',
         'https://www.bestjavporn.com/ja/video/abf-311-sample/',
     ]
+
+
+def test_bestjavporn_stop_after_search_response_returns_cancelled_before_detail_fetch():
+    search_html = '''
+    <html><body>
+      <article>
+        <h2><a href="/ja/video/abf-311-sample/">ABF-311 Search Title</a></h2>
+        <img src="https://cdn.bestjavporn.com/covers/abf-311-small.jpg" />
+      </article>
+    </body></html>
+    '''
+    stopped = {'value': False}
+    provider = BestJavPornProvider(
+        log=lambda *a, **k: None,
+        session=None,
+        anti_crawl=None,
+        stop_requested=lambda: stopped['value'],
+    )
+    seen_urls = []
+
+    def fake_request(url):
+        seen_urls.append(url)
+        stopped['value'] = True
+        return DummyResponse(search_html)
+
+    provider._request = fake_request
+
+    result = provider.search('ABF-311')
+
+    assert result.ok is False
+    assert result.error_type == 'cancelled'
+    assert result.message == 'user stopped after network response'
+    assert seen_urls == ['https://www.bestjavporn.com/ja/?s=ABF-311']
+
+
+def test_bestjavporn_stop_during_network_request_returns_cancelled():
+    stopped = {'value': False}
+    provider = BestJavPornProvider(
+        log=lambda *a, **k: None,
+        session=None,
+        anti_crawl=None,
+        stop_requested=lambda: stopped['value'],
+    )
+
+    def fake_request(url):
+        stopped['value'] = True
+        raise requests.Timeout('read timed out')
+
+    provider._request = fake_request
+
+    result = provider.search('ABF-311')
+
+    assert result.ok is False
+    assert result.error_type == 'cancelled'
+    assert result.message == 'user stopped during network request'
 
 
 def test_bestjavporn_reports_cloudflare_verification_page():

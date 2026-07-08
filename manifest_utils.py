@@ -10,13 +10,29 @@ from datetime import datetime
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
 
 
+def build_manifest_from_entries(folder_path: str, entries: list[dict]) -> dict:
+    return {
+        'folder': folder_path,
+        'generated_at': datetime.now().isoformat(),
+        'total_files': len(entries),
+        'entries': sorted(entries, key=lambda item: item.get('name') or ''),
+    }
+
+
 def scan_folder_manifest(folder_path: str) -> dict:
     entries = []
-    for name in sorted(os.listdir(folder_path)):
-        path = os.path.join(folder_path, name)
-        if not os.path.isfile(path):
+    for entry in os.scandir(folder_path):
+        name = entry.name
+        try:
+            is_file = entry.is_file()
+        except OSError:
             continue
-        st = os.stat(path)
+        if not is_file:
+            continue
+        try:
+            st = entry.stat()
+        except OSError:
+            continue
         _, ext = os.path.splitext(name.lower())
         entries.append({
             'name': name,
@@ -26,12 +42,7 @@ def scan_folder_manifest(folder_path: str) -> dict:
             'is_hidden': name.startswith('.'),
             'is_video': ext in VIDEO_EXTENSIONS,
         })
-    return {
-        'folder': folder_path,
-        'generated_at': datetime.now().isoformat(),
-        'total_files': len(entries),
-        'entries': entries,
-    }
+    return build_manifest_from_entries(folder_path, entries)
 
 
 def write_json_report(path: str, payload: dict) -> str:
@@ -47,6 +58,7 @@ def build_run_summary(*, version: str, website: str, folder: str, total_files: i
                       dry_run: bool, log_path: str | None,
                       before_manifest_path: str | None,
                       after_manifest_path: str | None,
+                      after_manifest_status: str | None = None,
                       routed_counts: dict | None = None,
                       file_results_path: str | None = None,
                       planned_count: int = 0,
@@ -83,6 +95,7 @@ def build_run_summary(*, version: str, website: str, folder: str, total_files: i
             'log_path': log_path,
             'before_manifest_path': before_manifest_path,
             'after_manifest_path': after_manifest_path,
+            'after_manifest_status': after_manifest_status or ('written' if after_manifest_path else 'not-written'),
             'file_results_path': file_results_path,
             'filename_rule_candidates_path': filename_rule_candidates_path,
         },

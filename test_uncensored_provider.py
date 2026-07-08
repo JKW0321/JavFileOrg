@@ -58,6 +58,18 @@ class RaisingSession:
         raise self.exc
 
 
+class StopAndRaiseSession:
+    def __init__(self, exc, stop_state):
+        self.exc = exc
+        self.stop_state = stop_state
+        self.calls = []
+
+    def get(self, url, timeout=None):
+        self.calls.append((url, timeout))
+        self.stop_state['value'] = True
+        raise self.exc
+
+
 class HttpErrorResponse(DummyResponse):
     def raise_for_status(self):
         raise requests.HTTPError('403 Client Error: Forbidden for url')
@@ -89,6 +101,17 @@ class JsonFallbackSession:
         return DummyResponse(self.page_html, url=url)
 
 
+class StopAfterJsonSession:
+    def __init__(self, stop_state):
+        self.stop_state = stop_state
+        self.calls = []
+
+    def get(self, url, timeout=None):
+        self.calls.append((url, timeout))
+        self.stop_state['value'] = True
+        return BadJsonResponse({}, url=url)
+
+
 def test_uncensored_provider_parses_caribbeancom_page():
     html = '''
     <html><head>
@@ -106,7 +129,7 @@ def test_uncensored_provider_parses_caribbeancom_page():
     assert result.title == 'CARIB-032226-001 Sample Caribbean Title'
     assert result.detail_url == 'https://www.caribbeancom.com/moviepages/032226-001/index.html'
     assert result.image_url == 'https://www.caribbeancom.com/moviepages/032226-001/images/l_l.jpg'
-    assert session.calls == [('https://www.caribbeancom.com/moviepages/032226-001/index.html', (5, 15))]
+    assert session.calls == [('https://www.caribbeancom.com/moviepages/032226-001/index.html', (5, 10))]
 
 
 def test_uncensored_provider_accepts_carib_suffix_query():
@@ -153,7 +176,7 @@ def test_uncensored_provider_uses_json_fast_path_when_complete():
     assert result.ok is True
     assert result.title == '1PONDO-032126-001 Fast JSON Title'
     assert result.image_url == 'https://www.1pondo.tv/assets/sample/032126_001/str.jpg'
-    assert session.calls == [(json_url, (5, 15))]
+    assert session.calls == [(json_url, (5, 10))]
 
 
 def test_uncensored_provider_falls_back_when_json_is_invalid():
@@ -169,6 +192,24 @@ def test_uncensored_provider_falls_back_when_json_is_invalid():
     assert result.ok is True
     assert result.title == '1PONDO-032126-001 Fallback Page Title'
     assert len(session.calls) == 2
+
+
+def test_uncensored_provider_stop_after_json_skips_detail_page():
+    stop = {'value': False}
+    json_url = 'https://www.1pondo.tv/dyn/phpauto/movie_details/movie_id/032126_001.json'
+    session = StopAfterJsonSession(stop)
+    provider = UncensoredProvider(
+        log=lambda *a, **k: None,
+        session=session,
+        stop_requested=lambda: stop['value'],
+    )
+
+    result = provider.search('1PONDO-032126-001')
+
+    assert result.ok is False
+    assert result.error_type == 'cancelled'
+    assert result.message == 'user stopped before detail page fetch'
+    assert session.calls == [(json_url, (5, 10))]
 
 
 def test_uncensored_provider_routes_10musume_inside_single_ui_source():
@@ -312,14 +353,15 @@ def test_uncensored_provider_parses_mgstage_like_page():
     assert result.raw_meta['family'] == 'mgstage'
 
 
-def test_uncensored_provider_reports_http_error_as_network_error():
+def test_uncensored_provider_reports_http_403_as_access_denied():
     provider = UncensoredProvider(log=lambda *a, **k: None, session=HttpErrorSession())
 
     result = provider.search('300MIUM-1366')
 
     assert result.ok is False
-    assert result.error_type == 'network-error'
-    assert '403' in result.message
+    assert result.error_type == 'access-denied'
+    assert 'mgstage access denied' in result.message
+    assert result.raw_meta['family'] == 'mgstage'
 
 
 def test_uncensored_provider_reports_timeout_as_network_error():
@@ -331,7 +373,19 @@ def test_uncensored_provider_reports_timeout_as_network_error():
     assert result.ok is False
     assert result.error_type == 'network-error'
     assert 'timed out' in result.message
-    assert session.calls == [('https://www.heyzo.com/moviepages/3098/index.html', (5, 15))]
+    assert session.calls == [('https://www.heyzo.com/moviepages/3098/index.html', (5, 10))]
+
+
+def test_uncensored_provider_stop_during_network_request_returns_cancelled():
+    stop = {'value': False}
+    session = StopAndRaiseSession(requests.Timeout('read timed out'), stop)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session, stop_requested=lambda: stop['value'])
+
+    result = provider.search('HEYZO-3098')
+
+    assert result.ok is False
+    assert result.error_type == 'cancelled'
+    assert result.message == 'user stopped during network request'
 
 
 def test_uncensored_provider_reports_connection_error_as_network_error():

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PIL import Image
 
+import workflow_service as workflow_mod
 from atomic_processor_v11 import AtomicProcessor
 from filename_utils import clean_filename_for_search, extract_series_info
 from workflow_service import WorkflowService
@@ -151,6 +152,43 @@ def test_workflow_dry_run_keeps_source_files():
         summary = json.loads(Path(result['summary_path']).read_text(encoding='utf-8'))
         assert summary['counts']['planned_count'] == 2
         assert summary['counts']['file_result_counts'] == {'planned': 2}
+
+
+def test_workflow_run_reuses_initial_scan_without_rescanning_folder():
+    class NoRescanWorkflowService(WorkflowService):
+        def _scan_video_files(self, folder_path):
+            raise AssertionError('folder was rescanned')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / 'SONE-753.mp4').write_bytes(b'a' * 32768)
+        provider = DummyProvider()
+        svc = NoRescanWorkflowService(
+            log=lambda *a, **k: None,
+            provider_factory=lambda name: provider,
+            atomic_processor=AtomicProcessor(_download, _sanitize),
+            clean_filename_for_search=lambda n: Path(n).stem.lower(),
+            sanitize_filename=_sanitize,
+            detect_series_files=lambda files: ({}, files),
+            smart_truncate_filename=lambda title, original, max_length: title,
+            stop_requested=lambda: False,
+            minimum_video_size_bytes=16384,
+        )
+        result = svc.run(
+            folder_path=str(root),
+            finish_folder=str(root / 'Finish'),
+            website='javhoo',
+            dry_run=True,
+            initial_scan={
+                'accepted': ['SONE-753.mp4'],
+                'skipped_hidden': [],
+                'skipped_small': [],
+                'manifest_entries': [],
+            },
+        )
+
+        assert result['planned_count'] == 1
+        assert provider.calls == []
 
 
 def test_workflow_treats_underscore_suffix_as_series_sequence():
@@ -609,12 +647,24 @@ def test_provider_search_does_not_retry_non_transient_network_error():
     assert cache == {}
 
 
-def test_workflow_cancelled_files_are_audited():
+def test_workflow_cancelled_files_are_audited(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         logs = root / 'JFO_Logs'
         (root / 'SONE-753.mp4').write_bytes(b'a' * 32768)
         (root / 'ABF-139.mp4').write_bytes(b'b' * 32768)
+        manifest_scans = []
+
+        def fake_scan_manifest(folder_path):
+            manifest_scans.append(folder_path)
+            return {
+                'folder': folder_path,
+                'generated_at': 'test',
+                'total_files': 2,
+                'entries': [],
+            }
+
+        monkeypatch.setattr(workflow_mod, 'scan_folder_manifest', fake_scan_manifest)
         provider = DummyProvider()
         svc = WorkflowService(
             log=lambda *a, **k: None,
@@ -637,9 +687,13 @@ def test_workflow_cancelled_files_are_audited():
 
         assert result['cancelled_count'] == 2
         assert provider.calls == []
+        assert result['after_manifest_path'] is None
+        assert manifest_scans == []
         file_results = json.loads(Path(result['file_results_path']).read_text(encoding='utf-8'))
         assert file_results['counts']['cancelled'] == 2
         assert {item['source_name'] for item in file_results['results']} == {'SONE-753.mp4', 'ABF-139.mp4'}
+        summary = json.loads(Path(result['summary_path']).read_text(encoding='utf-8'))
+        assert summary['artifacts']['after_manifest_status'] == 'skipped-cancelled-fast-stop'
 
 
 def test_workflow_all_filtered_files_still_write_audit():
@@ -727,6 +781,8 @@ def test_workflow_series_uses_atomic_group_processing():
         assert summary['counts']['file_result_counts'] == {'success': 2}
         assert summary['timings']['providers']['javhoo']['count'] == 2
         assert summary['timings']['slowest_files']
+        assert 'folder_scan_elapsed_seconds' in summary['timings']
+        assert 'after_manifest_elapsed_seconds' in summary['timings']
 
 
 def test_workflow_file_results_record_provider_failure():
@@ -964,3 +1020,59 @@ def test_workflow_cleans_empty_finish_after_atomic_failure():
 
         assert result['failed_count'] == 1
         assert not (root / 'Finish').exists()
+
+
+def test_workflow_does_not_remove_preexisting_empty_finish_after_atomic_failure():
+    class SuccessfulProvider:
+        def search(self, query):
+            return {
+                'ok': True,
+                'title': 'SONE-753 TITLE',
+                'image_url': 'http://example/image.jpg',
+                'provider': 'javhoo',
+                'detail_url': None,
+                'referer': None,
+                'error_type': None,
+                'message': None,
+            }
+
+    class FailingAtomic:
+        def process_file_atomic(self, file_path, new_filename, image_url, finish_folder):
+            return False, {
+                'status': 'failed',
+                'reason': 'simulated atomic failure',
+                'rollback_ok': True,
+                'image_downloaded': False,
+            }, 'simulated atomic failure'
+
+        def process_series_group_atomic(self, files, title, image_url, finish_folder):
+            raise AssertionError('not used')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs = root / 'JFO_Logs'
+        finish = root / 'Finish'
+        finish.mkdir()
+        (root / 'SONE-753.mp4').write_bytes(b'a' * 32768)
+        svc = WorkflowService(
+            log=lambda *a, **k: None,
+            provider_factory=lambda name: SuccessfulProvider(),
+            atomic_processor=FailingAtomic(),
+            clean_filename_for_search=clean_filename_for_search,
+            sanitize_filename=_sanitize,
+            detect_series_files=lambda files: ({}, files),
+            smart_truncate_filename=lambda title, original, max_length: title,
+            stop_requested=lambda: False,
+            minimum_video_size_bytes=16384,
+        )
+
+        result = svc.run(
+            folder_path=str(root),
+            finish_folder=str(finish),
+            website='javhoo',
+            dry_run=False,
+            logs_dir=str(logs),
+        )
+
+        assert result['failed_count'] == 1
+        assert finish.exists()

@@ -113,7 +113,7 @@ class ImageDownloader:
                     response = self.session.get(
                         url,
                         headers=self._headers(referer=task.get('referer'), provider=task.get('provider')),
-                        timeout=(10, 60),
+                        timeout=(8, 30),
                         stream=True,
                     )
                     response.raise_for_status()

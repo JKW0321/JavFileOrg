@@ -297,7 +297,11 @@ class JavFileOrganizer:
         
         # v1.3: 初始化原子操作处理器
         from atomic_processor_v11 import AtomicProcessor
-        self.atomic_processor = AtomicProcessor(self.download_image, self.sanitize_filename)
+        self.atomic_processor = AtomicProcessor(
+            self.download_image,
+            self.sanitize_filename,
+            stop_requested=self._is_stop_requested,
+        )
     
     def init_gui(self):
         """初始化 GUI 界面。"""
@@ -550,13 +554,13 @@ class JavFileOrganizer:
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         safe_site = ''.join(ch for ch in website_name if ch.isalnum() or ch in ('-', '_')).strip('_') or 'site'
         self.run_log_path = os.path.join(logs_dir, f'JFO_RUN_{stamp}_{safe_site}.log')
-        with open(self.run_log_path, 'w', encoding='utf-8') as f:
-            f.write(f'# {APP_TITLE}\n')
-            f.write(f'# version: {self.version}\n')
-            f.write(f'# build: {self.build_id}\n')
-            f.write(f'# started_at: {datetime.now().isoformat()}\n')
-            f.write(f'# folder: {folder_path}\n')
-            f.write(f'# website: {website_name}\n\n')
+        self._run_log_file = open(self.run_log_path, 'w', encoding='utf-8', buffering=1)
+        self._run_log_file.write(f'# {APP_TITLE}\n')
+        self._run_log_file.write(f'# version: {self.version}\n')
+        self._run_log_file.write(f'# build: {self.build_id}\n')
+        self._run_log_file.write(f'# started_at: {datetime.now().isoformat()}\n')
+        self._run_log_file.write(f'# folder: {folder_path}\n')
+        self._run_log_file.write(f'# website: {website_name}\n\n')
         return self.run_log_path
 
     def _write_run_log(self, log_entry):
@@ -569,8 +573,12 @@ class JavFileOrganizer:
                 lock = threading.Lock()
                 self._run_log_lock = lock
             with lock:
-                with open(run_log_path, 'a', encoding='utf-8') as f:
-                    f.write(log_entry)
+                log_file = getattr(self, '_run_log_file', None)
+                if log_file is not None and not log_file.closed:
+                    log_file.write(log_entry)
+                else:
+                    with open(run_log_path, 'a', encoding='utf-8') as f:
+                        f.write(log_entry)
         except Exception:
             pass
 
@@ -580,6 +588,13 @@ class JavFileOrganizer:
             try:
                 self._write_run_log(f"# ended_at: {datetime.now().isoformat()}\n")
             finally:
+                log_file = getattr(self, '_run_log_file', None)
+                if log_file is not None:
+                    try:
+                        log_file.close()
+                    except Exception:
+                        pass
+                self._run_log_file = None
                 self.run_log_path = None
 
     def _build_provider_factory(self):
@@ -665,24 +680,23 @@ class JavFileOrganizer:
     def analyze_folder(self, folder_path):
         """分析文件夹内容"""
         try:
-            all_files = os.listdir(folder_path)
             scan = self._scan_video_files(folder_path)
             filtered_video_names = scan['accepted']
+            file_sizes = scan.get('file_sizes', {})
             video_files = []
             total_size = 0
             skipped_hidden = len(scan['skipped_hidden'])
             skipped_small = len(scan['skipped_small'])
             
             for file in filtered_video_names:
-                file_path = os.path.join(folder_path, file)
-                file_size = os.path.getsize(file_path)
+                file_size = file_sizes.get(file, 0)
                 video_files.append((file, file_size))
                 total_size += file_size
             
             # 显示详细统计
             self.log(f"📁 已选择文件夹: {folder_path}", "SUCCESS")
             self.log(f"📊 文件夹分析结果:", "INFO")
-            self.log(f"📝   📁 总文件数: {len(all_files)}", "INFO")
+            self.log(f"📝   📁 总文件数: {scan.get('total_files', len(scan.get('manifest_entries', [])))}", "INFO")
             self.log(f"📝   🎬 视频文件数: {len(video_files)}", "INFO")
             if skipped_hidden:
                 self.log(f"📝   🙈 已忽略隐藏/AppleDouble 文件: {skipped_hidden}", "INFO")
@@ -745,21 +759,47 @@ class JavFileOrganizer:
             'accepted': [],
             'skipped_hidden': [],
             'skipped_small': [],
+            'manifest_entries': [],
+            'file_sizes': {},
+            'total_files': 0,
         }
-        for file in os.listdir(folder_path):
-            file_path = os.path.join(folder_path, file)
+        for entry in os.scandir(folder_path):
+            file = entry.name
+            try:
+                is_file = entry.is_file()
+            except OSError:
+                continue
+            if not is_file:
+                continue
+            try:
+                st = entry.stat()
+            except OSError:
+                continue
+            result['total_files'] += 1
+            _, ext = os.path.splitext(file.lower())
+            is_hidden = file.startswith('.')
+            is_video = ext in self.video_extensions
+            result['manifest_entries'].append({
+                'name': file,
+                'size': st.st_size,
+                'mtime': st.st_mtime,
+                'extension': ext,
+                'is_hidden': is_hidden,
+                'is_video': is_video,
+            })
             if self._should_skip_video_file(file):
                 result['skipped_hidden'].append(file)
                 continue
-            if not os.path.isfile(file_path):
-                continue
-            _, ext = os.path.splitext(file.lower())
             if ext not in self.video_extensions:
                 continue
-            if self._is_suspicious_small_video(file_path):
+            if st.st_size < getattr(self, 'minimum_video_size_bytes', 16 * 1024):
                 result['skipped_small'].append(file)
                 continue
             result['accepted'].append(file)
+            result['file_sizes'][file] = st.st_size
+        result['accepted'].sort()
+        result['skipped_hidden'].sort()
+        result['skipped_small'].sort()
         return result
 
     def _collect_video_files(self, folder_path):
@@ -980,6 +1020,39 @@ class JavFileOrganizer:
         event = getattr(self, '_stop_event', None)
         return bool(self.stop_processing or (event is not None and event.is_set()))
 
+    def _has_active_file_transaction(self):
+        processor = getattr(self, 'atomic_processor', None)
+        checker = getattr(processor, 'has_active_transaction', None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker())
+        except Exception:
+            return False
+
+    def _cancel_inflight_network(self):
+        """Best-effort cancellation for slow provider/download requests."""
+        cancelled = []
+        session = getattr(self, 'session', None)
+        if session is not None:
+            try:
+                session.close()
+                cancelled.append('requests')
+            except Exception as e:
+                self.log(f"⚠️ 关闭网络会话失败: {e}", "WARNING")
+
+        anti_crawl = getattr(self, 'anti_crawl', None)
+        selenium_javlibrary = getattr(anti_crawl, 'selenium_javlibrary', None) if anti_crawl else None
+        if selenium_javlibrary is not None:
+            try:
+                selenium_javlibrary.stop_browser()
+                cancelled.append('browser')
+            except Exception as e:
+                self.log(f"⚠️ 停止浏览器请求失败: {e}", "WARNING")
+
+        if cancelled:
+            self.log(f"⏹️ 已请求快速取消当前网络/浏览器任务: {', '.join(cancelled)}", "WARNING")
+
     def _capture_processing_request(self):
         """Capture Tk-bound processing inputs on the UI thread."""
         website = self.website_var.get()
@@ -1015,14 +1088,137 @@ class JavFileOrganizer:
             message = str(e).splitlines()[0] if str(e) else repr(e)
             self.log(f"⚠️ 无法显示提示窗口: {message}", "WARNING")
 
+    def _close_safe_stop_dialog(self):
+        dialog = getattr(self, '_safe_stop_dialog', None)
+        if dialog is not None:
+            try:
+                if dialog.winfo_exists():
+                    dialog.destroy()
+            except Exception:
+                pass
+        self._safe_stop_dialog = None
+        self._safe_stop_progress = None
+        self._safe_stop_message_var = None
+        self._safe_stop_detail_var = None
+        self._safe_stop_ok_btn = None
+        self._safe_stop_requested = False
+        self._safe_stop_dialog_done = False
+        self._safe_stop_dialog_visible = False
+
+    def _show_safe_stop_dialog(self):
+        """Show a small progress window while cancellation waits for a safe boundary."""
+        self._safe_stop_requested = True
+        self._safe_stop_dialog_done = False
+        parent = getattr(self, 'window', None)
+        if parent is None or not hasattr(parent, 'tk'):
+            self._safe_stop_dialog_visible = True
+            return
+
+        dialog = getattr(self, '_safe_stop_dialog', None)
+        try:
+            if dialog is not None and dialog.winfo_exists():
+                dialog.lift()
+                return
+        except Exception:
+            pass
+
+        dialog = tk.Toplevel(parent)
+        dialog.title("正在安全停止")
+        dialog.resizable(False, False)
+        dialog.transient(parent)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        frame = ttk.Frame(dialog, padding=18)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        message_var = tk.StringVar(value="正在安全停止中...")
+        detail_var = tk.StringVar(value="等待当前网络请求或文件事务到达安全边界，源文件会保持安全。")
+        ttk.Label(frame, textvariable=message_var, font=("Arial", 13, "bold")).pack(anchor=tk.W)
+        ttk.Label(frame, textvariable=detail_var, wraplength=360, foreground="#666666").pack(anchor=tk.W, pady=(8, 12))
+
+        progress = ttk.Progressbar(frame, mode='indeterminate', length=360)
+        progress.pack(fill=tk.X, pady=(0, 14))
+        progress.start(80)
+
+        ok_btn = ttk.Button(frame, text="确定", command=self._close_safe_stop_dialog, state=tk.DISABLED)
+        ok_btn.pack(anchor=tk.E)
+
+        self._safe_stop_dialog = dialog
+        self._safe_stop_progress = progress
+        self._safe_stop_message_var = message_var
+        self._safe_stop_detail_var = detail_var
+        self._safe_stop_ok_btn = ok_btn
+
+        try:
+            dialog.update_idletasks()
+            x = parent.winfo_rootx() + max((parent.winfo_width() - dialog.winfo_width()) // 2, 0)
+            y = parent.winfo_rooty() + max((parent.winfo_height() - dialog.winfo_height()) // 2, 0)
+            dialog.geometry(f"+{x}+{y}")
+            dialog.lift()
+        except Exception:
+            pass
+
+    def _complete_safe_stop_dialog(self, result=None):
+        if not getattr(self, '_safe_stop_requested', False):
+            return
+        self._safe_stop_dialog_done = True
+        cancelled_count = 0
+        if isinstance(result, dict):
+            cancelled_count = result.get('cancelled_count') or 0
+
+        if getattr(self, '_safe_stop_dialog', None) is None:
+            self._safe_stop_dialog_visible = True
+            return
+
+        detail = "已停止后续任务；已完成的文件保持完成，未完成的文件保持原样。"
+        if cancelled_count:
+            detail = f"已安全停止，未处理文件数: {cancelled_count}。源文件已保持原样。"
+
+        try:
+            if self._safe_stop_progress:
+                self._safe_stop_progress.stop()
+            if self._safe_stop_message_var:
+                self._safe_stop_message_var.set("已安全停止")
+            if self._safe_stop_detail_var:
+                self._safe_stop_detail_var.set(detail)
+            if self._safe_stop_ok_btn:
+                self._safe_stop_ok_btn.config(state=tk.NORMAL)
+                self._safe_stop_ok_btn.focus_set()
+            if self._safe_stop_dialog:
+                self._safe_stop_dialog.protocol("WM_DELETE_WINDOW", self._close_safe_stop_dialog)
+                self._safe_stop_dialog.lift()
+        except Exception:
+            pass
+
     def _finish_processing_ui(self):
         """Reset processing controls on the UI thread."""
+        if getattr(self, '_safe_stop_requested', False) and not getattr(self, '_safe_stop_dialog_done', False):
+            self._complete_safe_stop_dialog()
         self.is_processing = False
         self._reset_stop_signal()
         self.start_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(text="⏹️ 停止处理", state=tk.DISABLED)
         self.status_var.set(STATUS_READY)
         self._close_run_log()
+
+    def _apply_stopping_ui(self):
+        """Show immediate feedback after a stop request while safe shutdown completes."""
+        self._show_safe_stop_dialog()
+        self.stop_btn.config(text="⏳ 安全停止中...", state=tk.DISABLED)
+        if self._has_active_file_transaction():
+            self.status_var.set("正在安全停止：当前文件会在事务边界收口，源文件保持安全")
+            self.progress_var.set("⏳ 正在安全停止...")
+        else:
+            self.status_var.set("正在快速停止：当前无文件落盘事务，正在取消网络请求")
+            self.progress_var.set("⏹️ 正在快速停止...")
+        current_speed = self.speed_var.get()
+        if current_speed:
+            self.speed_var.set(f"{current_speed} | 停止请求已提交")
+        else:
+            if self._has_active_file_transaction():
+                self.speed_var.set("停止请求已提交，等待当前网络/文件事务到达安全边界")
+            else:
+                self.speed_var.set("停止请求已提交，当前无落盘事务，正在取消网络请求")
 
     def _complete_processing_ui(self, result, dry_run, run_log_path):
         """Apply workflow result to UI and finish the run."""
@@ -1078,9 +1274,17 @@ class JavFileOrganizer:
 
         def apply():
             self.progress_bar['value'] = percent
-            self.progress_var.set(f"🔄 处理中: {completed}/{total}")
+            if self._is_stop_requested():
+                self.progress_var.set(f"⏳ 正在安全停止: {completed}/{total}")
+                self.status_var.set("正在安全停止：等待当前网络/文件事务到达安全边界")
+                self.stop_btn.config(text="⏳ 安全停止中...", state=tk.DISABLED)
+            else:
+                self.progress_var.set(f"🔄 处理中: {completed}/{total}")
             self.progress_percent_var.set(f"{percent}%")
-            self.speed_var.set(timing_text)
+            if self._is_stop_requested():
+                self.speed_var.set(f"{timing_text} | 停止请求已提交")
+            else:
+                self.speed_var.set(timing_text)
 
         self._run_on_ui_thread(apply)
 
@@ -1142,6 +1346,12 @@ class JavFileOrganizer:
             self.log(f"📝   🧠 文件名候选规则: {filename_rule_candidates_path}", "INFO")
         if summary_path:
             self.log(f"📝   📦 运行摘要: {summary_path}", "INFO")
+
+        if getattr(self, '_safe_stop_requested', False):
+            self.progress_var.set("⏹️ 已安全停止")
+            self.speed_var.set(f"已用时间: {total_time:.1f} 秒 | 未处理: {cancelled_count}")
+            self._complete_safe_stop_dialog(result)
+            return
 
         if dry_run:
             self._show_messagebox(
@@ -1219,7 +1429,10 @@ class JavFileOrganizer:
             self.log(f"📝 日志文件: {run_log_path}", "INFO")
             logs_dir = os.path.dirname(run_log_path)
 
+            scan_started = time.time()
             scan = self._scan_video_files(folder_path)
+            scan_elapsed = time.time() - scan_started
+            self.log(f"⏱️ 文件扫描耗时: {scan_elapsed:.1f}秒", "INFO")
             total_files_preview = len(scan['accepted'])
             batch_count_str = request.batch_count_text
             batch_count = None
@@ -1285,6 +1498,8 @@ class JavFileOrganizer:
                 dry_run=dry_run,
                 log_path=run_log_path,
                 logs_dir=logs_dir,
+                initial_scan=scan,
+                initial_scan_elapsed_seconds=scan_elapsed,
             )
 
             self._run_on_ui_thread(
@@ -1316,6 +1531,16 @@ class JavFileOrganizer:
                 }
             title = result.get('title')
             image_url = result.get('image_url')
+            raw_meta = result.get('raw_meta') or {}
+            if not isinstance(raw_meta, dict):
+                raw_meta = {}
+            image_task = {
+                'image_url': image_url,
+                'referer': result.get('referer') or result.get('detail_url'),
+                'detail_url': result.get('detail_url'),
+                'provider': result.get('provider') or website,
+                'fallback_images': result.get('fallback_images') or raw_meta.get('fallback_images') or [],
+            }
         else:
             title, image_url = self.extract_content(test_query, self.website_configs.get(website, {}))
             if not title:
@@ -1326,13 +1551,14 @@ class JavFileOrganizer:
                     'error_type': 'provider-error',
                     'message': 'test probe did not return a title',
                 }
+            image_task = image_url
 
         image_ok = True
-        if image_url:
+        if image_url or (isinstance(image_task, dict) and image_task.get('fallback_images')):
             import tempfile
             with tempfile.TemporaryDirectory() as tmp:
                 probe_image_path = os.path.join(tmp, 'connection_probe.jpg')
-                image_ok = self.download_image(image_url, probe_image_path, max_retries=1)
+                image_ok = self.download_image(image_task, probe_image_path, max_retries=1)
 
         return {
             'ok': bool(title and image_ok),
@@ -1450,17 +1676,31 @@ class JavFileOrganizer:
             return
         
         self.log("🎬 准备开始处理...", "INFO")
+        if getattr(self, '_safe_stop_dialog', None) is not None:
+            self._close_safe_stop_dialog()
+        self._safe_stop_requested = False
+        self._safe_stop_dialog_done = False
+        self._safe_stop_dialog_visible = False
         request = self._capture_processing_request()
         self.start_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
+        self.stop_btn.config(text="⏹️ 停止处理", state=tk.NORMAL)
         self.status_var.set("处理中...")
         
         threading.Thread(target=lambda: self._process_files_worker(request), daemon=True).start()
     
     def stop_processing_func(self):
         """停止处理"""
+        if self._is_stop_requested():
+            return
+        active_transaction = self._has_active_file_transaction()
         self._request_stop()
-        self.log("⏹️ 正在停止处理...", "WARNING")
+        if not active_transaction:
+            self._cancel_inflight_network()
+        self._apply_stopping_ui()
+        if active_transaction:
+            self.log("⏹️ 停止请求已提交：已有文件落盘事务，正在等待事务完成或回滚，源文件会保持安全", "WARNING")
+        else:
+            self.log("⏹️ 停止请求已提交：当前无文件落盘事务，已请求快速取消网络/浏览器任务，源文件保持原样", "WARNING")
     
     def save_config(self):
         """保存配置"""

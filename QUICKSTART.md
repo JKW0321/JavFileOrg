@@ -1,7 +1,7 @@
 # 🚀 快速开始指南
 
-**当前 Git 维护版本：v1.5.6**
-**运行时版本：v1.5.6**
+**当前 Git 维护版本：v1.5.7**
+**运行时版本：v1.5.7**
 
 ## 安装与启动
 
@@ -17,7 +17,7 @@ python3 jav_file_organizer.py
 桌面正式包：
 
 ```text
-JAVFileOrganizer-v1.5.6.app
+JAVFileOrganizer-v1.5.7.app
 ```
 
 ## 首次使用 JAVLibrary
@@ -45,7 +45,7 @@ JAVLibrary 相关持久化目录：
 当前源码维护 tag 和程序启动日志统一为：
 
 ```text
-✅ JAV 文件整理工具 v1.5.6 启动完成 | baseline-v1.5.6 | 2026-07-08
+✅ JAV 文件整理工具 v1.5.7 启动完成 | baseline-v1.5.7 | 2026-07-08
 ```
 
 需要更完整说明请看 `README.md`。

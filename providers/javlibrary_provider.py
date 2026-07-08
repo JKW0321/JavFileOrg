@@ -22,6 +22,15 @@ class JavLibraryProvider(BaseProvider):
             self.log('🌐 使用Selenium访问JAVLibrary', 'INFO')
             try:
                 result = self.anti_crawl.selenium_javlibrary.search_by_id(normalized_query)
+                if self.should_stop():
+                    return ProviderResult(
+                        ok=False,
+                        provider=self.name,
+                        query=query,
+                        referer=referer,
+                        error_type='cancelled',
+                        message='user stopped during browser request',
+                    )
                 if result:
                     title = result.get('title', '')
                     cover_url = result.get('cover_url', '')
@@ -60,6 +69,15 @@ class JavLibraryProvider(BaseProvider):
                     message=message,
                 )
             except Exception as e:
+                if self.should_stop():
+                    return ProviderResult(
+                        ok=False,
+                        provider=self.name,
+                        query=query,
+                        referer=referer,
+                        error_type='cancelled',
+                        message='user stopped during browser request',
+                    )
                 return ProviderResult(
                     ok=False,
                     provider=self.name,

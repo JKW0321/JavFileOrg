@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from manifest_utils import build_run_summary, scan_folder_manifest, write_json_report
+from manifest_utils import build_manifest_from_entries, build_run_summary, scan_folder_manifest, write_json_report
 
 
 def test_scan_folder_manifest_marks_hidden_and_video():
@@ -32,6 +32,17 @@ def test_scan_folder_manifest_marks_hidden_and_video():
         assert entries['._ABF-123.mp4']['is_hidden'] is True
         assert entries['note.txt']['is_video'] is False
         assert manifest['total_files'] == 3
+
+
+def test_build_manifest_from_entries_sorts_without_rescanning():
+    manifest = build_manifest_from_entries('/tmp/source', [
+        {'name': 'b.mp4', 'size': 2, 'mtime': 2, 'extension': '.mp4', 'is_hidden': False, 'is_video': True},
+        {'name': 'a.txt', 'size': 1, 'mtime': 1, 'extension': '.txt', 'is_hidden': False, 'is_video': False},
+    ])
+
+    assert manifest['folder'] == '/tmp/source'
+    assert manifest['total_files'] == 2
+    assert [entry['name'] for entry in manifest['entries']] == ['a.txt', 'b.mp4']
 
 
 def test_write_json_report_roundtrip():

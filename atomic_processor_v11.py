@@ -10,15 +10,20 @@ import tempfile
 import errno
 import hashlib
 import json
+import threading
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Any, List
 from PIL import Image
 
 
+class AtomicOperationCancelled(RuntimeError):
+    """Raised when a stop request arrives before a transaction commit boundary."""
+
+
 class AtomicProcessor:
     """原子操作处理器类 - v1.1-Enhanced 适配版"""
     
-    def __init__(self, download_func, sanitize_func):
+    def __init__(self, download_func, sanitize_func, stop_requested=None):
         """
         初始化原子操作处理器
         
@@ -28,8 +33,28 @@ class AtomicProcessor:
         """
         self.download_image = download_func
         self.sanitize_filename = sanitize_func
-        self.temp_dir = Path(tempfile.gettempdir()) / "jav_file_organizer_temp"
-        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self.stop_requested = stop_requested or (lambda: False)
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="jav_file_organizer_", dir=tempfile.gettempdir()))
+        self._transaction_lock = threading.Lock()
+        self._active_transactions = 0
+
+    def _begin_transaction(self) -> None:
+        with self._transaction_lock:
+            self._active_transactions += 1
+
+    def _end_transaction(self) -> None:
+        with self._transaction_lock:
+            self._active_transactions = max(0, self._active_transactions - 1)
+
+    def has_active_transaction(self) -> bool:
+        """Return True while a commit/rollback window could affect source files."""
+        with self._transaction_lock:
+            return self._active_transactions > 0
+
+    def _raise_if_stopped(self, stage: str = '') -> None:
+        if self.stop_requested():
+            suffix = f': {stage}' if stage else ''
+            raise AtomicOperationCancelled(f'用户取消{suffix}')
     
     def validate_image(self, image_path: Path) -> bool:
         """
@@ -71,6 +96,7 @@ class AtomicProcessor:
             (是否成功, 临时文件路径, 错误信息)
         """
         try:
+            self._raise_if_stopped('下载图片前')
             # 清理文件名
             sanitized_name = self.sanitize_filename(filename)
             
@@ -81,7 +107,10 @@ class AtomicProcessor:
             success = self.download_image(image_source, str(temp_image_path))
             
             if not success:
+                self._raise_if_stopped('图片下载中')
                 return False, None, "图片下载失败"
+
+            self._raise_if_stopped('图片下载后，提交文件前')
             
             # 验证图片完整性
             if not self.validate_image(temp_image_path):
@@ -92,13 +121,32 @@ class AtomicProcessor:
             
             return True, temp_image_path, "图片下载成功"
             
+        except AtomicOperationCancelled:
+            if 'temp_image_path' in locals() and temp_image_path.exists():
+                try:
+                    temp_image_path.unlink()
+                except Exception:
+                    pass
+            raise
         except Exception as e:
             return False, None, f"下载图片到临时目录失败: {e}"
 
     def _move_temp_image_to_final(self, temp_image_path: Path, final_image_path: str) -> str:
         """将临时图片移动到最终路径，返回最终路径。"""
         shutil.move(str(temp_image_path), final_image_path)
+        if not self.validate_image(Path(final_image_path)):
+            raise RuntimeError('最终图片校验失败')
         return final_image_path
+
+    def _remove_final_image(self, final_image_path: Optional[str]) -> bool:
+        if not final_image_path or not os.path.exists(final_image_path):
+            return True
+        try:
+            os.remove(final_image_path)
+            self._fsync_parent_dir(final_image_path)
+            return True
+        except Exception:
+            return False
 
     def _fsync_file(self, path: str) -> None:
         """Force file content and metadata to disk before reporting success."""
@@ -128,6 +176,11 @@ class AtomicProcessor:
         key = f'{os.path.abspath(source_path)}\0{os.path.abspath(target_path)}'
         digest = hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]
         return self._transaction_dir_for_target(target_path) / f'{digest}.json'
+
+    def _operation_journal_path(self, source_path: str, target_path: str) -> Path:
+        key = f'operation\0{os.path.abspath(source_path)}\0{os.path.abspath(target_path)}'
+        digest = hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]
+        return self._transaction_dir_for_target(target_path) / f'op_{digest}.json'
 
     def _write_transaction_journal(self, journal_path: Path, payload: Dict[str, Any]) -> None:
         journal_path.parent.mkdir(parents=True, exist_ok=True)
@@ -159,9 +212,62 @@ class AtomicProcessor:
             return False
         return left_size == right_size
 
+    def _recover_operation_transaction(self, journal_path: Path, payload: Dict[str, Any]) -> str:
+        temp_image_path = payload.get('temp_image_path')
+        final_image_path = payload.get('final_image_path')
+        unresolved = []
+        if final_image_path:
+            if not self._remove_final_image(final_image_path):
+                unresolved.append(f'image-remove-failed:{os.path.basename(final_image_path)}')
+        if temp_image_path and os.path.exists(temp_image_path):
+            try:
+                os.remove(temp_image_path)
+            except OSError as exc:
+                unresolved.append(f'temp-image-remove-failed:{exc}')
+
+        rolled_back = 0
+        sources = payload.get('sources') or []
+        for item in reversed(sources):
+            source_path = item.get('source_path')
+            target_path = item.get('target_path')
+            expected_size = item.get('source_size')
+            expected_size = int(expected_size) if expected_size is not None else None
+            if not source_path or not target_path:
+                unresolved.append('missing-path')
+                continue
+
+            source_exists = os.path.exists(source_path)
+            target_exists = os.path.exists(target_path)
+            if target_exists and not source_exists:
+                if expected_size is not None and os.path.getsize(target_path) != expected_size:
+                    unresolved.append(f'size-mismatch:{os.path.basename(target_path)}')
+                    continue
+                self._move_video(target_path, source_path)
+                self._fsync_committed_path(source_path)
+                self._fsync_parent_dir(target_path)
+                rolled_back += 1
+            elif target_exists and source_exists:
+                if self._same_size(source_path, target_path, expected_size):
+                    os.remove(target_path)
+                    self._fsync_parent_dir(target_path)
+                    rolled_back += 1
+                else:
+                    unresolved.append(f'duplicate-size-mismatch:{os.path.basename(target_path)}')
+            elif not target_exists and source_exists:
+                continue
+            else:
+                unresolved.append(f'missing-source-and-target:{os.path.basename(source_path)}')
+
+        if unresolved:
+            return f'unresolved-operation:{",".join(unresolved)}'
+        self._remove_transaction_journal(journal_path)
+        return f'rolled-back-operation:{rolled_back}'
+
     def _recover_transaction(self, journal_path: Path) -> str:
         with open(journal_path, 'r', encoding='utf-8') as f:
             payload = json.load(f)
+        if payload.get('kind') == 'file-operation':
+            return self._recover_operation_transaction(journal_path, payload)
         source_path = payload.get('source_path')
         target_path = payload.get('target_path')
         temp_path = payload.get('temp_path')
@@ -324,8 +430,11 @@ class AtomicProcessor:
         new_video_path = None
         final_image_path = None
         rollback_ok = None
+        transaction_started = False
+        operation_journal_path = None
         
         try:
+            self._raise_if_stopped('单文件事务开始前')
             if not image_source:
                 message = "缺少图片URL，严格事务模式下不移动源视频"
                 return False, self._empty_file_result(reason=message), message
@@ -340,6 +449,9 @@ class AtomicProcessor:
             if not success:
                 reason = f"图片下载失败: {message}"
                 return False, self._empty_file_result(reason=reason), reason
+            self._raise_if_stopped('视频移动前')
+            self._begin_transaction()
+            transaction_started = True
             
             # 步骤2: 移动视频文件
             new_video_path = os.path.join(finish_folder, new_filename)
@@ -351,6 +463,30 @@ class AtomicProcessor:
                 name, ext = os.path.splitext(base_new_path)
                 new_video_path = f"{name}_{counter}{ext}"
                 counter += 1
+
+            video_basename = os.path.splitext(os.path.basename(new_video_path))[0]
+            image_filename = f"{video_basename}.jpg"
+            final_image_path = os.path.join(finish_folder, image_filename)
+            if os.path.exists(final_image_path):
+                counter = 1
+                base_image_path = final_image_path
+                while os.path.exists(final_image_path):
+                    name, ext = os.path.splitext(base_image_path)
+                    final_image_path = f"{name}_{counter}{ext}"
+                    counter += 1
+
+            operation_journal_path = self._operation_journal_path(file_path, new_video_path)
+            self._write_transaction_journal(operation_journal_path, {
+                'kind': 'file-operation',
+                'status': 'committing',
+                'sources': [{
+                    'source_path': file_path,
+                    'target_path': new_video_path,
+                    'source_size': source_size,
+                }],
+                'temp_image_path': str(temp_image_path) if temp_image_path else None,
+                'final_image_path': final_image_path,
+            })
             
             self._move_video(file_path, new_video_path)
             
@@ -361,25 +497,14 @@ class AtomicProcessor:
                     f"视频大小校验失败: source={source_size} bytes, target={moved_size} bytes"
                 )
             self._fsync_committed_path(new_video_path)
+            self._raise_if_stopped('图片提交前')
 
             # 步骤3: 如果有临时图片，移动到最终位置
             if temp_image_path and temp_image_path.exists():
-                # 构建最终图片路径（使用实际的视频文件名）
-                video_basename = os.path.splitext(os.path.basename(new_video_path))[0]
-                image_filename = f"{video_basename}.jpg"
-                final_image_path = os.path.join(finish_folder, image_filename)
-                
-                # 检查图片同名冲突
-                if os.path.exists(final_image_path):
-                    counter = 1
-                    base_image_path = final_image_path
-                    while os.path.exists(final_image_path):
-                        name, ext = os.path.splitext(base_image_path)
-                        final_image_path = f"{name}_{counter}{ext}"
-                        counter += 1
-                
                 self._move_temp_image_to_final(temp_image_path, final_image_path)
                 self._fsync_committed_path(final_image_path)
+                if operation_journal_path:
+                    self._remove_transaction_journal(operation_journal_path)
                 
                 return True, {
                     'status': 'success',
@@ -392,11 +517,33 @@ class AtomicProcessor:
                 }, "文件和图片处理成功"
             
             raise RuntimeError("图片临时文件缺失，无法完成严格事务")
+
+        except AtomicOperationCancelled as e:
+            if new_video_path and os.path.exists(new_video_path):
+                rollback_ok = self._rollback_video(new_video_path, file_path)
+            final_image_removed = self._remove_final_image(final_image_path)
+            if temp_image_path and temp_image_path.exists():
+                try:
+                    temp_image_path.unlink()
+                except Exception:
+                    pass
+            if operation_journal_path and rollback_ok is not False and final_image_removed:
+                self._remove_transaction_journal(operation_journal_path)
+            return False, {
+                'status': 'cancelled',
+                'reason': str(e),
+                'rollback_ok': rollback_ok,
+                'video_moved': False,
+                'image_downloaded': False,
+                'video_path': None,
+                'image_path': None
+            }, str(e)
             
         except Exception as e:
             # 尝试回滚视频文件移动
             if new_video_path and os.path.exists(new_video_path):
                 rollback_ok = self._rollback_video(new_video_path, file_path)
+            final_image_removed = self._remove_final_image(final_image_path)
             
             # 清理临时图片
             if temp_image_path and temp_image_path.exists():
@@ -404,6 +551,8 @@ class AtomicProcessor:
                     temp_image_path.unlink()
                 except:
                     pass
+            if operation_journal_path and rollback_ok is not False and final_image_removed:
+                self._remove_transaction_journal(operation_journal_path)
             
             return False, {
                 'status': 'failed' if rollback_ok is not False else 'critical',
@@ -414,6 +563,9 @@ class AtomicProcessor:
                 'video_path': None,
                 'image_path': None
             }, f"原子操作失败: {e}"
+        finally:
+            if transaction_started:
+                self._end_transaction()
 
     def process_series_group_atomic(self, series_files, title: str, image_source, finish_folder: str):
         """以事务性方式处理一个序列文件组。
@@ -424,7 +576,10 @@ class AtomicProcessor:
         temp_image_path = None
         moved_videos = []
         final_image_path = None
+        transaction_started = False
+        operation_journal_path = None
         try:
+            self._raise_if_stopped('序列组事务开始前')
             if not series_files:
                 return False, {'video_paths': [], 'image_path': None, 'image_downloaded': False}, '空序列组'
             if not image_source:
@@ -449,6 +604,7 @@ class AtomicProcessor:
                     'image_path': None,
                     'image_downloaded': False,
                 }, message
+            self._raise_if_stopped('序列组视频移动前')
 
             # 2) 计算每个视频的最终路径（含重名处理）
             planned = []
@@ -456,6 +612,7 @@ class AtomicProcessor:
             for file_path, sequence in series_files:
                 filename = os.path.basename(file_path)
                 file_ext = os.path.splitext(filename)[1]
+                source_size = os.path.getsize(file_path)
                 new_filename = self.sanitize_filename(f"{title}-{sequence}{file_ext}")
                 target_path = os.path.join(finish_folder, new_filename)
                 counter = 1
@@ -464,12 +621,38 @@ class AtomicProcessor:
                     name, ext = os.path.splitext(base_target_path)
                     target_path = f"{name}_{counter}{ext}"
                     counter += 1
-                planned.append((file_path, target_path))
+                planned.append((file_path, target_path, source_size))
                 reserved_targets.add(target_path)
 
+            final_image_path = os.path.join(finish_folder, self.sanitize_filename(f"{title}.jpg"))
+            counter = 1
+            base_image_path = final_image_path
+            while os.path.exists(final_image_path):
+                name, ext = os.path.splitext(base_image_path)
+                final_image_path = f"{name}_{counter}{ext}"
+                counter += 1
+
+            operation_journal_path = self._operation_journal_path(planned[0][0], planned[0][1])
+            self._write_transaction_journal(operation_journal_path, {
+                'kind': 'file-operation',
+                'status': 'committing',
+                'sources': [
+                    {
+                        'source_path': file_path,
+                        'target_path': target_path,
+                        'source_size': source_size,
+                    }
+                    for file_path, target_path, source_size in planned
+                ],
+                'temp_image_path': str(temp_image_path) if temp_image_path else None,
+                'final_image_path': final_image_path,
+            })
+
             # 3) 逐个移动并做大小校验；任何一个失败都回滚之前已移动的视频
-            for file_path, target_path in planned:
-                source_size = os.path.getsize(file_path)
+            self._begin_transaction()
+            transaction_started = True
+            for file_path, target_path, source_size in planned:
+                self._raise_if_stopped('序列组视频移动中')
                 self._move_video(file_path, target_path)
                 moved_size = os.path.getsize(target_path)
                 if moved_size != source_size:
@@ -480,16 +663,12 @@ class AtomicProcessor:
                 moved_videos.append((file_path, target_path))
 
             # 4) 全部视频成功后，再提交图片
+            self._raise_if_stopped('序列组图片提交前')
             if temp_image_path and temp_image_path.exists():
-                final_image_path = os.path.join(finish_folder, self.sanitize_filename(f"{title}.jpg"))
-                counter = 1
-                base_image_path = final_image_path
-                while os.path.exists(final_image_path):
-                    name, ext = os.path.splitext(base_image_path)
-                    final_image_path = f"{name}_{counter}{ext}"
-                    counter += 1
                 self._move_temp_image_to_final(temp_image_path, final_image_path)
                 self._fsync_committed_path(final_image_path)
+                if operation_journal_path:
+                    self._remove_transaction_journal(operation_journal_path)
 
             return True, {
                 'status': 'success',
@@ -500,6 +679,28 @@ class AtomicProcessor:
                 'image_downloaded': bool(final_image_path),
             }, '序列文件组处理成功'
 
+        except AtomicOperationCancelled as e:
+            rollback_ok = True
+            for original_path, target_path in reversed(moved_videos):
+                if not self._rollback_video(target_path, original_path):
+                    rollback_ok = False
+            final_image_removed = self._remove_final_image(final_image_path)
+            if temp_image_path and temp_image_path.exists():
+                try:
+                    temp_image_path.unlink()
+                except Exception:
+                    pass
+            if operation_journal_path and rollback_ok and final_image_removed:
+                self._remove_transaction_journal(operation_journal_path)
+            return False, {
+                'status': 'cancelled',
+                'reason': str(e),
+                'rollback_ok': rollback_ok,
+                'video_paths': [],
+                'image_path': None,
+                'image_downloaded': False,
+            }, str(e)
+
         except Exception as e:
             # 回滚已经移动的视频
             rollback_ok = True
@@ -507,18 +708,15 @@ class AtomicProcessor:
                 if not self._rollback_video(target_path, original_path):
                     rollback_ok = False
             # 删除最终图片（如果已写出）
-            if final_image_path and os.path.exists(final_image_path):
-                try:
-                    os.remove(final_image_path)
-                    self._fsync_parent_dir(final_image_path)
-                except Exception:
-                    pass
+            final_image_removed = self._remove_final_image(final_image_path)
             # 清理临时图片
             if temp_image_path and temp_image_path.exists():
                 try:
                     temp_image_path.unlink()
                 except Exception:
                     pass
+            if operation_journal_path and rollback_ok and final_image_removed:
+                self._remove_transaction_journal(operation_journal_path)
             return False, {
                 'status': 'failed' if rollback_ok else 'critical',
                 'reason': f"序列文件组原子处理失败: {e}",
@@ -527,6 +725,9 @@ class AtomicProcessor:
                 'image_path': None,
                 'image_downloaded': False,
             }, f"序列文件组原子处理失败: {e}"
+        finally:
+            if transaction_started:
+                self._end_transaction()
     
     def cleanup_temp_files(self):
         """清理临时文件"""
@@ -538,6 +739,10 @@ class AtomicProcessor:
                             file.unlink()
                     except Exception as e:
                         print(f"清理临时文件失败 {file}: {e}")
+                try:
+                    self.temp_dir.rmdir()
+                except OSError:
+                    pass
         except Exception as e:
             print(f"清理临时目录失败: {e}")
     

@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import threading
+import tempfile
+from pathlib import Path
 
 import jav_file_organizer as jfo_mod
 
@@ -17,9 +19,11 @@ class RecordingWindow:
 class FakeButton:
     def __init__(self):
         self.state = None
+        self.text = None
 
     def config(self, **kwargs):
         self.state = kwargs.get('state', self.state)
+        self.text = kwargs.get('text', self.text)
 
 
 class FakeVar:
@@ -37,6 +41,22 @@ class FakeProgressBar(dict):
     pass
 
 
+class FakeSession:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class FakeAtomicProcessor:
+    def __init__(self, active=False):
+        self.active = active
+
+    def has_active_transaction(self):
+        return self.active
+
+
 def make_shell():
     obj = jfo_mod.JavFileOrganizer.__new__(jfo_mod.JavFileOrganizer)
     obj.window = RecordingWindow()
@@ -49,10 +69,12 @@ def make_shell():
     obj.progress_percent_var = FakeVar()
     obj.speed_var = FakeVar()
     obj.is_processing = True
-    obj.stop_processing = True
+    obj.stop_processing = False
     obj._stop_event = threading.Event()
-    obj._stop_event.set()
     obj._close_run_log = lambda: None
+    obj.session = FakeSession()
+    obj.anti_crawl = None
+    obj.atomic_processor = FakeAtomicProcessor(active=False)
     return obj
 
 
@@ -139,6 +161,39 @@ def test_reset_stop_signal_clears_legacy_flag_and_event():
     assert obj._is_stop_requested() is False
 
 
+def test_stop_processing_func_fast_cancels_network_when_no_file_transaction():
+    obj = make_shell()
+    logs = []
+    obj.log = lambda message, level='INFO': logs.append((level, message))
+
+    obj.stop_processing_func()
+
+    assert obj.stop_processing is True
+    assert obj.session.closed is True
+    assert obj.stop_btn.state == jfo_mod.tk.DISABLED
+    assert obj.stop_btn.text == "⏳ 安全停止中..."
+    assert "正在快速停止" in obj.status_var.value
+    assert obj.progress_var.value == "⏹️ 正在快速停止..."
+    assert "当前无落盘事务" in obj.speed_var.value
+    assert any("快速取消" in message for _, message in logs)
+
+
+def test_stop_processing_func_keeps_safe_stop_when_file_transaction_active():
+    obj = make_shell()
+    obj.atomic_processor = FakeAtomicProcessor(active=True)
+    obj.log = lambda *a, **k: None
+
+    obj.stop_processing_func()
+
+    assert obj.stop_processing is True
+    assert obj.session.closed is False
+    assert obj.stop_btn.state == jfo_mod.tk.DISABLED
+    assert obj.stop_btn.text == "⏳ 安全停止中..."
+    assert "正在安全停止" in obj.status_var.value
+    assert obj.progress_var.value == "⏳ 正在安全停止..."
+    assert "停止请求已提交" in obj.speed_var.value
+
+
 def test_capture_processing_request_copies_ui_values():
     obj = make_shell_with_inputs()
 
@@ -179,6 +234,55 @@ def test_start_processing_passes_plain_request_to_worker(monkeypatch):
     assert obj.start_btn.state == jfo_mod.tk.DISABLED
     assert obj.stop_btn.state == jfo_mod.tk.NORMAL
     assert obj.status_var.value == "处理中..."
+
+
+def test_gui_scan_video_files_returns_manifest_entries_for_workflow_reuse():
+    obj = make_shell()
+    obj.video_extensions = {'.mp4', '.mkv'}
+    obj.minimum_video_size_bytes = 16 * 1024
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / 'SONE-753.mp4').write_bytes(b'a' * 32768)
+        (root / 'ABF-139.mkv').write_bytes(b'b' * 32768)
+        (root / '._SONE-753.mp4').write_bytes(b'x')
+        (root / 'tiny.mp4').write_bytes(b'y')
+        (root / 'note.txt').write_text('hello', encoding='utf-8')
+        (root / 'subdir').mkdir()
+
+        scan = obj._scan_video_files(str(root))
+
+    assert scan['accepted'] == ['ABF-139.mkv', 'SONE-753.mp4']
+    assert scan['skipped_hidden'] == ['._SONE-753.mp4']
+    assert scan['skipped_small'] == ['tiny.mp4']
+    assert scan['total_files'] == 5
+    entries = {item['name']: item for item in scan['manifest_entries']}
+    assert entries['SONE-753.mp4']['is_video'] is True
+    assert entries['note.txt']['is_video'] is False
+    assert entries['._SONE-753.mp4']['is_hidden'] is True
+    assert scan['file_sizes']['SONE-753.mp4'] == 32768
+
+
+def test_run_log_keeps_line_buffered_handle_until_close():
+    obj = make_shell()
+    obj.version = 'v-test'
+    obj.build_id = 'build-test'
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = obj._start_run_log(tmp, 'javbus')
+        obj._write_run_log('[00:00:00] test line\n')
+
+        assert getattr(obj, '_run_log_file', None) is not None
+        assert obj._run_log_file.closed is False
+
+        jfo_mod.JavFileOrganizer._close_run_log(obj)
+
+        assert obj.run_log_path is None
+        assert obj._run_log_file is None
+        text = Path(path).read_text(encoding='utf-8')
+        assert '# version: v-test' in text
+        assert '[00:00:00] test line' in text
+        assert '# ended_at:' in text
 
 
 def test_connection_success_uses_safe_messagebox(monkeypatch):

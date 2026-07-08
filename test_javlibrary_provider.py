@@ -66,6 +66,33 @@ def test_javlibrary_provider_uppercases_query_for_selenium_and_tw_referer():
     assert selenium.calls == ['JBD-101']
 
 
+def test_javlibrary_provider_stop_during_selenium_request_returns_cancelled():
+    stop = {'value': False}
+
+    class StopAfterSearchSelenium(DummySeleniumJavLibrary):
+        def search_by_id(self, query):
+            self.calls.append(query)
+            stop['value'] = True
+            return {
+                'title': 'JBD-101 Title',
+                'cover_url': 'https://pics.example/jbd101.jpg',
+            }
+
+    selenium = StopAfterSearchSelenium(None)
+    provider = JavLibraryProvider(
+        log=lambda *a, **k: None,
+        anti_crawl=AntiCrawl(selenium),
+        stop_requested=lambda: stop['value'],
+    )
+
+    result = provider.search('jbd-101')
+
+    assert result.ok is False
+    assert result.error_type == 'cancelled'
+    assert result.message == 'user stopped during browser request'
+    assert selenium.calls == ['JBD-101']
+
+
 def test_javlibrary_provider_rejects_partial_selenium_result():
     selenium = DummySeleniumJavLibrary({
         'title': 'JBD-101 蛇縛のレズリンチ 3',

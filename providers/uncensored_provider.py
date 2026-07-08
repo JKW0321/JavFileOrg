@@ -69,7 +69,7 @@ class UncensoredProvider(BaseProvider):
         session = self.session
         started = time.monotonic()
         try:
-            response = session.get(url, timeout=(5, 15))
+            response = session.get(url, timeout=(5, 10))
             response.raise_for_status()
             return response
         finally:
@@ -380,7 +380,30 @@ class UncensoredProvider(BaseProvider):
                     raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
                 )
 
+            if self.should_stop():
+                return ProviderResult(
+                    ok=False,
+                    provider=self.name,
+                    query=query,
+                    detail_url=detail_url,
+                    referer=detail_url,
+                    error_type='cancelled',
+                    message='user stopped before detail page fetch',
+                    raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+                )
+
             response = self._request(detail_url)
+            if self.should_stop():
+                return ProviderResult(
+                    ok=False,
+                    provider=self.name,
+                    query=query,
+                    detail_url=detail_url,
+                    referer=detail_url,
+                    error_type='cancelled',
+                    message='user stopped after network response',
+                    raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+                )
             soup = BeautifulSoup(response.content, 'html.parser')
             if not soup or not soup.find():
                 return ProviderResult(
@@ -480,15 +503,7 @@ class UncensoredProvider(BaseProvider):
                 raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
             )
         except requests.exceptions.RequestException as exc:
-            return ProviderResult(
-                ok=False,
-                provider=self.name,
-                query=query,
-                detail_url=detail_url,
-                referer=detail_url,
-                error_type='network-error',
-                message=str(exc),
-            )
+            return self._request_exception_result(exc, query, detail_url, meta)
         except Exception as exc:
             return ProviderResult(
                 ok=False,
@@ -513,6 +528,55 @@ class UncensoredProvider(BaseProvider):
             return False
         image_url = json_detail.get('image_url')
         return bool(json_detail.get('title') and image_url and not self._is_placeholder_image(image_url))
+
+    def _request_exception_result(self, exc, query, detail_url, meta):
+        if self.should_stop():
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                detail_url=detail_url,
+                referer=detail_url,
+                error_type='cancelled',
+                message='user stopped during network request',
+                raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+            )
+        message = str(exc)
+        message_lower = message.lower()
+        response = getattr(exc, 'response', None)
+        status_code = getattr(response, 'status_code', None)
+        access_denied = (
+            status_code in (401, 403, 451)
+            or '401' in message_lower
+            or '403' in message_lower
+            or '451' in message_lower
+            or 'forbidden' in message_lower
+        )
+        if access_denied:
+            family = meta.get('family') or 'uncensored source'
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                detail_url=detail_url,
+                referer=detail_url,
+                error_type='access-denied',
+                message=(
+                    f'{family} access denied; official page may require browser cookies, '
+                    'age/region verification, or site-side anti-bot access'
+                ),
+                raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+            )
+        return ProviderResult(
+            ok=False,
+            provider=self.name,
+            query=query,
+            detail_url=detail_url,
+            referer=detail_url,
+            error_type='network-error',
+            message=message,
+            raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+        )
 
     def _parse_tokyo_hot_result(self, soup, detail_url, meta):
         expected_code = (meta.get('code') or '').lower()

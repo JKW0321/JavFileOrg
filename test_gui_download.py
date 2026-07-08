@@ -74,7 +74,7 @@ def test_download_image_success_writes_chunks():
 
         assert ok is True
         assert path.read_bytes() == b'abcd'
-        assert session.calls[0]['timeout'] == (10, 60)
+        assert session.calls[0]['timeout'] == (8, 30)
         assert session.calls[0]['stream'] is True
         assert session.calls[0]['headers']['User-Agent'] == 'UA'
 
@@ -215,3 +215,33 @@ def test_download_image_retry_wait_can_be_cancelled(monkeypatch):
         assert sleeps == [0.25]
         assert not path.exists()
         assert any('重试等待期间收到停止请求' in message for _, message in obj.logs)
+
+
+def test_connection_probe_downloads_with_provider_aware_image_task():
+    class Provider:
+        def search(self, query):
+            return {
+                'ok': True,
+                'title': 'TOKYO-HOT n0839',
+                'image_url': 'https://cdn.example/primary.jpg',
+                'provider': 'uncensored',
+                'detail_url': 'https://my.tokyo-hot.com/product/21087/',
+                'referer': 'https://my.tokyo-hot.com/product/?q=n0839',
+                'fallback_images': ['https://cdn.example/fallback.jpg'],
+            }
+
+    obj = jfo_mod.JavFileOrganizer.__new__(jfo_mod.JavFileOrganizer)
+    obj._build_provider_factory = lambda: (lambda name: Provider())
+    captured = []
+    obj.download_image = lambda image_task, save_path, max_retries=3: captured.append(image_task) or True
+
+    result = obj._run_connection_probe('uncensored', 'n0839')
+
+    assert result['ok'] is True
+    assert captured == [{
+        'image_url': 'https://cdn.example/primary.jpg',
+        'referer': 'https://my.tokyo-hot.com/product/?q=n0839',
+        'detail_url': 'https://my.tokyo-hot.com/product/21087/',
+        'provider': 'uncensored',
+        'fallback_images': ['https://cdn.example/fallback.jpg'],
+    }]

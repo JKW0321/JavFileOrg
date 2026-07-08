@@ -25,7 +25,7 @@ class RequestHtmlProvider(BaseProvider):
         session = self._get_session()
         started = time.monotonic()
         try:
-            response = session.get(url, timeout=(5, 15))
+            response = session.get(url, timeout=(5, 10))
             response.raise_for_status()
             return response
         finally:
@@ -105,6 +105,15 @@ class RequestHtmlProvider(BaseProvider):
         self.log(f'🔍 搜索URL: {search_url}', 'INFO')
         try:
             response = self._request(search_url)
+            if self.should_stop():
+                return ProviderResult(
+                    ok=False,
+                    provider=self.name,
+                    query=query,
+                    referer=search_url,
+                    error_type='cancelled',
+                    message='user stopped after network response',
+                )
             soup = BeautifulSoup(response.content, 'html.parser')
             if not soup or not soup.find():
                 return ProviderResult(
@@ -180,6 +189,18 @@ class RequestHtmlProvider(BaseProvider):
                     message=invalid_reason,
                 )
             if detail_url and detail_url != search_url and (title or image_url):
+                if self.should_stop():
+                    return ProviderResult(
+                        ok=False,
+                        title=title,
+                        image_url=image_url,
+                        provider=self.name,
+                        query=query,
+                        detail_url=detail_url,
+                        referer=search_url,
+                        error_type='cancelled',
+                        message='user stopped before detail page fetch',
+                    )
                 try:
                     upgrade_title, upgrade_image = self._fetch_detail_page(detail_url)
                     if self._should_use_detail_title(title, upgrade_title):
@@ -211,6 +232,15 @@ class RequestHtmlProvider(BaseProvider):
                 referer=search_url,
             )
         except requests.exceptions.RequestException as e:
+            if self.should_stop():
+                return ProviderResult(
+                    ok=False,
+                    provider=self.name,
+                    query=query,
+                    referer=search_url,
+                    error_type='cancelled',
+                    message='user stopped during network request',
+                )
             return ProviderResult(
                 ok=False,
                 provider=self.name,
