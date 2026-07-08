@@ -205,12 +205,65 @@ class WorkflowService:
             'folder': folder_path,
             'dry_run': dry_run,
             'counts': self._file_result_counts(file_results),
+            'timings': self._build_timing_summary(file_results),
             'results': file_results,
         }
         return write_json_report(
             os.path.join(logs_dir, f'file_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'),
             payload,
         )
+
+    def _build_timing_summary(self, file_results):
+        def add_metric(bucket, name, value):
+            if value is None:
+                return
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return
+            metric = bucket.setdefault(name, {'count': 0, 'total': 0.0, 'max': 0.0})
+            metric['count'] += 1
+            metric['total'] += numeric
+            metric['max'] = max(metric['max'], numeric)
+
+        providers = {}
+        slowest = []
+        for item in file_results:
+            provider = item.get('provider') or 'none'
+            bucket = providers.setdefault(provider, {
+                'count': 0,
+                'status_counts': {},
+                'metrics': {},
+            })
+            bucket['count'] += 1
+            status = item.get('status') or 'unknown'
+            bucket['status_counts'][status] = bucket['status_counts'].get(status, 0) + 1
+            add_metric(bucket['metrics'], 'provider_elapsed_seconds', item.get('provider_elapsed_seconds'))
+            add_metric(bucket['metrics'], 'atomic_elapsed_seconds', item.get('atomic_elapsed_seconds'))
+            add_metric(bucket['metrics'], 'file_elapsed_seconds', item.get('file_elapsed_seconds'))
+            if item.get('file_elapsed_seconds') is not None:
+                slowest.append({
+                    'source_name': item.get('source_name'),
+                    'provider': provider,
+                    'query': item.get('query'),
+                    'status': status,
+                    'file_elapsed_seconds': item.get('file_elapsed_seconds'),
+                    'provider_elapsed_seconds': item.get('provider_elapsed_seconds'),
+                    'atomic_elapsed_seconds': item.get('atomic_elapsed_seconds'),
+                    'reason': item.get('reason'),
+                })
+
+        for bucket in providers.values():
+            for metric in bucket['metrics'].values():
+                metric['avg'] = round(metric['total'] / metric['count'], 3) if metric['count'] else 0
+                metric['max'] = round(metric['max'], 3)
+                metric['total'] = round(metric['total'], 3)
+
+        slowest.sort(key=lambda item: item.get('file_elapsed_seconds') or 0, reverse=True)
+        return {
+            'providers': providers,
+            'slowest_files': slowest[:10],
+        }
 
     def _write_filename_rule_candidates(self, *, logs_dir, video_files):
         from filename_rule_library import write_filename_rule_candidates
@@ -249,6 +302,7 @@ class WorkflowService:
             file_results=file_results,
         )
         stats = self._derive_result_stats(file_results, total_files)
+        timing_summary = self._build_timing_summary(file_results)
         summary = build_run_summary(
             version=self.app_version, website=website, folder=folder_path,
             total_files=total_files, success_count=stats['success_count'], failed_count=stats['failed_count'],
@@ -263,6 +317,7 @@ class WorkflowService:
             image_failed_count=stats['image_failed_count'],
             file_result_counts=stats['file_result_counts'],
             filename_rule_candidates_path=filename_rule_candidates_path,
+            timing_summary=timing_summary,
         )
         summary_path = write_json_report(
             os.path.join(logs_dir, f'run_summary_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'),
@@ -286,7 +341,7 @@ class WorkflowService:
             self.log(f'⏱️ Provider搜索耗时: provider={provider_name} | query={query} | {elapsed:.1f}秒', 'INFO')
             if self._is_retryable_provider_failure(result) and not self.stop_requested():
                 self.log(
-                    f'⚠️ {provider_name} 需要验证或验证超时，重试一次: {query}',
+                    f'⚠️ {provider_name} 遇到可重试的临时错误，重试一次: {query} | {result.get("error_type")} - {result.get("message")}',
                     'WARNING',
                 )
                 retry_started = time.time()
@@ -344,7 +399,49 @@ class WorkflowService:
     def _is_retryable_provider_failure(self, result):
         if result.get('ok'):
             return False
-        return result.get('error_type') in {'verification-timeout', 'verification-required'}
+        error_type = result.get('error_type')
+        if error_type == 'verification-timeout':
+            return True
+        if error_type != 'network-error':
+            return False
+        message = (result.get('message') or '').lower()
+        non_retryable_markers = (
+            '403',
+            '404',
+            'forbidden',
+            'not found',
+            'verification',
+            'cloudflare',
+        )
+        if any(marker in message for marker in non_retryable_markers):
+            return False
+        retryable_markers = (
+            'timeout',
+            'timed out',
+            'connection reset',
+            'connection aborted',
+            'remote disconnected',
+            'temporarily unavailable',
+            'ssleoferror',
+            'unexpected_eof',
+            'eof occurred',
+        )
+        return any(marker in message for marker in retryable_markers)
+
+    def _image_request_from_result(self, result, provider_name):
+        raw_meta = result.get('raw_meta') or {}
+        if not isinstance(raw_meta, dict):
+            raw_meta = {}
+        fallback_images = result.get('fallback_images') or raw_meta.get('fallback_images') or []
+        if not result.get('image_url') and not fallback_images:
+            return None
+        return {
+            'image_url': result.get('image_url'),
+            'referer': result.get('referer') or result.get('detail_url'),
+            'detail_url': result.get('detail_url'),
+            'provider': result.get('provider') or provider_name,
+            'fallback_images': fallback_images,
+        }
 
     def _append_cancelled_series(self, file_results, series_items):
         for base_code, files in series_items:
@@ -570,7 +667,8 @@ class WorkflowService:
                 title = self.smart_truncate_filename(title, os.path.basename(files[0][0]), max_length)
             atomic_started = time.time()
             finish_folder = self._safe_finish_folder(folder_path, finish_folder, dry_run)
-            ok, payload, message = self.atomic_processor.process_series_group_atomic(files, title, result.get('image_url'), finish_folder)
+            image_request = self._image_request_from_result(result, provider_name)
+            ok, payload, message = self.atomic_processor.process_series_group_atomic(files, title, image_request, finish_folder)
             atomic_elapsed = round(time.time() - atomic_started, 3)
             file_elapsed = round(time.time() - item_started, 3)
             self.log(
@@ -730,7 +828,8 @@ class WorkflowService:
             new_filename = self.sanitize_filename(f'{title}{file_ext}')
             atomic_started = time.time()
             finish_folder = self._safe_finish_folder(folder_path, finish_folder, dry_run)
-            ok, payload, message = self.atomic_processor.process_file_atomic(file_path, new_filename, result.get('image_url'), finish_folder)
+            image_request = self._image_request_from_result(result, provider_name)
+            ok, payload, message = self.atomic_processor.process_file_atomic(file_path, new_filename, image_request, finish_folder)
             atomic_elapsed = round(time.time() - atomic_started, 3)
             file_elapsed = round(time.time() - item_started, 3)
             self.log(

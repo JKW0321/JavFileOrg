@@ -23,6 +23,12 @@ class DummyResponse:
         return iter(self.chunks)
 
 
+class FailingStreamResponse(DummyResponse):
+    def iter_content(self, chunk_size=1):
+        yield b'partial'
+        raise RuntimeError('stream interrupted')
+
+
 class RecordingSession:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -104,7 +110,7 @@ def test_download_image_retry_cleans_partial_file(monkeypatch):
         assert ok is True
         assert path.read_bytes() == b'ok'
         assert len(session.calls) == 2
-        assert sleeps == [1]
+        assert sleeps == [0.25, 0.25, 0.25, 0.25]
         assert any('尝试 1/2' in message for _, message in obj.logs)
 
 
@@ -119,4 +125,93 @@ def test_download_image_final_failure_cleans_partial_file():
 
         assert ok is False
         assert not path.exists()
-        assert any('已重试 1 次' in message for _, message in obj.logs)
+        assert any('所有候选均不可用' in message for _, message in obj.logs)
+
+
+def test_download_image_retries_when_stream_breaks_mid_download(monkeypatch):
+    session = RecordingSession([
+        FailingStreamResponse([]),
+        DummyResponse([b'complete']),
+    ])
+    obj = make_downloader(session)
+    sleeps = []
+    monkeypatch.setattr(download_service.time, 'sleep', lambda seconds: sleeps.append(seconds))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'cover.jpg'
+        ok = obj.download_image('http://example/cover.jpg', str(path), max_retries=2)
+
+        assert ok is True
+        assert path.read_bytes() == b'complete'
+        assert len(session.calls) == 2
+        assert sleeps == [0.25, 0.25, 0.25, 0.25]
+        assert any('stream interrupted' in message for _, message in obj.logs)
+
+
+def test_download_image_final_stream_failure_leaves_no_partial(monkeypatch):
+    session = RecordingSession([FailingStreamResponse([])])
+    obj = make_downloader(session)
+    monkeypatch.setattr(download_service.time, 'sleep', lambda seconds: None)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'cover.jpg'
+        ok = obj.download_image('http://example/cover.jpg', str(path), max_retries=1)
+
+        assert ok is False
+        assert not path.exists()
+
+
+def test_download_image_uses_provider_context_and_fallback_without_retrying_403(monkeypatch):
+    session = RecordingSession([
+        DummyResponse([], raise_error=RuntimeError('403 Client Error: Forbidden')),
+        DummyResponse([b'fallback-ok']),
+    ])
+    obj = make_downloader(session)
+    sleeps = []
+    monkeypatch.setattr(download_service.time, 'sleep', lambda seconds: sleeps.append(seconds))
+
+    image_task = {
+        'image_url': 'https://cdn.example/primary.jpg',
+        'fallback_images': ['https://cdn.example/fallback.jpg'],
+        'referer': 'https://provider.example/detail/1',
+        'provider': 'tokyo-hot',
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'cover.jpg'
+        ok = obj.download_image(image_task, str(path), max_retries=2)
+
+        assert ok is True
+        assert path.read_bytes() == b'fallback-ok'
+        assert [call['url'] for call in session.calls] == [
+            'https://cdn.example/primary.jpg',
+            'https://cdn.example/fallback.jpg',
+        ]
+        assert all(call['headers']['Referer'] == 'https://provider.example/detail/1' for call in session.calls)
+        assert all(call['headers']['Origin'] == 'https://provider.example' for call in session.calls)
+        assert sleeps == []
+
+
+def test_download_image_retry_wait_can_be_cancelled(monkeypatch):
+    session = RecordingSession([
+        RuntimeError('connection reset'),
+        DummyResponse([b'should-not-run']),
+    ])
+    obj = make_downloader(session)
+    sleeps = []
+
+    def stop_during_sleep(seconds):
+        sleeps.append(seconds)
+        obj._request_stop()
+
+    monkeypatch.setattr(download_service.time, 'sleep', stop_during_sleep)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'cover.jpg'
+        path.write_bytes(b'partial')
+        ok = obj.download_image('http://example/cover.jpg', str(path), max_retries=2)
+
+        assert ok is False
+        assert len(session.calls) == 1
+        assert sleeps == [0.25]
+        assert not path.exists()
+        assert any('重试等待期间收到停止请求' in message for _, message in obj.logs)

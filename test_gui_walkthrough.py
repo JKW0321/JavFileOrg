@@ -183,9 +183,9 @@ def make_organizer(folder_path, finish_path):
     obj.stop_processing = False
 
     # version / metadata（兼容 _process_files_worker 的 log）
-    obj.version = 'v1.5.5'
-    obj.build_id = 'baseline-v1.5.5'
-    obj.build_date = '2026-07-05'
+    obj.version = 'v1.5.6'
+    obj.build_id = 'baseline-v1.5.6'
+    obj.build_date = '2026-07-08'
 
     # video_extensions（_process_files_worker 需要）
     obj.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
@@ -203,7 +203,7 @@ def make_organizer(folder_path, finish_path):
 
 def main():
     print("=" * 70)
-    print("JAV 文件整理工具 v1.5.5 — GUI 完整流程演示")
+    print("JAV 文件整理工具 v1.5.6 — GUI 完整流程演示")
     print("=" * 70)
     print()
     print("模拟场景：")

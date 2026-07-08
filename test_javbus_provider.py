@@ -56,3 +56,25 @@ def test_javbus_uses_anti_crawl_session_and_returns_audit_fields():
     assert result.referer == 'https://www.javbus.com/SONE-753'
     assert direct_session.calls == []
     assert anti_session.calls == [('https://www.javbus.com/SONE-753', (5, 15))]
+
+
+def test_javbus_rejects_age_verification_page():
+    html = '<html><head><title>Age Verification JavBus</title></head><body></body></html>'
+    provider = JavBusProvider(log=lambda *a, **k: None, session=RecordingSession(html))
+
+    result = provider.search('ABF-217')
+
+    assert result.ok is False
+    assert result.error_type == 'invalid-result'
+    assert result.message == 'javbus invalid result: age-verification-title,missing-image'
+
+
+def test_javbus_rejects_missing_image():
+    html = '<html><head><title>ABF-217 Valid Looking Title</title></head><body></body></html>'
+    provider = JavBusProvider(log=lambda *a, **k: None, session=RecordingSession(html))
+
+    result = provider.search('ABF-217')
+
+    assert result.ok is False
+    assert result.error_type == 'invalid-result'
+    assert result.message == 'javbus invalid result: missing-image'

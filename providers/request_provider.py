@@ -89,8 +89,14 @@ class RequestHtmlProvider(BaseProvider):
     def _invalid_result_reason(self, title, image_url, detail_url, referer):
         return ''
 
+    def _blocked_page_failure(self, soup, response):
+        return None
+
     def _should_skip_detail_for_invalid_search(self, invalid_reason, title, image_url):
         return False
+
+    def _should_use_detail_title(self, current_title, detail_title):
+        return bool(detail_title and len(detail_title) > len(current_title or ''))
 
     def search(self, query: str) -> ProviderResult:
         if self.should_stop():
@@ -108,6 +114,17 @@ class RequestHtmlProvider(BaseProvider):
                     referer=search_url,
                     error_type='parse-error',
                     message='empty html',
+                )
+            blocked_failure = self._blocked_page_failure(soup, response)
+            if blocked_failure:
+                error_type, message = blocked_failure
+                return ProviderResult(
+                    ok=False,
+                    provider=self.name,
+                    query=query,
+                    referer=search_url,
+                    error_type=error_type,
+                    message=message,
                 )
             title = None
             for selector in self.title_selectors:
@@ -165,7 +182,7 @@ class RequestHtmlProvider(BaseProvider):
             if detail_url and detail_url != search_url and (title or image_url):
                 try:
                     upgrade_title, upgrade_image = self._fetch_detail_page(detail_url)
-                    if upgrade_title and len(upgrade_title) > len(title or ''):
+                    if self._should_use_detail_title(title, upgrade_title):
                         title = upgrade_title
                     if upgrade_image:
                         image_url = upgrade_image

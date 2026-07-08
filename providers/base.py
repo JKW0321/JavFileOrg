@@ -1,5 +1,5 @@
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -13,6 +13,7 @@ class ProviderResult:
     referer: Optional[str] = None
     error_type: Optional[str] = None
     message: Optional[str] = None
+    fallback_images: List[str] = field(default_factory=list)
     raw_meta: Dict[str, Any] = field(default_factory=dict)
 
     def get(self, key: str, default=None):

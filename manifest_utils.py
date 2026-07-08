@@ -55,7 +55,8 @@ def build_run_summary(*, version: str, website: str, folder: str, total_files: i
                       image_success_count: int = 0,
                       image_failed_count: int = 0,
                       file_result_counts: dict | None = None,
-                      filename_rule_candidates_path: str | None = None) -> dict:
+                      filename_rule_candidates_path: str | None = None,
+                      timing_summary: dict | None = None) -> dict:
     return {
         'generated_at': datetime.now().isoformat(),
         'version': version,
@@ -77,6 +78,7 @@ def build_run_summary(*, version: str, website: str, folder: str, total_files: i
             'file_result_counts': file_result_counts or {},
         },
         'routed_counts': routed_counts or {},
+        'timings': timing_summary or {},
         'artifacts': {
             'log_path': log_path,
             'before_manifest_path': before_manifest_path,

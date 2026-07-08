@@ -8,7 +8,7 @@ from pathlib import Path
 from PIL import Image
 
 from atomic_processor_v11 import AtomicProcessor
-from filename_utils import clean_filename_for_search
+from filename_utils import clean_filename_for_search, extract_series_info
 from workflow_service import WorkflowService
 
 
@@ -95,6 +95,20 @@ def _series_info(stem):
     return (None, None)
 
 
+def _detect_series_from_filename_utils(files):
+    series_groups = {}
+    standalone = []
+    for file_path in files:
+        base, sequence = extract_series_info(Path(file_path).stem)
+        if base:
+            series_groups.setdefault(base, []).append((file_path, sequence))
+        else:
+            standalone.append(file_path)
+    for base in series_groups:
+        series_groups[base].sort(key=lambda item: int(item[1]))
+    return series_groups, standalone
+
+
 def test_workflow_dry_run_keeps_source_files():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -137,6 +151,44 @@ def test_workflow_dry_run_keeps_source_files():
         summary = json.loads(Path(result['summary_path']).read_text(encoding='utf-8'))
         assert summary['counts']['planned_count'] == 2
         assert summary['counts']['file_result_counts'] == {'planned': 2}
+
+
+def test_workflow_treats_underscore_suffix_as_series_sequence():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs = root / 'JFO_Logs'
+        f1 = root / 'MIRD-277_1.mp4'
+        f3 = root / 'MIRD-277_3.mp4'
+        f1.write_bytes(b'a' * 32768)
+        f3.write_bytes(b'b' * 32768)
+        provider = DummyProvider()
+        svc = WorkflowService(
+            log=lambda *a, **k: None,
+            provider_factory=lambda name: provider,
+            atomic_processor=AtomicProcessor(_download, _sanitize),
+            clean_filename_for_search=clean_filename_for_search,
+            sanitize_filename=_sanitize,
+            detect_series_files=_detect_series_from_filename_utils,
+            smart_truncate_filename=lambda title, original, max_length: title,
+            stop_requested=lambda: False,
+            minimum_video_size_bytes=16384,
+        )
+        result = svc.run(
+            folder_path=str(root),
+            finish_folder=str(root / 'Finish'),
+            website='javbus',
+            dry_run=False,
+            logs_dir=str(logs),
+        )
+
+        assert provider.calls == ['MIRD-277']
+        assert result['success_count'] == 2
+        assert result['failed_count'] == 0
+        assert not f1.exists()
+        assert not f3.exists()
+        file_results = json.loads(Path(result['file_results_path']).read_text(encoding='utf-8'))
+        assert {item['group'] for item in file_results['results']} == {'MIRD-277'}
+        assert {item['sequence'] for item in file_results['results']} == {'1', '3'}
 
 
 def test_workflow_run_summary_uses_injected_app_version():
@@ -360,7 +412,7 @@ def test_workflow_retries_verification_timeout_for_series_before_failing():
         assert result['failed_count'] == 0
         assert progress[-1] == (2, 2, '序列组 JBD-131')
         log_text = '\n'.join(message for _, message in log_entries)
-        assert '需要验证或验证超时，重试一次: JBD-131' in log_text
+        assert '遇到可重试的临时错误，重试一次: JBD-131' in log_text
         assert not f1.exists()
         assert not f2.exists()
 
@@ -427,6 +479,133 @@ def test_provider_search_does_not_cache_retryable_failures():
     svc._provider_search(cache, 'javlibrary', provider, 'JBD-131')
 
     assert provider.calls == ['JBD-131', 'JBD-131', 'JBD-131', 'JBD-131']
+    assert cache == {}
+
+
+def test_provider_search_does_not_retry_verification_required_immediately():
+    class VerificationRequiredProvider:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            return {
+                'ok': False,
+                'title': None,
+                'image_url': None,
+                'provider': 'bestjavporn',
+                'detail_url': None,
+                'referer': f'https://www.bestjavporn.com/ja/?s={query}',
+                'error_type': 'verification-required',
+                'message': 'Cloudflare verification page',
+            }
+
+    provider = VerificationRequiredProvider()
+    logs = []
+    svc = WorkflowService(
+        log=lambda message, level='INFO': logs.append((level, message)),
+        provider_factory=lambda name: provider,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+        stop_requested=lambda: False,
+    )
+    cache = {}
+
+    result = svc._provider_search(cache, 'bestjavporn', provider, 'ABF-311')
+
+    assert result['error_type'] == 'verification-required'
+    assert provider.calls == ['ABF-311']
+    assert cache == {}
+    assert not any('重试一次' in message for _, message in logs)
+
+
+def test_provider_search_retries_transient_network_error_once():
+    class FlakyNetworkProvider:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            if len(self.calls) == 1:
+                return {
+                    'ok': False,
+                    'title': None,
+                    'image_url': None,
+                    'provider': 'javhoo',
+                    'detail_url': None,
+                    'referer': None,
+                    'error_type': 'network-error',
+                    'message': 'connection reset by peer',
+                }
+            return {
+                'ok': True,
+                'title': 'ABF-217 TITLE',
+                'image_url': 'http://example/image.jpg',
+                'provider': 'javhoo',
+                'detail_url': 'http://example/detail',
+                'referer': 'http://example/search',
+                'error_type': None,
+                'message': None,
+            }
+
+    provider = FlakyNetworkProvider()
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda name: provider,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+        stop_requested=lambda: False,
+    )
+    cache = {}
+
+    result = svc._provider_search(cache, 'javhoo', provider, 'ABF-217')
+
+    assert result['ok'] is True
+    assert provider.calls == ['ABF-217', 'ABF-217']
+    assert ('javhoo', 'ABF-217') in cache
+
+
+def test_provider_search_does_not_retry_non_transient_network_error():
+    class ForbiddenProvider:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            return {
+                'ok': False,
+                'title': None,
+                'image_url': None,
+                'provider': 'uncensored',
+                'detail_url': None,
+                'referer': None,
+                'error_type': 'network-error',
+                'message': '403 Client Error: Forbidden',
+            }
+
+    provider = ForbiddenProvider()
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda name: provider,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+        stop_requested=lambda: False,
+    )
+    cache = {}
+
+    result = svc._provider_search(cache, 'uncensored', provider, '300MIUM-1366')
+
+    assert result['error_type'] == 'network-error'
+    assert provider.calls == ['300MIUM-1366']
     assert cache == {}
 
 
@@ -538,11 +717,16 @@ def test_workflow_series_uses_atomic_group_processing():
         assert all(item['detail_url'] == 'http://example/detail/ABF-139' for item in file_results['results'])
         assert all(item['referer'] == 'http://example/search/ABF-139' for item in file_results['results'])
         assert all(item['image_downloaded'] is True for item in file_results['results'])
+        assert file_results['timings']['providers']['javhoo']['count'] == 2
+        assert file_results['timings']['providers']['javhoo']['status_counts'] == {'success': 2}
+        assert file_results['timings']['providers']['javhoo']['metrics']['provider_elapsed_seconds']['count'] == 2
         assert result['image_success_count'] == 1
         summary = json.loads(Path(result['summary_path']).read_text(encoding='utf-8'))
         assert summary['counts']['success_count'] == 2
         assert summary['counts']['image_success_count'] == 1
         assert summary['counts']['file_result_counts'] == {'success': 2}
+        assert summary['timings']['providers']['javhoo']['count'] == 2
+        assert summary['timings']['slowest_files']
 
 
 def test_workflow_file_results_record_provider_failure():
@@ -593,6 +777,139 @@ def test_workflow_file_results_record_provider_failure():
         summary = json.loads(Path(result['summary_path']).read_text(encoding='utf-8'))
         assert summary['counts']['failed_count'] == 1
         assert summary['counts']['file_result_counts'] == {'failed': 1}
+
+
+def test_workflow_uncensored_network_error_keeps_source_and_audit():
+    class NetworkFailingUncensoredProvider:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            return {
+                'ok': False,
+                'title': None,
+                'image_url': None,
+                'provider': 'uncensored',
+                'detail_url': 'https://www.heyzo.com/moviepages/3098/index.html',
+                'referer': 'https://www.heyzo.com/moviepages/3098/index.html',
+                'error_type': 'network-error',
+                'message': 'read timed out',
+            }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        finish = root / 'Finish'
+        logs = root / 'JFO_Logs'
+        source = root / 'HEYZO-HD-3098.mp4'
+        source.write_bytes(b'a' * 32768)
+        provider = NetworkFailingUncensoredProvider()
+        svc = WorkflowService(
+            log=lambda *a, **k: None,
+            provider_factory=lambda name: provider,
+            atomic_processor=AtomicProcessor(_download, _sanitize),
+            clean_filename_for_search=clean_filename_for_search,
+            sanitize_filename=_sanitize,
+            detect_series_files=lambda files: ({}, files),
+            smart_truncate_filename=lambda title, original, max_length: title,
+            stop_requested=lambda: False,
+            minimum_video_size_bytes=16384,
+        )
+
+        result = svc.run(
+            folder_path=str(root),
+            finish_folder=str(finish),
+            website='uncensored',
+            dry_run=False,
+            logs_dir=str(logs),
+        )
+
+        assert result['failed_count'] == 1
+        assert source.exists()
+        assert not finish.exists()
+        assert provider.calls == ['heyzo-3098', 'heyzo-3098']
+        file_results = json.loads(Path(result['file_results_path']).read_text(encoding='utf-8'))
+        item = file_results['results'][0]
+        assert item['status'] == 'failed'
+        assert item['provider'] == 'uncensored'
+        assert item['query'] == 'heyzo-3098'
+        assert item['reason'] == 'provider:network-error:read timed out'
+        assert item['detail_url'] == 'https://www.heyzo.com/moviepages/3098/index.html'
+
+
+def test_workflow_passes_provider_aware_image_request_to_atomic_processor():
+    class ProviderWithFallbackImage:
+        def search(self, query):
+            return {
+                'ok': True,
+                'title': 'TOKYO-HOT-N0839 TITLE',
+                'image_url': 'https://cdn.example/primary.jpg',
+                'fallback_images': ['https://cdn.example/fallback.jpg'],
+                'provider': 'uncensored',
+                'detail_url': 'https://my.tokyo-hot.com/product/21087/',
+                'referer': 'https://my.tokyo-hot.com/product/?q=n0839',
+                'error_type': None,
+                'message': None,
+            }
+
+    class RecordingAtomic:
+        def __init__(self):
+            self.image_request = None
+
+        def process_file_atomic(self, file_path, new_filename, image_request, finish_folder):
+            self.image_request = image_request
+            finish = Path(finish_folder)
+            finish.mkdir(exist_ok=True)
+            video_path = finish / new_filename
+            image_path = finish / f'{Path(new_filename).stem}.jpg'
+            Path(file_path).rename(video_path)
+            image_path.write_bytes(b'jpg')
+            return True, {
+                'status': 'success',
+                'reason': '',
+                'rollback_ok': None,
+                'video_path': str(video_path),
+                'image_path': str(image_path),
+                'image_downloaded': True,
+            }, 'ok'
+
+        def process_series_group_atomic(self, files, title, image_request, finish_folder):
+            raise AssertionError('not used')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs = root / 'JFO_Logs'
+        source = root / 'TOKYO-HOT-N0839.mp4'
+        source.write_bytes(b'a' * 32768)
+        atomic = RecordingAtomic()
+        svc = WorkflowService(
+            log=lambda *a, **k: None,
+            provider_factory=lambda name: ProviderWithFallbackImage(),
+            atomic_processor=atomic,
+            clean_filename_for_search=clean_filename_for_search,
+            sanitize_filename=_sanitize,
+            detect_series_files=lambda files: ({}, files),
+            smart_truncate_filename=lambda title, original, max_length: title,
+            stop_requested=lambda: False,
+            minimum_video_size_bytes=16384,
+        )
+
+        result = svc.run(
+            folder_path=str(root),
+            finish_folder=str(root / 'Finish'),
+            website='uncensored',
+            dry_run=False,
+            logs_dir=str(logs),
+        )
+
+        assert result['success_count'] == 1
+        assert atomic.image_request == {
+            'image_url': 'https://cdn.example/primary.jpg',
+            'referer': 'https://my.tokyo-hot.com/product/?q=n0839',
+            'detail_url': 'https://my.tokyo-hot.com/product/21087/',
+            'provider': 'uncensored',
+            'fallback_images': ['https://cdn.example/fallback.jpg'],
+        }
 
 
 def test_workflow_cleans_empty_finish_after_atomic_failure():

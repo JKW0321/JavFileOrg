@@ -59,12 +59,12 @@ class AtomicProcessor:
             print(f"图片验证失败: {e}")
             return False
     
-    def download_image_to_temp(self, image_url: str, filename: str) -> Tuple[bool, Optional[Path], str]:
+    def download_image_to_temp(self, image_source, filename: str) -> Tuple[bool, Optional[Path], str]:
         """
         下载图片到临时目录
         
         Args:
-            image_url: 图片URL
+            image_source: 图片URL或包含 referer/fallback_images 的图片任务
             filename: 文件名（含扩展名）
             
         Returns:
@@ -78,7 +78,7 @@ class AtomicProcessor:
             temp_image_path = self.temp_dir / sanitized_name
             
             # 下载图片
-            success = self.download_image(image_url, str(temp_image_path))
+            success = self.download_image(image_source, str(temp_image_path))
             
             if not success:
                 return False, None, "图片下载失败"
@@ -306,7 +306,7 @@ class AtomicProcessor:
             'image_path': None,
         }
     
-    def process_file_atomic(self, file_path: str, new_filename: str, image_url: Optional[str], 
+    def process_file_atomic(self, file_path: str, new_filename: str, image_source,
                            finish_folder: str) -> Tuple[bool, Dict[str, Any], str]:
         """
         原子性处理文件：先下载图片，验证成功后再移动文件
@@ -314,7 +314,7 @@ class AtomicProcessor:
         Args:
             file_path: 原始文件路径
             new_filename: 新文件名（含扩展名）
-            image_url: 图片URL（可选）
+            image_source: 图片URL或包含 referer/fallback_images 的图片任务（可选）
             finish_folder: 目标文件夹
             
         Returns:
@@ -326,7 +326,7 @@ class AtomicProcessor:
         rollback_ok = None
         
         try:
-            if not image_url:
+            if not image_source:
                 message = "缺少图片URL，严格事务模式下不移动源视频"
                 return False, self._empty_file_result(reason=message), message
 
@@ -336,7 +336,7 @@ class AtomicProcessor:
             video_basename = os.path.splitext(new_filename)[0]
             image_filename = f"{video_basename}.jpg"
             
-            success, temp_image_path, message = self.download_image_to_temp(image_url, image_filename)
+            success, temp_image_path, message = self.download_image_to_temp(image_source, image_filename)
             if not success:
                 reason = f"图片下载失败: {message}"
                 return False, self._empty_file_result(reason=reason), reason
@@ -415,7 +415,7 @@ class AtomicProcessor:
                 'image_path': None
             }, f"原子操作失败: {e}"
 
-    def process_series_group_atomic(self, series_files, title: str, image_url: Optional[str], finish_folder: str):
+    def process_series_group_atomic(self, series_files, title: str, image_source, finish_folder: str):
         """以事务性方式处理一个序列文件组。
 
         series_files: [(file_path, sequence), ...]
@@ -427,7 +427,7 @@ class AtomicProcessor:
         try:
             if not series_files:
                 return False, {'video_paths': [], 'image_path': None, 'image_downloaded': False}, '空序列组'
-            if not image_url:
+            if not image_source:
                 return False, {
                     'status': 'failed',
                     'reason': '缺少图片URL，严格事务模式下不移动源视频',
@@ -439,7 +439,7 @@ class AtomicProcessor:
 
             self.recover_pending_transactions(finish_folder)
             # 1) 先下载图片到临时目录，确保不会先移动视频后图失败
-            success, temp_image_path, message = self.download_image_to_temp(image_url, f"{title}.jpg")
+            success, temp_image_path, message = self.download_image_to_temp(image_source, f"{title}.jpg")
             if not success:
                 return False, {
                     'status': 'failed',

@@ -2,14 +2,14 @@
 
 ## Current State
 
-- Git maintenance version: `v1.5.5`
-- Runtime version: `v1.5.5`
+- Git maintenance version: `v1.5.6`
+- Runtime version: `v1.5.6`
 - Main branch: `main`
 - Remote: `origin`
 - Default non-network regression: `python3 run_baseline_tests.py`
 - Architecture principles: `ARCHITECTURE_PRINCIPLES.md`
 
-The visible app version and Git tag are now aligned at `v1.5.5`; the runtime version should remain a plain semantic version without suffixes.
+The visible app version and Git tag are now aligned at `v1.5.6`; the runtime version should remain a plain semantic version without suffixes.
 
 ## Before Changing Code
 
@@ -42,7 +42,7 @@ python3 run_baseline_tests.py --include-live-network
 
 ## Test Notes
 
-The default offline regression passed on 2026-07-05 using an isolated Python runtime with temporary dependencies:
+The default offline regression passed on 2026-07-08 using an isolated Python runtime with temporary dependencies:
 
 ```text
 Pure utility regression: 169 passed

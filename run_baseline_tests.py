@@ -4,11 +4,11 @@
 run_baseline_tests.py
 =====================
 
-一键回归测试入口，覆盖当前 Git 维护版本 v1.5.5 的核心能力。
+一键回归测试入口，覆盖当前 Git 维护版本 v1.5.6 的核心能力。
 注意：程序运行时版本与当前 Git 基线 tag 保持一致，不再追加运行时后缀。
 
 - 纯函数/文件名规则（pytest）
-- JAVLibrary 解析层（pytest）
+- Provider 解析层（pytest）
 - 序列文件端到端（本地、无网络）
 - 修复前 vs 修复后 对比
 - 可选：JavHoo 真实网络测试
@@ -58,7 +58,7 @@ def main() -> int:
     steps: list[tuple[str, list[str], bool]] = [
         (
             'Pure utility regression (pytest)',
-            [PY, '-m', 'pytest', 'test_filename_utils.py', 'test_javlibrary_parser.py', 'test_batch_filters.py', 'test_manifest_utils.py', 'test_provider_result.py', 'test_provider_router.py', 'test_javhoo_provider.py', 'test_javbus_provider.py', 'test_javlibrary_provider.py', 'test_gui_threading.py', 'test_gui_download.py', 'test_dry_run.py', 'test_series_atomic.py', 'test_workflow_service.py', '-q'],
+            [PY, '-m', 'pytest', 'test_filename_utils.py', 'test_javlibrary_parser.py', 'test_batch_filters.py', 'test_manifest_utils.py', 'test_provider_result.py', 'test_provider_router.py', 'test_javhoo_provider.py', 'test_javbus_provider.py', 'test_javlibrary_provider.py', 'test_bestjavporn_provider.py', 'test_uncensored_provider.py', 'test_gui_threading.py', 'test_gui_download.py', 'test_dry_run.py', 'test_series_atomic.py', 'test_workflow_service.py', '-q'],
             False,
         ),
         (

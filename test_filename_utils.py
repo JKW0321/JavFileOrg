@@ -187,6 +187,62 @@ class TestAdaptiveFilenameRules:
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("1pondo-010123_001.mp4") == "1pondo-010123-001"
 
+    def test_10musume_single_digit_part_is_auto_usable(self):
+        candidate = analyze_unknown_filename("10Musume-041619_1 素人AV面接.mp4")
+
+        assert candidate['rule_id'] == 'known_multi_segment'
+        assert candidate['normalized_code'] == '10MUSUME-041619-1'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("10Musume-041619_1 素人AV面接.mp4") == "10musume-041619-1"
+
+    def test_pacopacomama_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("Pacopacomama-032819_059 熟女.mp4")
+
+        assert candidate['rule_id'] == 'known_multi_segment'
+        assert candidate['normalized_code'] == 'PACOPACOMAMA-032819-059'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("Pacopacomama-032819_059 熟女.mp4") == "pacopacomama-032819-059"
+
+    def test_caribbeancom_suffix_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("032226-001-CARIB.mp4")
+
+        assert candidate['rule_id'] == 'carib_suffix'
+        assert candidate['normalized_code'] == 'CARIB-032226-001'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("032226-001-CARIB.mp4") == "carib-032226-001"
+
+    def test_1pondo_suffix_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("032126_001-1PON.mp4")
+
+        assert candidate['rule_id'] == '1pondo_suffix'
+        assert candidate['normalized_code'] == '1PONDO-032126-001'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("032126_001-1PON.mp4") == "1pondo-032126-001"
+
+    def test_heyzo_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("HEYZO-HD-3098.mp4")
+
+        assert candidate['rule_id'] == 'heyzo'
+        assert candidate['normalized_code'] == 'HEYZO-3098'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("HEYZO-HD-3098.mp4") == "heyzo-3098"
+
+    def test_tokyo_hot_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("Tokyo-Hot-n0839.mp4")
+
+        assert candidate['rule_id'] == 'tokyo_hot'
+        assert candidate['normalized_code'] == 'TOKYO-HOT-N0839'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("Tokyo-Hot-n0839.mp4") == "tokyo-hot-n0839"
+
+    def test_mgstage_uncensored_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("300MIUM-1366.mp4")
+
+        assert candidate['rule_id'] == 'mgstage_uncensored'
+        assert candidate['normalized_code'] == '300MIUM-1366'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("300MIUM-1366.mp4") == "300mium-1366"
+
     def test_generic_multi_segment_candidate_needs_review(self):
         candidate = analyze_unknown_filename("STUDIOX-20260705-001.mp4")
 
@@ -197,6 +253,10 @@ class TestAdaptiveFilenameRules:
 
     def test_standard_rule_does_not_create_candidate(self):
         assert analyze_unknown_filename("ABF-139.mp4") is None
+
+    def test_quality_suffix_name_is_not_treated_as_series_code(self):
+        assert extract_series_info("337-AyaKomatsu-2160p.mp4") == (None, None)
+        assert extract_code_from_text("337-AyaKomatsu-2160p.mp4") is None
 
 
 # =========================================================================
@@ -249,6 +309,8 @@ class TestExtractSeriesInfo:
         ("ABF-139-1.mp4",                       "ABF-139", "1"),
         ("ABF-139-2.mp4",                       "ABF-139", "2"),
         ("ABF-139-10.mp4",                      "ABF-139", "10"),   # 双位数
+        ("MIRD-277_3.mp4",                      "MIRD-277", "3"),
+        ("MIRD_277_3.mp4",                      "MIRD-277", "3"),
         # ---- 字母尾段 ----
         ("ABF-139a.mp4",                        "ABF-139", "1"),
         ("ABF-139b.mp4",                        "ABF-139", "2"),
@@ -256,6 +318,7 @@ class TestExtractSeriesInfo:
         ("RBD011a.mp4",                         "RBD-011", "1"),
         ("RBD011b.mp4",                         "RBD-011", "2"),
         ("RBD011-1.mp4",                        "RBD-011", "1"),
+        ("RBD011_3.mp4",                        "RBD-011", "3"),
         # ---- v1.4.4 修复场景：带完整标题 ----
         ("ABF-139-1 美少女 第1話.mp4",            "ABF-139", "1"),
         ("ABF-139-2 美少女 第2話.mp4",            "ABF-139", "2"),
@@ -295,6 +358,8 @@ class TestCleanFilenameForSearchSeries:
         ("ABF-139-1 美少女 第1話.mp4",        "abf-139"),
         ("ABF-139-2 美少女 第2話.mp4",        "abf-139"),
         ("ABF-139-10 美少女.mp4",             "abf-139"),
+        ("MIRD-277_3.mp4",                    "mird-277"),
+        ("MIRD_277_3.mp4",                    "mird-277"),
         ("ABF-139a 美少女.mp4",               "abf-139"),
         ("RBD011a 美少女.mp4",                "rbd-011"),
         ("4k2.com@ABF-139-1 美少女.mp4",     "abf-139"),

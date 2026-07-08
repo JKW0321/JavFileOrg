@@ -215,6 +215,39 @@ class JavFileOrganizer:
                 ],
                 'requires_verification': True,
                 'use_special_handler': True  # v1.4: 使用特殊处理器
+            },
+            'bestjavporn': {
+                'name': 'BestJavPorn - 日文源（实验）',
+                'search_url': 'https://www.bestjavporn.com/ja/?s={query}',
+                'title_selectors': [
+                    'article h2 a',
+                    'article .entry-title a',
+                    'h1.entry-title',
+                    'title',
+                ],
+                'image_selectors': [
+                    'article img[data-src]',
+                    'article img[src]',
+                    '.post-thumbnail img',
+                    '.video-cover img',
+                    '.entry-content img',
+                ],
+                'requires_verification': True
+            },
+            'uncensored': {
+                'name': '无码源 - 自动匹配内部站点（实验）',
+                'search_url': 'internal uncensored provider router',
+                'title_selectors': [
+                    'h1',
+                    'meta[property="og:title"]',
+                    'title',
+                ],
+                'image_selectors': [
+                    'meta[property="og:image"]',
+                    'meta[name="twitter:image"]',
+                    'img',
+                ],
+                'requires_verification': False
             }
         }
         
@@ -1325,6 +1358,8 @@ class JavFileOrganizer:
             'javhoo': 'SONE-753',
             'javbus': 'SONE-753',
             'javlibrary': 'JBD-131',
+            'bestjavporn': 'ABF-311',
+            'uncensored': 'CARIB-032226-001',
         }
         test_query = test_query_map.get(website, 'SONE-753')
         self.test_btn.config(state=tk.DISABLED)

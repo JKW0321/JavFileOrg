@@ -109,24 +109,34 @@ def strip_site_markers(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 # 序列模式：
-#   模式 0: ABC-123-1, ABC-123-2 (有连字符 + 数字尾段)
+#   模式 0: ABC-123-1, ABC-123_2 (有连字符主体 + 数字尾段)
 #   模式 1: ABC-123a, ABC-123b (有连字符 + 字母尾段)
-#   模式 2: ABC123-1, ABC123-2 (无连字符 + 数字尾段)
+#   模式 2: ABC123-1, ABC123_2 (无连字符主体 + 数字尾段)
 #   模式 3: ABC123a, ABC123b (无连字符 + 字母尾段)
 #
 # 注意：v1.4.4 修复：去掉 ^ 和 $ 锚点，用 re.search 匹配整个 stem 的某一段。
 # 修复前：'ABF-139-1 美少女 第1話' 完全识别不到序列（因为正则要求整个 stem 就是番号）
 # 修复后：能从 stem 中提取 ABC-123 基础番号 + 1 序列号，即使后面还跟完整标题
 _SERIES_PATTERNS = [
-    # 0: ABC-123-1
-    (re.compile(r'\b([a-zA-Z]{2,10}-\d{2,5})-(\d+)\b'), False),
+    # 0: ABC-123-1 / ABC-123_1
+    (re.compile(r'\b([a-zA-Z]{2,10}[-_]\d{2,5})[-_](\d+)\b'), False),
     # 1: ABC-123a
     (re.compile(r'\b([a-zA-Z]{2,10}-\d{2,5})([a-zA-Z])\b'), True),
-    # 2: ABC123-1
-    (re.compile(r'\b([a-zA-Z]{2,10}\d{2,5})-(\d+)\b'), False),
+    # 2: ABC123-1 / ABC123_1
+    (re.compile(r'\b([a-zA-Z]{2,10}\d{2,5})[-_](\d+)\b'), False),
     # 3: ABC123a
     (re.compile(r'\b([a-zA-Z]{2,10}\d{2,5})([a-zA-Z])\b'), True),
 ]
+
+_QUALITY_NUMBERS = {'480', '720', '1080', '1440', '2160', '4320', '8'}
+
+
+def _is_quality_code_candidate(code: str) -> bool:
+    if not code:
+        return False
+    compact = code.replace('_', '-')
+    match = re.search(r'[-_](\d{3,4}|8)P?$', compact, re.IGNORECASE)
+    return bool(match and match.group(1) in _QUALITY_NUMBERS)
 
 
 def _stem_for_filename_analysis(filename: str) -> str:
@@ -143,8 +153,10 @@ def _extract_series_info_from_stem(stem: str):
         match = pattern.search(stem)
         if match:
             base_raw = match.group(1)
+            if _is_quality_code_candidate(base_raw):
+                continue
             # 标准化：字母数字之间加连字符 (RBD011 -> RBD-011)
-            base_normalized = re.sub(r'([a-zA-Z]+)(\d+)', r'\1-\2', base_raw).upper()
+            base_normalized = re.sub(r'([a-zA-Z]+)(\d+)', r'\1-\2', base_raw).replace('_', '-').upper()
 
             if is_alpha_seq:
                 letter = match.group(2).lower()
@@ -162,6 +174,7 @@ def extract_series_info(filename):
     支持格式（输入 → (base, sequence)）：
     - 'ABF-139-1.mp4'                       -> ('ABF-139', '1')
     - 'ABF-139-10.mp4'                      -> ('ABF-139', '10')
+    - 'MIRD-277_3.mp4'                      -> ('MIRD-277', '3')
     - 'ABF-139a.mp4'                        -> ('ABF-139', '1')
     - 'RBD011a.mp4'                         -> ('RBD-011', '1')    无连字符自动加
     - 'ABF-139-1 美少女 第1話.mp4'           -> ('ABF-139', '1')   v1.4.4: 支持完整标题
@@ -232,7 +245,10 @@ def _extract_code_from_prepared_name(name: str):
     for pattern in _CODE_PATTERNS:
         match = re.search(pattern, name, re.IGNORECASE)
         if match:
-            return _normalize_extracted_code(match.group(1))
+            candidate = _normalize_extracted_code(match.group(1))
+            if _is_quality_code_candidate(candidate):
+                continue
+            return candidate
     return None
 
 
@@ -250,6 +266,12 @@ def _candidate(rule_id, filename, normalized_code, *, confidence, usable_for_sea
     }
 
 
+MGSTAGE_PREFIXES = (
+    '300MIUM', '393OTIM', '420HPT', '420STH', '546EROFV', '583ERKR',
+    '328CNSTV', '476MLA', '253KAKU',
+)
+
+
 def analyze_unknown_filename(filename: str):
     """分析现有规则未覆盖的文件名，并返回可审计的候选规则。
 
@@ -262,12 +284,6 @@ def analyze_unknown_filename(filename: str):
 
     stem = _stem_for_filename_analysis(filename)
     if not stem:
-        return None
-
-    standard_base, _standard_seq = _extract_series_info_from_stem(stem)
-    if standard_base:
-        return None
-    if _extract_code_from_prepared_name(_prepare_name_for_code_extract(filename)):
         return None
 
     compact = re.sub(r'[\[\]()【】]', ' ', stem)
@@ -306,9 +322,45 @@ def analyze_unknown_filename(filename: str):
             pattern_shape='TOKYO[-_ ]HOT[-_ ]<letter+digits>[-_ ]<optional sequence>',
         )
 
+    heyzo = re.search(
+        r'\bHEYZO(?:[-_\s]*HD)?[-_\s]*(\d{3,6})(?:[-_\s]+(\d{1,3}))?\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if heyzo:
+        return _candidate(
+            'heyzo',
+            filename,
+            f"HEYZO-{heyzo.group(1)}",
+            sequence=heyzo.group(2),
+            confidence=0.94,
+            usable_for_search=True,
+            reason='matched HEYZO numeric code',
+            pattern_shape='HEYZO[-_ ]HD?[-_ ]<3-6 digits>[-_ ]<optional sequence>',
+        )
+
+    mgstage_prefixes = '|'.join(re.escape(prefix) for prefix in MGSTAGE_PREFIXES)
+    mgstage = re.search(
+        rf'\b({mgstage_prefixes})[-_\s]*(\d{{2,6}}[A-Z]?)(?:[-_\s]+(\d{{1,3}}))?\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if mgstage:
+        normalized = f"{mgstage.group(1).upper()}-{mgstage.group(2).upper()}"
+        return _candidate(
+            'mgstage_uncensored',
+            filename,
+            normalized,
+            sequence=mgstage.group(3),
+            confidence=0.9,
+            usable_for_search=True,
+            reason='matched known MGStage uncensored code prefix',
+            pattern_shape='<known MGStage prefix>[-_ ]<digits/suffix>[-_ ]<optional sequence>',
+        )
+
     known_multi = re.search(
-        r'\b(1PONDO|10MUSUME|CARIB|CARIBBEANCOM|PACOPACOM)'
-        r'[-_\s]+([A-Z]?\d{4,8})[-_\s]+(\d{2,5})(?:[-_\s]+(\d{1,3}))?\b',
+        r'\b(1PONDO|10MUSUME|CARIB|CARIBBEANCOM|PACOPACOMAMA|PACOPACOM)'
+        r'[-_\s]+([A-Z]?\d{4,8})[-_\s]+(\d{1,5})(?:[-_\s]+(\d{1,3}))?\b',
         compact,
         re.IGNORECASE,
     )
@@ -325,6 +377,46 @@ def analyze_unknown_filename(filename: str):
             reason='matched known multi-segment code family',
             pattern_shape='<known prefix>[-_ ]<date/id digits>[-_ ]<part digits>[-_ ]<optional sequence>',
         )
+
+    carib_suffix = re.search(
+        r'\b(\d{6})[-_\s]+(\d{2,5})[-_\s]+(CARIB|CARIBBEANCOM)\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if carib_suffix:
+        normalized = f"CARIB-{carib_suffix.group(1)}-{carib_suffix.group(2)}"
+        return _candidate(
+            'carib_suffix',
+            filename,
+            normalized,
+            confidence=0.92,
+            usable_for_search=True,
+            reason='matched CaribbeanCom suffix code',
+            pattern_shape='<date/id digits>[-_ ]<part digits>[-_ ]CARIB',
+        )
+
+    onepondo_suffix = re.search(
+        r'\b(\d{6})[-_\s]+(\d{2,5})[-_\s]+(1PON|1PONDO)\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if onepondo_suffix:
+        normalized = f"1PONDO-{onepondo_suffix.group(1)}-{onepondo_suffix.group(2)}"
+        return _candidate(
+            '1pondo_suffix',
+            filename,
+            normalized,
+            confidence=0.92,
+            usable_for_search=True,
+            reason='matched 1Pondo suffix code',
+            pattern_shape='<date/id digits>[-_ ]<part digits>[-_ ]1PON',
+        )
+
+    standard_base, _standard_seq = _extract_series_info_from_stem(stem)
+    if standard_base:
+        return None
+    if _extract_code_from_prepared_name(_prepare_name_for_code_extract(filename)):
+        return None
 
     generic = re.search(
         r'\b([A-Z][A-Z0-9]{2,12})[-_\s]+(\d{6,8})[-_\s]+(\d{2,5})\b',
@@ -362,14 +454,14 @@ def extract_code_from_text(filename: str):
     if not filename:
         return None
 
+    candidate = analyze_unknown_filename(filename)
+    if candidate and candidate.get('usable_for_search'):
+        return candidate.get('normalized_code')
+
     name = _prepare_name_for_code_extract(filename)
     extracted = _extract_code_from_prepared_name(name)
     if extracted:
         return extracted
-
-    candidate = analyze_unknown_filename(filename)
-    if candidate and candidate.get('usable_for_search'):
-        return candidate.get('normalized_code')
 
     return None
 
