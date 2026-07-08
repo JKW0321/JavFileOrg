@@ -154,6 +154,37 @@ def test_workflow_dry_run_keeps_source_files():
         assert summary['counts']['file_result_counts'] == {'planned': 2}
 
 
+def test_uncensored_workflow_uses_parent_path_for_dms_night24_query():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_dir = root / 'source'
+        nested = source_dir / 'U' / 'night24 pack' / 'DMS Night24 013 (5013) 高田弘美'
+        nested.mkdir(parents=True)
+        video = nested / '013.avi'
+        video.write_bytes(b'a' * 32768)
+        provider = DummyProvider()
+        svc = WorkflowService(
+            log=lambda *a, **k: None,
+            provider_factory=lambda name: provider,
+            atomic_processor=AtomicProcessor(_download, _sanitize),
+            clean_filename_for_search=clean_filename_for_search,
+            sanitize_filename=_sanitize,
+            detect_series_files=lambda files: ({}, files),
+            smart_truncate_filename=lambda title, original, max_length: title,
+            stop_requested=lambda: False,
+            minimum_video_size_bytes=16384,
+        )
+
+        result = svc.run(
+            folder_path=str(source_dir),
+            finish_folder=str(source_dir / 'Finish'),
+            website='uncensored',
+        )
+
+        assert result['success_count'] == 1
+        assert provider.calls == ['dms-night24-013']
+
+
 def test_workflow_run_reuses_initial_scan_without_rescanning_folder():
     class NoRescanWorkflowService(WorkflowService):
         def _scan_video_files(self, folder_path):

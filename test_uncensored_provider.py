@@ -244,14 +244,59 @@ def test_uncensored_provider_routes_pacopacomama_inside_single_ui_source():
     assert result.raw_meta['family'] == 'pacopacomama'
 
 
-def test_uncensored_provider_reports_known_family_not_implemented():
-    provider = UncensoredProvider(log=lambda *a, **k: None, session=DummySession('<html></html>'))
+def test_uncensored_provider_scrapes_japanhdv_search_result():
+    html = '''
+    <html><body>
+      <a title="Maya Sawamura is just using an opportunity for a good fuck"
+         href="https://japanhdv.com/maya-sawamura-is-just-using-an-opportunity-for-a-good-fuck/"
+         class="video-thumb-prev">
+        <img src="//static.japanhdv.com/cache/640x360/50/content/videos/Cheating_Wife_Maya_Sawamura/scene1/13.jpg"
+             alt="Maya Sawamura is just using an opportunity for a good fuck" />
+      </a>
+    </body></html>
+    '''
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
 
     result = provider.search('japanhdv.17.09.24.maya.sawamura')
 
-    assert result.ok is False
-    assert result.error_type == 'unsupported-family'
+    assert result.ok is True
+    assert result.title == 'JAPANHDV-170924 Maya Sawamura is just using an opportunity for a good fuck'
+    assert result.image_url == 'http://static.japanhdv.com/cache/640x360/50/content/videos/Cheating_Wife_Maya_Sawamura/scene1/13.jpg'
+    assert result.detail_url == 'https://japanhdv.com/maya-sawamura-is-just-using-an-opportunity-for-a-good-fuck/'
     assert result.raw_meta['family'] == 'japanhdv'
+    assert session.calls == [('http://japanhdv.com/?s=maya+sawamura', (5, 10))]
+
+
+def test_uncensored_provider_scrapes_urabukkake_tour_pages_by_title_terms():
+    html = '''
+    <html><body>
+      <div id="section-top"><h2>Idol Reina's Superb 35-load Facial Cock Massage</h2></div>
+      <div id="section-mid">
+        <div id="bigpic">
+          <img class="thumb" src="../tour/reina-massage/big.jpg" />
+        </div>
+      </div>
+      <div id="section-top"><h2>Kaname's Ass & Pussy Cum</h2></div>
+      <div id="section-mid">
+        <div id="player" style="background-image:url(../tour/kanames-ass-pussy-cum/sample.jpg)"></div>
+        <div id="bigpic">
+          <img class="thumb" src="../tour/kanames-ass-pussy-cum/big.jpg" />
+        </div>
+      </div>
+    </body></html>
+    '''
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    result = provider.search('urabukkake-116-kanameass')
+
+    assert result.ok is True
+    assert result.title == 'URABUKKAKE-116 Kaname\'s Ass & Pussy Cum'
+    assert result.image_url == 'https://www.urabukkake.com/tour/kanames-ass-pussy-cum/big.jpg'
+    assert result.detail_url == 'https://www.urabukkake.com/en/tour?page=1'
+    assert result.raw_meta['family'] == 'urabukkake'
+    assert session.calls == [('https://www.urabukkake.com/en/tour?page=1', (5, 10))]
 
 
 def test_uncensored_provider_parses_fc2_official_article():
@@ -271,6 +316,26 @@ def test_uncensored_provider_parses_fc2_official_article():
     assert result.image_url == 'https://storage.example/fc2.jpg'
     assert result.detail_url == 'https://adult.contents.fc2.com/article/3202758/'
     assert result.raw_meta['family'] == 'fc2-ppv'
+
+
+def test_uncensored_provider_finds_fc2_storage_image_in_script():
+    html = r'''
+    <html><head>
+      <meta property="og:title" content="FC2-PPV-3690078 Sample FC2 Title" />
+    </head><body>
+      <script>
+        window.__data = {"cover":"https:\/\/storage81000.contents.fc2.com\/file\/378\/37753126\/1692268716.7.jpg"};
+      </script>
+    </body></html>
+    '''
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    result = provider.search('FC2-PPV-3690078')
+
+    assert result.ok is True
+    assert result.title == 'FC2-PPV-3690078 Sample FC2 Title'
+    assert result.image_url == 'https://storage81000.contents.fc2.com/file/378/37753126/1692268716.7.jpg'
 
 
 def test_uncensored_provider_reports_fc2_article_not_found():
@@ -301,6 +366,26 @@ def test_uncensored_provider_parses_heyzo_official_page():
     assert result.detail_url == 'https://www.heyzo.com/moviepages/3098/index.html'
     assert result.image_url == 'https://www.heyzo.com/contents/3000/3098/images/player_thumbnail.jpg'
     assert result.raw_meta['family'] == 'heyzo'
+
+
+def test_uncensored_provider_parses_heydouga_official_page():
+    html = '''
+    <html><head>
+      <title>生中出しファン感謝オフ会_Two - 波多野結衣 - Hey動画 PPV（単品販売）</title>
+    </head><body>
+      <img src="/contents/4030/1644/player_thumb.webp" />
+    </body></html>
+    '''
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    result = provider.search('heydouga-4030-1644')
+
+    assert result.ok is True
+    assert result.title == 'HEYDOUGA-4030-1644 生中出しファン感謝オフ会_Two - 波多野結衣 - Hey動画 PPV（単品販売）'
+    assert result.detail_url == 'https://www.heydouga.com/moviepages/4030/1644/index.html'
+    assert result.image_url == 'https://www.heydouga.com/contents/4030/1644/player_thumb.jpg'
+    assert result.raw_meta['family'] == 'heydouga'
 
 
 def test_uncensored_provider_parses_tokyo_hot_page():
@@ -444,10 +529,42 @@ def test_uncensored_provider_reports_verification_required():
 def test_uncensored_provider_rejects_unsupported_source():
     provider = UncensoredProvider(log=lambda *a, **k: None, session=DummySession('<html></html>'))
 
-    result = provider.search('japanhdv.17.09.24.maya.sawamura')
+    result = provider.search('unknown-source-20260705')
 
     assert result.ok is False
-    assert result.error_type == 'unsupported-family'
+    assert result.error_type == 'unsupported-source'
+
+
+def test_uncensored_provider_reports_implemented_family_with_insufficient_terms():
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=DummySession('<html></html>'))
+
+    japanhdv = provider.search('japanhdv-170924')
+    urabukkake = provider.search('urabukkake-116')
+
+    assert japanhdv.ok is False
+    assert japanhdv.error_type == 'invalid-query'
+    assert japanhdv.raw_meta['family'] == 'japanhdv'
+    assert urabukkake.ok is False
+    assert urabukkake.error_type == 'invalid-query'
+    assert urabukkake.raw_meta['family'] == 'urabukkake'
+
+
+def test_uncensored_provider_recognizes_new_unsupported_families():
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=DummySession('<html></html>'))
+
+    cases = {
+        'dms-night24-013': 'night24-dms',
+        's-cute-593-maria': 's-cute',
+        'mesubuta-120111-466': 'mesubuta',
+    }
+
+    for query, family in cases.items():
+        result = provider.search(query)
+        assert result.ok is False
+        assert result.error_type == 'unsupported-family'
+        assert result.raw_meta['family'] == family
+        assert 'not implemented yet' not in result.message
+        assert 'cover source' in result.message or 'detail source' in result.message
 
 
 def test_factory_creates_uncensored_provider():

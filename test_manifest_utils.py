@@ -34,6 +34,25 @@ def test_scan_folder_manifest_marks_hidden_and_video():
         assert manifest['total_files'] == 3
 
 
+def test_scan_folder_manifest_recurses_and_skips_output_dirs():
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp)
+        (p / 'nested').mkdir()
+        (p / 'nested' / 'FC2-PPV-1234567.rmvb').write_bytes(b'a' * 32)
+        (p / 'Finish').mkdir()
+        (p / 'Finish' / 'already-done.mp4').write_bytes(b'a' * 32)
+        (p / 'JFO_Logs').mkdir()
+        (p / 'JFO_Logs' / 'run.log').write_text('log', encoding='utf-8')
+
+        manifest = scan_folder_manifest(str(p))
+        entries = {e['name']: e for e in manifest['entries']}
+
+        assert 'nested/FC2-PPV-1234567.rmvb' in entries
+        assert entries['nested/FC2-PPV-1234567.rmvb']['is_video'] is True
+        assert 'Finish/already-done.mp4' not in entries
+        assert 'JFO_Logs/run.log' not in entries
+
+
 def test_build_manifest_from_entries_sorts_without_rescanning():
     manifest = build_manifest_from_entries('/tmp/source', [
         {'name': 'b.mp4', 'size': 2, 'mtime': 2, 'extension': '.mp4', 'is_hidden': False, 'is_video': True},

@@ -7,7 +7,8 @@ import json
 import os
 from datetime import datetime
 
-VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
+VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.rmvb'}
+SKIP_SCAN_DIRS = {'Finish', 'JFO_Logs', '.jfo_transactions', '__MACOSX'}
 
 
 def build_manifest_from_entries(folder_path: str, entries: list[dict]) -> dict:
@@ -21,27 +22,27 @@ def build_manifest_from_entries(folder_path: str, entries: list[dict]) -> dict:
 
 def scan_folder_manifest(folder_path: str) -> dict:
     entries = []
-    for entry in os.scandir(folder_path):
-        name = entry.name
-        try:
-            is_file = entry.is_file()
-        except OSError:
-            continue
-        if not is_file:
-            continue
-        try:
-            st = entry.stat()
-        except OSError:
-            continue
-        _, ext = os.path.splitext(name.lower())
-        entries.append({
-            'name': name,
-            'size': st.st_size,
-            'mtime': st.st_mtime,
-            'extension': ext,
-            'is_hidden': name.startswith('.'),
-            'is_video': ext in VIDEO_EXTENSIONS,
-        })
+    for dirpath, dirnames, filenames in os.walk(folder_path):
+        dirnames[:] = [
+            dirname for dirname in dirnames
+            if not dirname.startswith('.') and dirname not in SKIP_SCAN_DIRS
+        ]
+        for name in filenames:
+            file_path = os.path.join(dirpath, name)
+            rel_path = os.path.relpath(file_path, folder_path)
+            try:
+                st = os.stat(file_path)
+            except OSError:
+                continue
+            _, ext = os.path.splitext(name.lower())
+            entries.append({
+                'name': rel_path,
+                'size': st.st_size,
+                'mtime': st.st_mtime,
+                'extension': ext,
+                'is_hidden': name.startswith('.'),
+                'is_video': ext in VIDEO_EXTENSIONS,
+            })
     return build_manifest_from_entries(folder_path, entries)
 
 

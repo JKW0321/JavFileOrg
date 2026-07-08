@@ -2,14 +2,14 @@
 
 ## Current State
 
-- Git maintenance version: `v1.5.7`
-- Runtime version: `v1.5.7`
+- Git maintenance version: `v1.5.8`
+- Runtime version: `v1.5.8`
 - Main branch: `main`
 - Remote: `origin`
 - Default non-network regression: `python3 run_baseline_tests.py`
 - Architecture principles: `ARCHITECTURE_PRINCIPLES.md`
 
-The visible app version and Git tag are now aligned at `v1.5.7`; the runtime version should remain a plain semantic version without suffixes.
+The visible app version and Git tag are now aligned at `v1.5.8`; the runtime version should remain a plain semantic version without suffixes.
 
 ## Before Changing Code
 

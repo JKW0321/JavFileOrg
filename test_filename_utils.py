@@ -243,6 +243,56 @@ class TestAdaptiveFilenameRules:
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("300MIUM-1366.mp4") == "300mium-1366"
 
+    def test_japanhdv_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("japanhdv.17.09.24.maya.sawamura.mp4")
+
+        assert candidate['rule_id'] == 'japanhdv'
+        assert candidate['normalized_code'] == 'JAPANHDV-170924-MAYA-SAWAMURA'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("japanhdv.17.09.24.maya.sawamura.mp4") == "japanhdv-170924-maya-sawamura"
+
+    def test_urabukkake_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("urabukkake-116 2016-05-08 KanameAss.mp4")
+
+        assert candidate['rule_id'] == 'urabukkake'
+        assert candidate['normalized_code'] == 'URABUKKAKE-116-KANAMEASS'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("urabukkake-116 2016-05-08 KanameAss.mp4") == "urabukkake-116-kanameass"
+
+    def test_s_cute_candidate_keeps_base_and_sequence(self):
+        candidate = analyze_unknown_filename("s-cute-593_maria_04.mp4")
+
+        assert candidate['rule_id'] == 's_cute'
+        assert candidate['normalized_code'] == 'S-CUTE-593-MARIA'
+        assert candidate['sequence'] == '04'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("s-cute-593_maria_04.mp4") == "s-cute-593-maria"
+
+    def test_night24_candidate_can_use_parent_path_context(self):
+        candidate = analyze_unknown_filename("DMS Night24 013 (5013) 高田弘美/013.avi")
+
+        assert candidate['rule_id'] == 'night24_dms'
+        assert candidate['normalized_code'] == 'DMS-NIGHT24-013'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("DMS Night24 013 (5013) 高田弘美/013.avi") == "dms-night24-013"
+
+    def test_mesubuta_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("mesubuta_120111_466_01-HD.wmv")
+
+        assert candidate['rule_id'] == 'mesubuta'
+        assert candidate['normalized_code'] == 'MESUBUTA-120111-466'
+        assert candidate['sequence'] == '01'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("mesubuta_120111_466_01-HD.wmv") == "mesubuta-120111-466"
+
+    def test_heydouga_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("heydouga-4030-1644.mp4")
+
+        assert candidate['rule_id'] == 'heydouga'
+        assert candidate['normalized_code'] == 'HEYDOUGA-4030-1644'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("heydouga-4030-1644.mp4") == "heydouga-4030-1644"
+
     def test_generic_multi_segment_candidate_needs_review(self):
         candidate = analyze_unknown_filename("STUDIOX-20260705-001.mp4")
 

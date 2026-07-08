@@ -169,6 +169,65 @@ class AtomicProcessor:
         self._fsync_file(path)
         self._fsync_parent_dir(path)
 
+    def _format_bytes(self, size: int) -> str:
+        value = float(max(size, 0))
+        for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+            if value < 1024 or unit == 'TB':
+                if unit == 'B':
+                    return f'{int(value)} {unit}'
+                return f'{value:.1f} {unit}'
+            value /= 1024
+
+    def _existing_path_for_disk_usage(self, path: str) -> str:
+        current = Path(path).expanduser()
+        if current.is_file():
+            current = current.parent
+        while not current.exists() and current != current.parent:
+            current = current.parent
+        return str(current)
+
+    def _available_bytes(self, path: str) -> int:
+        probe_path = self._existing_path_for_disk_usage(path)
+        return int(shutil.disk_usage(probe_path).free)
+
+    def _same_filesystem(self, source_path: str, target_dir: str) -> bool:
+        source_stat = os.stat(source_path)
+        target_probe = self._existing_path_for_disk_usage(target_dir)
+        target_stat = os.stat(target_probe)
+        return source_stat.st_dev == target_stat.st_dev
+
+    def _required_target_space_bytes(
+        self,
+        sources: List[Tuple[str, int]],
+        target_dir: str,
+        temp_image_path: Optional[Path],
+    ) -> int:
+        required = 64 * 1024 * 1024  # journal/temp/image/finalization headroom
+        if temp_image_path and temp_image_path.exists():
+            required += temp_image_path.stat().st_size
+        for source_path, source_size in sources:
+            if not self._same_filesystem(source_path, target_dir):
+                required += int(source_size)
+        return required
+
+    def _ensure_space_for_commit(
+        self,
+        sources: List[Tuple[str, int]],
+        target_dir: str,
+        temp_image_path: Optional[Path],
+    ) -> None:
+        required = self._required_target_space_bytes(sources, target_dir, temp_image_path)
+        available = self._available_bytes(target_dir)
+        if available < required:
+            raise OSError(
+                errno.ENOSPC,
+                (
+                    f'目标磁盘空间不足: 可用 {self._format_bytes(available)}, '
+                    f'预计至少需要 {self._format_bytes(required)}。'
+                    '请先清理目标磁盘/Finish目录所在磁盘，或改用空间更大的输出位置'
+                ),
+            )
+
     def _transaction_dir_for_target(self, target_path: str) -> Path:
         return Path(os.path.dirname(os.path.abspath(target_path)) or '.') / '.jfo_transactions'
 
@@ -467,13 +526,18 @@ class AtomicProcessor:
             video_basename = os.path.splitext(os.path.basename(new_video_path))[0]
             image_filename = f"{video_basename}.jpg"
             final_image_path = os.path.join(finish_folder, image_filename)
-            if os.path.exists(final_image_path):
-                counter = 1
-                base_image_path = final_image_path
-                while os.path.exists(final_image_path):
-                    name, ext = os.path.splitext(base_image_path)
-                    final_image_path = f"{name}_{counter}{ext}"
-                    counter += 1
+            counter = 1
+            base_image_path = final_image_path
+            while os.path.exists(final_image_path):
+                name, ext = os.path.splitext(base_image_path)
+                final_image_path = f"{name}_{counter}{ext}"
+                counter += 1
+
+            self._ensure_space_for_commit(
+                [(file_path, source_size)],
+                finish_folder,
+                temp_image_path,
+            )
 
             operation_journal_path = self._operation_journal_path(file_path, new_video_path)
             self._write_transaction_journal(operation_journal_path, {
@@ -631,6 +695,12 @@ class AtomicProcessor:
                 name, ext = os.path.splitext(base_image_path)
                 final_image_path = f"{name}_{counter}{ext}"
                 counter += 1
+
+            self._ensure_space_for_commit(
+                [(file_path, source_size) for file_path, _, source_size in planned],
+                finish_folder,
+                temp_image_path,
+            )
 
             operation_journal_path = self._operation_journal_path(planned[0][0], planned[0][1])
             self._write_transaction_journal(operation_journal_path, {

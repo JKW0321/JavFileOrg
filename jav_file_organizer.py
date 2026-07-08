@@ -252,7 +252,7 @@ class JavFileOrganizer:
         }
         
         # 支持的视频格式
-        self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
+        self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.rmvb'}
         
         # 初始化GUI
         self.init_gui()
@@ -763,40 +763,41 @@ class JavFileOrganizer:
             'file_sizes': {},
             'total_files': 0,
         }
-        for entry in os.scandir(folder_path):
-            file = entry.name
-            try:
-                is_file = entry.is_file()
-            except OSError:
-                continue
-            if not is_file:
-                continue
-            try:
-                st = entry.stat()
-            except OSError:
-                continue
-            result['total_files'] += 1
-            _, ext = os.path.splitext(file.lower())
-            is_hidden = file.startswith('.')
-            is_video = ext in self.video_extensions
-            result['manifest_entries'].append({
-                'name': file,
-                'size': st.st_size,
-                'mtime': st.st_mtime,
-                'extension': ext,
-                'is_hidden': is_hidden,
-                'is_video': is_video,
-            })
-            if self._should_skip_video_file(file):
-                result['skipped_hidden'].append(file)
-                continue
-            if ext not in self.video_extensions:
-                continue
-            if st.st_size < getattr(self, 'minimum_video_size_bytes', 16 * 1024):
-                result['skipped_small'].append(file)
-                continue
-            result['accepted'].append(file)
-            result['file_sizes'][file] = st.st_size
+        skip_dirs = {'Finish', 'JFO_Logs', '.jfo_transactions', '__MACOSX'}
+        for dirpath, dirnames, filenames in os.walk(folder_path):
+            dirnames[:] = [
+                dirname for dirname in dirnames
+                if not dirname.startswith('.') and dirname not in skip_dirs
+            ]
+            for file in filenames:
+                file_path = os.path.join(dirpath, file)
+                rel_path = os.path.relpath(file_path, folder_path)
+                try:
+                    st = os.stat(file_path)
+                except OSError:
+                    continue
+                result['total_files'] += 1
+                _, ext = os.path.splitext(file.lower())
+                is_hidden = file.startswith('.')
+                is_video = ext in self.video_extensions
+                result['manifest_entries'].append({
+                    'name': rel_path,
+                    'size': st.st_size,
+                    'mtime': st.st_mtime,
+                    'extension': ext,
+                    'is_hidden': is_hidden,
+                    'is_video': is_video,
+                })
+                if self._should_skip_video_file(file):
+                    result['skipped_hidden'].append(rel_path)
+                    continue
+                if ext not in self.video_extensions:
+                    continue
+                if st.st_size < getattr(self, 'minimum_video_size_bytes', 16 * 1024):
+                    result['skipped_small'].append(rel_path)
+                    continue
+                result['accepted'].append(rel_path)
+                result['file_sizes'][rel_path] = st.st_size
         result['accepted'].sort()
         result['skipped_hidden'].sort()
         result['skipped_small'].sort()

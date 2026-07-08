@@ -18,7 +18,19 @@ class RequestHtmlProvider(BaseProvider):
 
     def _get_session(self):
         if self.use_anti_crawl_session and self.anti_crawl:
-            return self.anti_crawl.session
+            session = self.anti_crawl.session
+            if session is not None:
+                return session
+        if self.session is None:
+            self.session = requests.Session()
+            self.session.headers.update({
+                'User-Agent': (
+                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/126.0.0.0 Safari/537.36'
+                ),
+                'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+            })
         return self.session
 
     def _request(self, url: str):

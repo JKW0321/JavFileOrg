@@ -70,6 +70,16 @@ def test_request_provider_success_result_includes_query_detail_and_referer():
     assert seen_urls[0] == result.referer
 
 
+def test_request_provider_creates_default_session_when_missing():
+    provider = JavHooProvider(log=lambda *a, **k: None, session=None, anti_crawl=None, stop_requested=lambda: False)
+
+    session = provider._get_session()
+
+    assert session is provider.session
+    assert session.headers.get('User-Agent')
+    assert session.headers.get('Accept-Language') == 'ja,en-US;q=0.9,en;q=0.8'
+
+
 def test_javhoo_rejects_search_results_title_and_logo_without_detail_request():
     search_html = '''
     <html><head><title>Search Results    jbd-102 - JAVHOO</title></head><body>

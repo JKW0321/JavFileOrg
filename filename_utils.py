@@ -339,6 +339,118 @@ def analyze_unknown_filename(filename: str):
             pattern_shape='HEYZO[-_ ]HD?[-_ ]<3-6 digits>[-_ ]<optional sequence>',
         )
 
+    heydouga = re.search(
+        r'\b(?:HEYDOUGA|HEY)[-_\s]*4030[-_\s]*(?:PPV)?(\d{3,6})(?:[-_\s]+(\d{1,3}))?\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if heydouga:
+        return _candidate(
+            'heydouga',
+            filename,
+            f"HEYDOUGA-4030-{heydouga.group(1)}",
+            sequence=heydouga.group(2),
+            confidence=0.9,
+            usable_for_search=True,
+            reason='matched Heydouga 4030 numeric code',
+            pattern_shape='HEYDOUGA/HEY[-_ ]4030[-_ ]<digits>[-_ ]<optional sequence>',
+        )
+
+    japanhdv = re.search(
+        r'\bJAPANHDV[._\-\s]*(\d{2})[._\-\s]*(\d{2})[._\-\s]*(\d{2})[._\-\s]+([A-Z0-9._\-\s]+)',
+        compact,
+        re.IGNORECASE,
+    )
+    if japanhdv:
+        performer = re.sub(r'[^A-Z0-9]+', '-', japanhdv.group(4).strip(), flags=re.IGNORECASE).strip('-')
+        normalized = f"JAPANHDV-{japanhdv.group(1)}{japanhdv.group(2)}{japanhdv.group(3)}"
+        if performer:
+            normalized = f"{normalized}-{performer}"
+        return _candidate(
+            'japanhdv',
+            filename,
+            normalized.upper(),
+            confidence=0.9,
+            usable_for_search=True,
+            reason='matched JapanHDV date/performer filename',
+            pattern_shape='JAPANHDV[._-]<yy>[._-]<mm>[._-]<dd>[._-]<performer>',
+        )
+
+    urabukkake = re.search(
+        r'\bURABUKKAKE[-_\s]*(\d{1,5})(?:[-_\s]+\d{4}[-_\s]+\d{2}[-_\s]+\d{2})?(?:[-_\s]+([A-Z][A-Z0-9]+))?(?:[-_\s]+(\d{1,3}))?\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if urabukkake:
+        normalized = f"URABUKKAKE-{urabukkake.group(1)}"
+        if urabukkake.group(2):
+            normalized = f"{normalized}-{urabukkake.group(2).upper()}"
+        return _candidate(
+            'urabukkake',
+            filename,
+            normalized,
+            sequence=urabukkake.group(3),
+            confidence=0.9,
+            usable_for_search=True,
+            reason='matched UraBukkake numeric code and optional title slug',
+            pattern_shape='URABUKKAKE[-_ ]<digits>[-_ ]<optional date>[-_ ]<optional title slug>[-_ ]<optional sequence>',
+        )
+
+    s_cute = re.search(
+        r'\bS[-_\s]?CUTE[-_\s]*(\d{2,6})(?:[-_\s]+([A-Z][A-Z0-9]+))?(?:[-_\s]+([A-Z]?\d{1,3}))?\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if s_cute:
+        normalized = f"S-CUTE-{s_cute.group(1)}"
+        if s_cute.group(2):
+            normalized = f"{normalized}-{s_cute.group(2).upper()}"
+        sequence = s_cute.group(3)
+        return _candidate(
+            's_cute',
+            filename,
+            normalized,
+            sequence=sequence,
+            confidence=0.88,
+            usable_for_search=True,
+            reason='matched S-Cute numeric/person code',
+            pattern_shape='S[-_ ]CUTE[-_ ]<digits>[-_ ]<optional performer>[-_ ]<optional sequence>',
+        )
+
+    night24 = re.search(
+        r'\b(?:DMS[-_\s]*)?NIGHT24[-_\s]+([A-Z]?\d{1,4})(?:\s*\(\d+\))?',
+        compact,
+        re.IGNORECASE,
+    )
+    if night24:
+        return _candidate(
+            'night24_dms',
+            filename,
+            f"DMS-NIGHT24-{night24.group(1).upper()}",
+            confidence=0.86,
+            usable_for_search=True,
+            reason='matched DMS Night24 code from path/name context',
+            pattern_shape='DMS? NIGHT24 <code>',
+        )
+
+    mesubuta = re.search(
+        r'\bMESUBUTA[-_\s]*(\d{6})[-_\s]*(\d{3})(?:[-_\s]*(\d{1,3}))?\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if mesubuta:
+        normalized = f"MESUBUTA-{mesubuta.group(1)}-{mesubuta.group(2)}"
+        return _candidate(
+            'mesubuta',
+            filename,
+            normalized,
+            sequence=mesubuta.group(3),
+            confidence=0.9,
+            usable_for_search=True,
+            reason='matched Mesubuta date/id code',
+            pattern_shape='MESUBUTA[-_ ]<date>[-_ ]<id>[-_ ]<optional sequence>',
+        )
+
     mgstage_prefixes = '|'.join(re.escape(prefix) for prefix in MGSTAGE_PREFIXES)
     mgstage = re.search(
         rf'\b({mgstage_prefixes})[-_\s]*(\d{{2,6}}[A-Z]?)(?:[-_\s]+(\d{{1,3}}))?\b',
@@ -483,6 +595,10 @@ def clean_filename_for_search(filename: str) -> str:
     if not filename:
         return ''
 
+    candidate = analyze_unknown_filename(filename)
+    if candidate and candidate.get('usable_for_search'):
+        return candidate.get('normalized_code').lower()
+
     # v1.4.4: 优先识别序列文件，避免 -1/-2/-a 等被错误地编入搜索词
     base, _seq = extract_series_info(filename)
     if base:
@@ -493,7 +609,6 @@ def clean_filename_for_search(filename: str) -> str:
     if extracted:
         return extracted.lower()
 
-    candidate = analyze_unknown_filename(filename)
     if candidate and not candidate.get('usable_for_search'):
         return ''
 

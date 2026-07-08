@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,7 +14,8 @@ from manifest_utils import build_manifest_from_entries, build_run_summary, scan_
 from provider_router import route_provider
 from providers import create_provider
 
-VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
+VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.rmvb'}
+SKIP_SCAN_DIRS = {'Finish', 'JFO_Logs', '.jfo_transactions', '__MACOSX'}
 
 
 @dataclass(frozen=True)
@@ -78,39 +80,38 @@ class WorkflowService:
 
     def _scan_video_files(self, folder_path):
         result = {'accepted': [], 'skipped_hidden': [], 'skipped_small': [], 'manifest_entries': []}
-        for entry in os.scandir(folder_path):
-            file = entry.name
-            file_path = os.path.join(folder_path, file)
-            try:
-                is_file = entry.is_file()
-            except OSError:
-                continue
-            if not is_file:
-                continue
-            try:
-                st = entry.stat()
-            except OSError:
-                continue
-            _, ext = os.path.splitext(file.lower())
-            is_hidden = file.startswith('.')
-            is_video = ext in VIDEO_EXTENSIONS
-            result['manifest_entries'].append({
-                'name': file,
-                'size': st.st_size,
-                'mtime': st.st_mtime,
-                'extension': ext,
-                'is_hidden': is_hidden,
-                'is_video': is_video,
-            })
-            if file.startswith('._') or file.startswith('.'):
-                result['skipped_hidden'].append(file)
-                continue
-            if ext not in VIDEO_EXTENSIONS:
-                continue
-            if st.st_size < self.minimum_video_size_bytes:
-                result['skipped_small'].append(file)
-                continue
-            result['accepted'].append(file)
+        for dirpath, dirnames, filenames in os.walk(folder_path):
+            dirnames[:] = [
+                dirname for dirname in dirnames
+                if not dirname.startswith('.') and dirname not in SKIP_SCAN_DIRS
+            ]
+            for file in filenames:
+                file_path = os.path.join(dirpath, file)
+                rel_path = os.path.relpath(file_path, folder_path)
+                try:
+                    st = os.stat(file_path)
+                except OSError:
+                    continue
+                _, ext = os.path.splitext(file.lower())
+                is_hidden = file.startswith('.')
+                is_video = ext in VIDEO_EXTENSIONS
+                result['manifest_entries'].append({
+                    'name': rel_path,
+                    'size': st.st_size,
+                    'mtime': st.st_mtime,
+                    'extension': ext,
+                    'is_hidden': is_hidden,
+                    'is_video': is_video,
+                })
+                if file.startswith('._') or file.startswith('.'):
+                    result['skipped_hidden'].append(rel_path)
+                    continue
+                if ext not in VIDEO_EXTENSIONS:
+                    continue
+                if st.st_size < self.minimum_video_size_bytes:
+                    result['skipped_small'].append(rel_path)
+                    continue
+                result['accepted'].append(rel_path)
         result['accepted'].sort()
         result['skipped_hidden'].sort()
         result['skipped_small'].sort()
@@ -120,6 +121,28 @@ class WorkflowService:
         decision = route_provider(preferred_provider, filename, search_query)
         provider = self.provider_factory(preferred_provider)
         return decision, provider, preferred_provider
+
+    def _search_query_for_file(self, *, website, filename, file_path, folder_path):
+        query = self.clean_filename_for_search(filename)
+        if website != 'uncensored':
+            return query
+
+        rel_path = os.path.relpath(file_path, folder_path)
+        if rel_path == filename:
+            return query
+
+        path_context = rel_path.replace(os.sep, ' ')
+        path_query = self.clean_filename_for_search(path_context)
+        if not path_query:
+            return query
+
+        if not query or re.fullmatch(r'\d{1,4}(?:[-_]\d{1,3})?', query):
+            return path_query
+
+        if path_query.startswith(('dms-night24-', 'japanhdv-', 'urabukkake-', 'mesubuta-')):
+            return path_query
+
+        return query
 
     def _safe_finish_folder(self, folder_path, finish_folder, dry_run):
         if dry_run:
@@ -796,7 +819,12 @@ class WorkflowService:
             filename = os.path.basename(file_path)
             self._emit_progress(completed_units, total_files, f'正在处理 {filename}')
             item_started = time.time()
-            query = self.clean_filename_for_search(filename)
+            query = self._search_query_for_file(
+                website=website,
+                filename=filename,
+                file_path=file_path,
+                folder_path=folder_path,
+            )
             if not query:
                 candidate = analyze_unknown_filename(filename)
                 self._log_not_processed(

@@ -1,6 +1,6 @@
 import re
 import time
-from urllib.parse import urljoin
+from urllib.parse import quote_plus, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -51,14 +51,23 @@ class UncensoredProvider(BaseProvider):
         },
     }
 
+    URABUKKAKE_TOUR_PAGES = 12
+
     UNSUPPORTED_FAMILY_PATTERNS = (
-        ('japanhdv', re.compile(r'\bJAPANHDV[-_.]', re.IGNORECASE)),
-        ('urabukkake', re.compile(r'\bURABUKKAKE[-_\s]*\d+\b', re.IGNORECASE)),
-        ('night24-dms', re.compile(r'\b(?:NIGHT24|DMS)\b|^\d{2,4}(?:[-_]\d+)?$', re.IGNORECASE)),
+        ('night24-dms', re.compile(r'\b(?:DMS[-_\s]*)?NIGHT24[-_\s]*[A-Z]?\d+\b|^DMS[-_\s]*NIGHT24[-_\s]*[A-Z]?\d+\b', re.IGNORECASE)),
         ('s-cute', re.compile(r'\bS[-_]?CUTE[-_\s]*\d+\b', re.IGNORECASE)),
+        ('mesubuta', re.compile(r'\bMESUBUTA[-_\s]*\d{6}[-_\s]*\d{3}\b', re.IGNORECASE)),
         ('madou', re.compile(r'\bMM[-_\s]*\d+\b|麻豆|MADOU', re.IGNORECASE)),
         ('number-name-series', re.compile(r'^\d{2,4}[-_\s]+[A-Z][A-Z]+', re.IGNORECASE)),
     )
+
+    UNSUPPORTED_FAMILY_MESSAGES = {
+        'night24-dms': 'DMS Night24 recognized, but no verified public cover/detail source is configured yet',
+        's-cute': 'S-Cute recognized, but the official old site ended service and no stable cover source is configured yet',
+        'mesubuta': 'Mesubuta recognized, but the known official domain is unavailable and no stable cover source is configured yet',
+        'madou': 'Madou recognized, but no verified public cover/detail source is configured yet',
+        'number-name-series': 'filename pattern recognized, but the source family is ambiguous and needs manual review',
+    }
 
     MGSTAGE_PREFIXES = (
         '300MIUM', '393OTIM', '420HPT', '420STH', '546EROFV', '583ERKR',
@@ -67,6 +76,17 @@ class UncensoredProvider(BaseProvider):
 
     def _request(self, url):
         session = self.session
+        if session is None:
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': (
+                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/126.0.0.0 Safari/537.36'
+                ),
+                'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+            })
+            self.session = session
         started = time.monotonic()
         try:
             response = session.get(url, timeout=(5, 10))
@@ -78,7 +98,7 @@ class UncensoredProvider(BaseProvider):
 
     def _normalize_query(self, query):
         raw = (query or '').strip()
-        compact = raw.upper().replace('_', '-')
+        compact = re.sub(r'[._\s]+', '-', raw.upper())
 
         for family, config in self.OFFICIAL_PAGE_FAMILIES.items():
             prefixes = '|'.join(re.escape(prefix) for prefix in config['prefixes'])
@@ -143,6 +163,21 @@ class UncensoredProvider(BaseProvider):
                 ],
             }
 
+        match = re.search(r'\b(?:HEYDOUGA|HEY)[-_\s]*4030[-_\s]*(?:PPV[-_\s]*)?(\d{3,6})\b', compact)
+        if match:
+            item_id = match.group(1)
+            return {
+                'family': 'heydouga',
+                'supported': True,
+                'code': item_id,
+                'display_code': f'HEYDOUGA-4030-{item_id}',
+                'detail_url': f'https://www.heydouga.com/moviepages/4030/{item_id}/index.html',
+                'image_candidates': [
+                    f'https://www.heydouga.com/contents/4030/{item_id}/player_thumb.jpg',
+                    f'https://www.heydouga.com/contents/4030/{item_id}/player_thumb.webp',
+                ],
+            }
+
         match = re.search(r'\b(?:TOKYO[-_\s]*HOT|TOKYOHOT)[-_\s]*([A-Z]\d{3,6})\b', compact)
         if match:
             code = match.group(1).lower()
@@ -172,6 +207,39 @@ class UncensoredProvider(BaseProvider):
                     f'https://image.mgstage.com/images/{prefix}/{number}/pb_e_{code.lower()}.jpg',
                     f'https://image.mgstage.com/images/{prefix}/{number}/pf_o1_{code.lower()}.jpg',
                 ],
+            }
+
+        match = re.search(
+            r'\bJAPANHDV[-_\s]*(?:(\d{6})|(\d{2})[-_\s]*(\d{2})[-_\s]*(\d{2}))(?:[-_\s]+([A-Z0-9][A-Z0-9-]*))?\b',
+            compact,
+        )
+        if match:
+            date_part = match.group(1) or f'{match.group(2)}{match.group(3)}{match.group(4)}'
+            search_slug = (match.group(5) or '').strip('-')
+            search_terms = self._search_terms_from_slug(search_slug)
+            return {
+                'family': 'japanhdv',
+                'supported': bool(search_terms),
+                'code': f'JAPANHDV-{date_part}' + (f'-{search_slug.lower()}' if search_slug else ''),
+                'display_code': f'JAPANHDV-{date_part}',
+                'detail_url': f'http://japanhdv.com/?s={quote_plus(" ".join(search_terms))}' if search_terms else '',
+                'image_candidates': [],
+                'search_terms': search_terms,
+            }
+
+        match = re.search(r'\bURABUKKAKE[-_\s]*(\d{1,5})(?:[-_\s]+([A-Z][A-Z0-9-]*))?\b', compact)
+        if match:
+            item_id = match.group(1)
+            search_slug = (match.group(2) or '').strip('-')
+            search_terms = self._search_terms_from_slug(search_slug)
+            return {
+                'family': 'urabukkake',
+                'supported': bool(search_terms),
+                'code': f'URABUKKAKE-{item_id}' + (f'-{search_slug.lower()}' if search_slug else ''),
+                'display_code': f'URABUKKAKE-{item_id}',
+                'detail_url': 'https://www.urabukkake.com/en/tour',
+                'image_candidates': [],
+                'search_terms': search_terms,
             }
 
         for family, pattern in self.UNSUPPORTED_FAMILY_PATTERNS:
@@ -255,6 +323,8 @@ class UncensoredProvider(BaseProvider):
             ' - pacopacomama.com',
             ' | FC2コンテンツマーケット',
             ' | FC2 Contents Market',
+            ' - FC2コンテンツマーケット',
+            ' - FC2 Contents Market',
             ' - HEYZO',
             ' | HEYZO',
             ' - Tokyo-Hot',
@@ -273,7 +343,7 @@ class UncensoredProvider(BaseProvider):
             return f'{display_code} {title}'
         return title or display_code
 
-    def _select_image(self, soup, detail_url, image_candidates):
+    def _select_image(self, soup, detail_url, image_candidates, meta=None):
         for selector in (
             'meta[property="og:image"]',
             'meta[name="twitter:image"]',
@@ -287,7 +357,18 @@ class UncensoredProvider(BaseProvider):
             return image_candidates[0]
 
         for img in soup.find_all('img'):
-            src = img.get('data-src') or img.get('data-lazy-src') or img.get('src') or ''
+            src = (
+                img.get('data-src')
+                or img.get('data-lazy-src')
+                or img.get('data-original')
+                or img.get('data-url')
+                or img.get('src')
+                or ''
+            )
+            if not src:
+                srcset = img.get('srcset') or img.get('data-srcset') or ''
+                if srcset:
+                    src = srcset.split(',')[-1].strip().split()[0]
             if not src:
                 continue
             src_lower = src.lower()
@@ -296,9 +377,33 @@ class UncensoredProvider(BaseProvider):
             cls = ' '.join(img.get('class', [])).lower()
             if 'gallery-image' in cls:
                 return urljoin(detail_url, src)
-            if any(marker in src_lower for marker in ('/sample/', '/moviepages/', 'l_l', 'l_hd', 'str', 'poster', 'cover')):
+            if any(marker in src_lower for marker in ('/sample/', '/moviepages/', '/file/', 'l_l', 'l_hd', 'str', 'poster', 'cover')):
                 return urljoin(detail_url, src)
 
+        if meta and meta.get('family') == 'fc2-ppv':
+            fc2_image = self._extract_fc2_storage_image(str(soup), detail_url)
+            if fc2_image:
+                return fc2_image
+
+        return None
+
+    def _extract_fc2_storage_image(self, html_text, detail_url):
+        if not html_text:
+            return None
+        unescaped = (
+            html_text
+            .replace('\\/', '/')
+            .replace('&amp;', '&')
+            .replace('\\u002F', '/')
+        )
+        patterns = (
+            r'https?://storage\d+\.contents\.fc2\.com/file/[^"\'<>\s\\]+?\.(?:jpg|jpeg|png)',
+            r'//storage\d+\.contents\.fc2\.com/file/[^"\'<>\s\\]+?\.(?:jpg|jpeg|png)',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, unescaped, re.IGNORECASE)
+            if match:
+                return urljoin(detail_url, match.group(0))
         return None
 
     def _is_placeholder_image(self, image_url):
@@ -333,6 +438,230 @@ class UncensoredProvider(BaseProvider):
             'raw': data,
         }
 
+    def _search_terms_from_slug(self, slug):
+        if not slug:
+            return []
+        spaced = re.sub(r'([a-z])([A-Z])', r'\1 \2', str(slug))
+        spaced = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', spaced)
+        words = re.findall(r'[A-Za-z0-9]+', spaced.lower())
+        return [
+            word
+            for word in words
+            if len(word) > 1 and word not in {'hd', 'fhd', 'uhd', 'mp4', 'avi', 'wmv', 'mkv'}
+        ]
+
+    def _score_terms(self, search_terms, text):
+        words = self._search_terms_from_slug(text)
+        if not search_terms or not words:
+            return 0
+        word_set = set(words)
+        joined_words = ''.join(words)
+        score = 0
+        for term in search_terms:
+            if term in word_set or term in joined_words:
+                score += 2
+                continue
+            parts = self._split_compound_term(term)
+            if len(parts) > 1 and all(part in word_set for part in parts):
+                score += len(parts)
+        return score
+
+    def _split_compound_term(self, term):
+        if not term:
+            return []
+        parts = re.findall(r'[a-z]+|\d+', term.lower())
+        if len(parts) > 1:
+            return [part for part in parts if len(part) > 1]
+        common_suffixes = (
+            'ass', 'pussy', 'gokkun', 'bukkake', 'creampie', 'whore',
+            'cum', 'slut', 'girl', 'schoolgirl', 'facial',
+        )
+        for suffix in common_suffixes:
+            if term.endswith(suffix) and len(term) > len(suffix) + 1:
+                return [term[:-len(suffix)], suffix]
+        return [term]
+
+    def _search_japanhdv(self, meta, query):
+        detail_url = meta.get('detail_url')
+        response = self._request(detail_url)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        blocked_failure = self._blocked_page_failure(soup)
+        if blocked_failure:
+            error_type, message = blocked_failure
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                detail_url=detail_url,
+                referer=detail_url,
+                error_type=error_type,
+                message=message,
+                raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+            )
+        search_terms = meta.get('search_terms') or []
+        candidates = []
+        for link in soup.select('a.video-thumb-prev[href], a[href]'):
+            image_element = link.select_one('img')
+            title = (
+                link.get('title')
+                or (image_element.get('alt') if image_element else '')
+            )
+            if not title:
+                heading = link.find_next('h3', class_='title_desc')
+                title = heading.get_text(' ', strip=True) if heading else ''
+            image_url = ''
+            if image_element:
+                image_url = (
+                    image_element.get('data-src')
+                    or image_element.get('data-original')
+                    or image_element.get('src')
+                    or ''
+                )
+            if not title or not image_url or self._is_placeholder_image(image_url):
+                continue
+            score = self._score_terms(search_terms, title)
+            if score <= 0:
+                continue
+            candidates.append({
+                'score': score,
+                'title': title,
+                'image_url': urljoin(detail_url, image_url),
+                'detail_url': urljoin(detail_url, link.get('href')),
+            })
+        if not candidates:
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                detail_url=detail_url,
+                referer=detail_url,
+                error_type='not-found',
+                message='japanhdv search results did not match filename terms',
+                raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+            )
+        best = max(candidates, key=lambda item: item['score'])
+        return ProviderResult(
+            ok=True,
+            title=self._clean_title(best['title'], meta),
+            image_url=best['image_url'],
+            provider=self.name,
+            query=query,
+            detail_url=best['detail_url'],
+            referer=detail_url,
+            raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+        )
+
+    def _search_urabukkake(self, meta, query):
+        base_url = meta.get('detail_url') or 'https://www.urabukkake.com/en/tour'
+        search_terms = meta.get('search_terms') or []
+        if not search_terms:
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                detail_url=base_url,
+                referer=base_url,
+                error_type='invalid-query',
+                message='urabukkake filename lacks title words needed for tour-page matching',
+                raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+            )
+        best = None
+        for page in range(1, self.URABUKKAKE_TOUR_PAGES + 1):
+            if self.should_stop():
+                return ProviderResult(
+                    ok=False,
+                    provider=self.name,
+                    query=query,
+                    detail_url=base_url,
+                    referer=base_url,
+                    error_type='cancelled',
+                    message='user stopped during urabukkake tour scan',
+                    raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+                )
+            page_url = f'{base_url}?page={page}'
+            response = self._request(page_url)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            blocked_failure = self._blocked_page_failure(soup)
+            if blocked_failure:
+                error_type, message = blocked_failure
+                return ProviderResult(
+                    ok=False,
+                    provider=self.name,
+                    query=query,
+                    detail_url=page_url,
+                    referer=base_url,
+                    error_type=error_type,
+                    message=message,
+                    raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+                )
+            for section in self._iter_urabukkake_sections(soup, page_url):
+                score = self._score_terms(search_terms, section.get('title', ''))
+                if score <= 0:
+                    continue
+                if not best or score > best.get('score', 0):
+                    best = dict(section)
+                    best['score'] = score
+            required_score = max(1, len(search_terms))
+            if best and best.get('score', 0) >= required_score:
+                break
+        if not best:
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                detail_url=base_url,
+                referer=base_url,
+                error_type='not-found',
+                message='urabukkake tour pages did not match filename terms',
+                raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+            )
+        return ProviderResult(
+            ok=True,
+            title=self._clean_title(best.get('title'), meta),
+            image_url=best.get('image_url'),
+            provider=self.name,
+            query=query,
+            detail_url=best.get('detail_url') or base_url,
+            referer=best.get('referer') or base_url,
+            fallback_images=best.get('fallback_images') or [],
+            raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+        )
+
+    def _iter_urabukkake_sections(self, soup, page_url):
+        for top in soup.select('#section-top'):
+            title_element = top.select_one('h2')
+            title = title_element.get_text(' ', strip=True) if title_element else ''
+            middle = top.find_next_sibling(id='section-mid') or top.find_next(id='section-mid')
+            if not title or not middle:
+                continue
+            image_url = ''
+            fallback_images = []
+            bigpic = middle.select_one('#bigpic img[src], img.thumb[src]')
+            if bigpic:
+                image_url = urljoin(page_url, bigpic.get('src'))
+            for img in middle.select('img[src]'):
+                src = img.get('src')
+                if src and not self._is_placeholder_image(src):
+                    fallback_images.append(urljoin(page_url, src))
+            if not image_url:
+                player = middle.select_one('#player[style]')
+                style = player.get('style', '') if player else ''
+                match = re.search(r'url\((["\']?)([^)"\']+)\1\)', style, re.IGNORECASE)
+                if match:
+                    image_url = urljoin(page_url, match.group(2))
+            if not image_url or self._is_placeholder_image(image_url):
+                continue
+            yield {
+                'title': title,
+                'image_url': image_url,
+                'detail_url': page_url,
+                'referer': page_url,
+                'fallback_images': [
+                    url for url in fallback_images
+                    if url != image_url and not self._is_placeholder_image(url)
+                ],
+            }
+
     def search(self, query):
         if self.should_stop():
             return ProviderResult(ok=False, provider=self.name, query=query, error_type='cancelled', message='user stopped')
@@ -349,18 +678,35 @@ class UncensoredProvider(BaseProvider):
             )
         if not meta.get('supported'):
             family = meta.get('family')
+            if family in {'japanhdv', 'urabukkake'}:
+                return ProviderResult(
+                    ok=False,
+                    provider=self.name,
+                    query=query,
+                    error_type='invalid-query',
+                    message=f'{family} filename lacks searchable title/performer terms',
+                    raw_meta={'family': family, 'code': meta.get('code')},
+                )
             return ProviderResult(
                 ok=False,
                 provider=self.name,
                 query=query,
                 error_type='unsupported-family',
-                message=f'uncensored family not implemented yet: {family}',
+                message=self.UNSUPPORTED_FAMILY_MESSAGES.get(
+                    family,
+                    f'uncensored family not implemented yet: {family}',
+                ),
                 raw_meta={'family': family, 'code': meta.get('code')},
             )
 
         detail_url = meta['detail_url']
         self.log(f'🔍 无码源URL: family={meta.get("family")} | {detail_url}', 'INFO')
         try:
+            if meta.get('family') == 'japanhdv':
+                return self._search_japanhdv(meta, query)
+            if meta.get('family') == 'urabukkake':
+                return self._search_urabukkake(meta, query)
+
             json_detail = None
             try:
                 json_detail = self._fetch_json_detail(meta)
@@ -479,7 +825,7 @@ class UncensoredProvider(BaseProvider):
                         break
                 title = self._clean_title(title, meta)
             if not image_url or self._is_placeholder_image(image_url):
-                image_url = self._select_image(soup, detail_url, meta.get('image_candidates') or [])
+                image_url = self._select_image(soup, detail_url, meta.get('image_candidates') or [], meta=meta)
             if not image_url:
                 return ProviderResult(
                     ok=False,

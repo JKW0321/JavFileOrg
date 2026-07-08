@@ -121,6 +121,39 @@ def test_process_file_atomic_fsyncs_committed_outputs():
         assert 'SONE-753 TITLE.jpg' in p.synced
 
 
+def test_process_file_atomic_preflights_target_disk_space():
+    class FullDiskProcessor(AtomicProcessor):
+        def _available_bytes(self, path):
+            return 1024
+
+        def _same_filesystem(self, source_path, target_dir):
+            return False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / 'src'
+        out = root / 'Finish'
+        src.mkdir()
+        out.mkdir()
+        f1 = src / 'SONE-753.mp4'
+        f1.write_bytes(b'a' * 1024 * 32)
+        p = FullDiskProcessor(_dummy_download, _sanitize)
+        ok, result, message = p.process_file_atomic(
+            str(f1),
+            'SONE-753 TITLE.mp4',
+            'http://example/image.jpg',
+            str(out),
+        )
+
+        assert ok is False
+        assert result['status'] == 'failed'
+        assert f1.exists()
+        assert not (out / 'SONE-753 TITLE.mp4').exists()
+        assert not (out / 'SONE-753 TITLE.jpg').exists()
+        assert not (out / '.jfo_transactions').exists()
+        assert '目标磁盘空间不足' in message
+
+
 def test_process_file_atomic_marks_active_transaction_during_commit_and_rollback():
     class BrokenAfterMoveProcessor(AtomicProcessor):
         def __init__(self, *args, **kwargs):
@@ -584,6 +617,42 @@ def test_process_series_group_atomic_requires_image_url_and_keeps_sources():
         assert not (out / 'ABF-139 TITLE-2.mp4').exists()
         assert result['image_downloaded'] is False
         assert '图片URL' in message
+
+
+def test_process_series_group_atomic_preflights_target_disk_space():
+    class FullDiskProcessor(AtomicProcessor):
+        def _available_bytes(self, path):
+            return 1024
+
+        def _same_filesystem(self, source_path, target_dir):
+            return False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / 'src'
+        out = root / 'Finish'
+        src.mkdir()
+        out.mkdir()
+        f1 = src / 'FC2-PPV-3690078-1.mp4'
+        f2 = src / 'FC2-PPV-3690078-2.mp4'
+        f1.write_bytes(b'a' * 1024 * 32)
+        f2.write_bytes(b'b' * 1024 * 32)
+        p = FullDiskProcessor(_dummy_download, _sanitize)
+        ok, result, message = p.process_series_group_atomic(
+            [(str(f1), '1'), (str(f2), '2')],
+            'FC2-PPV-3690078 TITLE',
+            'http://example/image.jpg',
+            str(out),
+        )
+
+        assert ok is False
+        assert result['status'] == 'failed'
+        assert f1.exists() and f2.exists()
+        assert not (out / 'FC2-PPV-3690078 TITLE-1.mp4').exists()
+        assert not (out / 'FC2-PPV-3690078 TITLE-2.mp4').exists()
+        assert not (out / 'FC2-PPV-3690078 TITLE.jpg').exists()
+        assert not (out / '.jfo_transactions').exists()
+        assert '目标磁盘空间不足' in message
 
 
 def test_process_series_group_atomic_cancel_after_one_move_rolls_back_group():
