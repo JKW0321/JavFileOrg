@@ -219,6 +219,38 @@ class TestAdaptiveFilenameRules:
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("032126_001-1PON.mp4") == "1pondo-032126-001"
 
+    def test_bare_1pondo_date_code_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("010220-952.mp4")
+
+        assert candidate['rule_id'] == '1pondo_bare_date_code'
+        assert candidate['normalized_code'] == '1PONDO-010220-952'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("010220-952.mp4") == "1pondo-010220-952"
+
+    def test_bare_1pondo_underscore_low_item_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("012018_002.mp4")
+
+        assert candidate['rule_id'] == '1pondo_bare_underscore_date_code'
+        assert candidate['normalized_code'] == '1PONDO-012018-002'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("012018_002.mp4") == "1pondo-012018-002"
+
+    def test_bare_1pondo_hyphen_low_item_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("021011-027.mp4")
+
+        assert candidate['rule_id'] == '1pondo_bare_date_code'
+        assert candidate['normalized_code'] == '1PONDO-021011-027'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("021011-027.mp4") == "1pondo-021011-027"
+
+    def test_paco_suffix_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("hjd2048.com_070419_124-paco-1080p.mp4")
+
+        assert candidate['rule_id'] == 'pacopacomama_suffix'
+        assert candidate['normalized_code'] == 'PACOPACOMAMA-070419-124'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("hjd2048.com_070419_124-paco-1080p.mp4") == "pacopacomama-070419-124"
+
     def test_heyzo_candidate_is_auto_usable(self):
         candidate = analyze_unknown_filename("HEYZO-HD-3098.mp4")
 
@@ -235,6 +267,14 @@ class TestAdaptiveFilenameRules:
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("Tokyo-Hot-n0839.mp4") == "tokyo-hot-n0839"
 
+    def test_nyoshin_tokyo_hot_alias_is_auto_usable(self):
+        candidate = analyze_unknown_filename("nyoshin_n2039.wmv")
+
+        assert candidate['rule_id'] == 'tokyo_hot'
+        assert candidate['normalized_code'] == 'TOKYO-HOT-N2039'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("nyoshin_n2039.wmv") == "tokyo-hot-n2039"
+
     def test_mgstage_uncensored_candidate_is_auto_usable(self):
         candidate = analyze_unknown_filename("300MIUM-1366.mp4")
 
@@ -242,6 +282,14 @@ class TestAdaptiveFilenameRules:
         assert candidate['normalized_code'] == '300MIUM-1366'
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("300MIUM-1366.mp4") == "300mium-1366"
+
+    def test_hmdnv_mgstage_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("4k2.me@328HMDNV-935.mp4")
+
+        assert candidate['rule_id'] == 'mgstage_uncensored'
+        assert candidate['normalized_code'] == '328HMDNV-935'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("4k2.me@328HMDNV-935.mp4") == "328hmdnv-935"
 
     def test_japanhdv_candidate_is_auto_usable(self):
         candidate = analyze_unknown_filename("japanhdv.17.09.24.maya.sawamura.mp4")
@@ -286,6 +334,14 @@ class TestAdaptiveFilenameRules:
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("DMS Night24 013 (5013) 高田弘美/013.avi") == "dms-night24-013"
 
+    def test_night24_candidate_keeps_five_digit_code(self):
+        filename = "night24 pack [wrong] DMS Night24 16002 ２０万ボルトの恐怖 16002.wmv"
+        candidate = analyze_unknown_filename(filename)
+
+        assert candidate['rule_id'] == 'night24_dms'
+        assert candidate['normalized_code'] == 'DMS-NIGHT24-16002'
+        assert clean_filename_for_search(filename) == "dms-night24-16002"
+
     def test_mesubuta_candidate_is_auto_usable(self):
         candidate = analyze_unknown_filename("mesubuta_120111_466_01-HD.wmv")
 
@@ -302,6 +358,15 @@ class TestAdaptiveFilenameRules:
         assert candidate['normalized_code'] == 'HEYDOUGA-4030-1644'
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("heydouga-4030-1644.mp4") == "heydouga-4030-1644"
+
+    def test_heydouga_split_file_keeps_real_item_id_and_sequence(self):
+        candidate = analyze_unknown_filename("hey-4030-2069_hd1.mp4")
+
+        assert candidate['rule_id'] == 'heydouga'
+        assert candidate['normalized_code'] == 'HEYDOUGA-4030-2069'
+        assert candidate['sequence'] == '1'
+        assert extract_series_info("hey-4030-2069_hd1.mp4") == ("HEYDOUGA-4030-2069", "1")
+        assert clean_filename_for_search("hey-4030-2069_hd1.mp4") == "heydouga-4030-2069"
 
     def test_generic_multi_segment_candidate_needs_review(self):
         candidate = analyze_unknown_filename("STUDIOX-20260705-001.mp4")
@@ -353,6 +418,18 @@ class TestSanitizeFilename:
         如果有用户反馈想保留，单独开个开关即可。
         """
         assert sanitize_filename("javbus.mp4") == "unnamed.mp4"
+
+    def test_long_multibyte_filename_is_byte_safe(self):
+        result = sanitize_filename(f"HMN-875 {'中出ししないと出れない部屋' * 20} 黒島玲衣.mp4", max_bytes=240)
+
+        assert result.endswith('.mp4')
+        assert len(result.encode('utf-8')) <= 240
+        assert result != '.mp4'
+
+    def test_long_multibyte_filename_is_not_byte_limited_without_setting(self):
+        result = sanitize_filename(f"HMN-875 {'中出ししないと出れない部屋' * 20} 黒島玲衣.mp4")
+
+        assert len(result.encode('utf-8')) > 240
 
 
 # =========================================================================

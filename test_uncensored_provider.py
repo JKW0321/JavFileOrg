@@ -75,6 +75,15 @@ class HttpErrorResponse(DummyResponse):
         raise requests.HTTPError('403 Client Error: Forbidden for url')
 
 
+class Http404Response(DummyResponse):
+    status_code = 404
+
+    def raise_for_status(self):
+        exc = requests.HTTPError('404 Client Error: Not Found for url')
+        exc.response = self
+        raise exc
+
+
 class HttpErrorSession:
     def __init__(self):
         self.calls = []
@@ -82,6 +91,15 @@ class HttpErrorSession:
     def get(self, url, timeout=None):
         self.calls.append((url, timeout))
         return HttpErrorResponse('<html><body>Forbidden</body></html>', url=url)
+
+
+class Http404Session:
+    def __init__(self):
+        self.calls = []
+
+    def get(self, url, timeout=None):
+        self.calls.append((url, timeout))
+        return Http404Response('<html><body>Not Found</body></html>', url=url)
 
 
 class BadJsonResponse(DummyJsonResponse):
@@ -179,6 +197,28 @@ def test_uncensored_provider_uses_json_fast_path_when_complete():
     assert session.calls == [(json_url, (5, 10))]
 
 
+def test_uncensored_provider_normalizes_json_relative_image_and_adds_fallbacks():
+    json_url = 'https://www.1pondo.tv/dyn/phpauto/movie_details/movie_id/061819_001.json'
+    session = MultiResponseSession({
+        json_url: {
+            'Title': 'Relative JSON Title',
+            'ThumbUltra': 'https:///moviepages/061819_001/images/str.jpg',
+        },
+    })
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    result = provider.search('1PONDO-061819-001')
+
+    assert result.ok is True
+    assert result.title == '1PONDO-061819-001 Relative JSON Title'
+    assert result.image_url == 'https://www.1pondo.tv/moviepages/061819_001/images/str.jpg'
+    assert result.fallback_images == [
+        'https://www.1pondo.tv/assets/sample/061819_001/str.jpg',
+        'https://www.1pondo.tv/assets/sample/061819_001/l_l.jpg',
+    ]
+    assert session.calls == [(json_url, (5, 10))]
+
+
 def test_uncensored_provider_falls_back_when_json_is_invalid():
     html = '''
     <html><head><title>Fallback Page Title - 1pondo.tv</title></head>
@@ -268,6 +308,64 @@ def test_uncensored_provider_scrapes_japanhdv_search_result():
     assert session.calls == [('http://japanhdv.com/?s=maya+sawamura', (5, 10))]
 
 
+def test_uncensored_provider_rejects_ambiguous_japanhdv_search_results():
+    html = '''
+    <html><body>
+      <a title="Sena Sakura tries a risky office romance"
+         href="https://japanhdv.com/sena-sakura-risky-office-romance/"
+         class="video-thumb-prev">
+        <img src="//static.japanhdv.com/cache/one.jpg" alt="Sena Sakura tries a risky office romance" />
+      </a>
+      <a title="Sena Sakura enjoys a private weekend"
+         href="https://japanhdv.com/sena-sakura-private-weekend/"
+         class="video-thumb-prev">
+        <img src="//static.japanhdv.com/cache/two.jpg" alt="Sena Sakura enjoys a private weekend" />
+      </a>
+    </body></html>
+    '''
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    result = provider.search('japanhdv.18.01.18.sena.sakura')
+
+    assert result.ok is False
+    assert result.error_type == 'ambiguous-result'
+    assert result.message == 'japanhdv search returned multiple equally plausible matches'
+    assert result.raw_meta['candidate_count'] == 2
+
+
+def test_uncensored_provider_uses_japanhdv_card_date_to_disambiguate():
+    html = '''
+    <html><body>
+      <article>
+        <time>2018-01-12</time>
+        <a title="Sena Sakura tries a risky office romance"
+           href="https://japanhdv.com/sena-sakura-risky-office-romance/"
+           class="video-thumb-prev">
+          <img src="//static.japanhdv.com/cache/one.jpg" alt="Sena Sakura tries a risky office romance" />
+        </a>
+      </article>
+      <article>
+        <time>Jan 18, 2018</time>
+        <a title="Sena Sakura enjoys a private weekend"
+           href="https://japanhdv.com/sena-sakura-private-weekend/"
+           class="video-thumb-prev">
+          <img src="//static.japanhdv.com/cache/two.jpg" alt="Sena Sakura enjoys a private weekend" />
+        </a>
+      </article>
+    </body></html>
+    '''
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    result = provider.search('japanhdv.18.01.18.sena.sakura')
+
+    assert result.ok is True
+    assert result.title == 'JAPANHDV-180118 Sena Sakura enjoys a private weekend'
+    assert result.image_url == 'http://static.japanhdv.com/cache/two.jpg'
+    assert result.detail_url == 'https://japanhdv.com/sena-sakura-private-weekend/'
+
+
 def test_uncensored_provider_scrapes_urabukkake_tour_pages_by_title_terms():
     html = '''
     <html><body>
@@ -296,6 +394,28 @@ def test_uncensored_provider_scrapes_urabukkake_tour_pages_by_title_terms():
     assert result.image_url == 'https://www.urabukkake.com/tour/kanames-ass-pussy-cum/big.jpg'
     assert result.detail_url == 'https://www.urabukkake.com/en/tour?page=1'
     assert result.raw_meta['family'] == 'urabukkake'
+    assert session.calls == [('https://www.urabukkake.com/en/tour?page=1', (5, 10))]
+
+
+def test_uncensored_provider_reuses_urabukkake_tour_page_cache():
+    html = '''
+    <html><body>
+      <div id="section-top"><h2>Cutey Mio gets 30 dicks and cum on her face</h2></div>
+      <div id="section-mid"><div id="bigpic"><img src="../tour/mio/big.jpg" /></div></div>
+      <div id="section-top"><h2>Nene's uncontrollable desire for bukkake hell</h2></div>
+      <div id="section-mid"><div id="bigpic"><img src="../tour/nene/big.jpg" /></div></div>
+    </body></html>
+    '''
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    first = provider.search('urabukkake-01-mio')
+    second = provider.search('urabukkake-02-nene')
+
+    assert first.ok is True
+    assert second.ok is True
+    assert first.image_url == 'https://www.urabukkake.com/tour/mio/big.jpg'
+    assert second.image_url == 'https://www.urabukkake.com/tour/nene/big.jpg'
     assert session.calls == [('https://www.urabukkake.com/en/tour?page=1', (5, 10))]
 
 
@@ -388,6 +508,18 @@ def test_uncensored_provider_parses_heydouga_official_page():
     assert result.raw_meta['family'] == 'heydouga'
 
 
+def test_uncensored_provider_classifies_404_as_not_found():
+    session = Http404Session()
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    result = provider.search('heyzo-2412')
+
+    assert result.ok is False
+    assert result.error_type == 'not-found'
+    assert result.message == 'heyzo page not found'
+    assert result.raw_meta['family'] == 'heyzo'
+
+
 def test_uncensored_provider_parses_tokyo_hot_page():
     html = '''
     <html><head>
@@ -417,6 +549,34 @@ def test_uncensored_provider_parses_tokyo_hot_page():
     assert result.detail_url == 'https://my.tokyo-hot.com/product/21087/'
     assert result.image_url == 'https://my.cdn.tokyo-hot.com/media/21087/list_image/n0839 1280x720/820x462_default.jpg'
     assert result.raw_meta['family'] == 'tokyo-hot'
+
+
+def test_uncensored_provider_treats_nyoshin_as_tokyo_hot_alias():
+    html = '''
+    <html><body>
+      <ul class="list slider cf">
+        <li class="detail">
+          <a href="/product/22039/" class="rm">
+            <img src="https://my.cdn.tokyo-hot.com/media/22039/list_image/n2039 1280x720/220x124_default.jpg" alt="n2039" />
+            <div class="description2">
+              <div class="title">Tokyo Hot Sample</div>
+              <div class="actor">(Product ID: n2039)</div>
+            </div>
+          </a>
+        </li>
+      </ul>
+    </body></html>
+    '''
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    result = provider.search('nyoshin-n2039')
+
+    assert result.ok is True
+    assert result.title == 'TOKYO-HOT-N2039 Tokyo Hot Sample'
+    assert result.detail_url == 'https://my.tokyo-hot.com/product/22039/'
+    assert result.raw_meta['family'] == 'tokyo-hot'
+    assert session.calls == [('https://my.tokyo-hot.com/product/?q=n2039', (5, 10))]
 
 
 def test_uncensored_provider_parses_mgstage_like_page():
@@ -556,6 +716,9 @@ def test_uncensored_provider_recognizes_new_unsupported_families():
         'dms-night24-013': 'night24-dms',
         's-cute-593-maria': 's-cute',
         'mesubuta-120111-466': 'mesubuta',
+        'mdhg-0020': 'madou',
+        'mdsr-0007': 'madou',
+        'mdl-0010': 'madou',
     }
 
     for query, family in cases.items():

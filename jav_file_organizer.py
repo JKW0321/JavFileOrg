@@ -54,6 +54,8 @@ class ProcessingRequest:
     dry_run: bool
     batch_count_text: str
     max_length_text: str
+    max_filename_bytes_text: str
+    include_subdirectories: bool
 
 
 class OptimizedAntiCrawlHandler:
@@ -155,6 +157,8 @@ class JavFileOrganizer:
         self._progress_last_update_at = None
         self._progress_last_completed = 0
         self._progress_last_item_text = ""
+        self._folder_scan_cache = None
+        self._folder_scan_cache_ttl_seconds = 120
         
         # v1.1 优化: 线程安全和性能优化相关属性
         self.metadata_cache = {}  # 元数据缓存
@@ -429,12 +433,30 @@ class JavFileOrganizer:
         length_entry = ttk.Entry(length_frame, textvariable=self.max_filename_length_var, width=10)
         length_entry.pack(side=tk.LEFT, padx=(5, 5))
         ttk.Label(length_frame, text="字符 (留空=不限制)").pack(side=tk.LEFT)
+
+        bytes_frame = ttk.Frame(process_frame)
+        bytes_frame.pack(fill=tk.X, pady=(0, 5))
+
+        ttk.Label(bytes_frame, text="文件系统字节上限:").pack(side=tk.LEFT)
+        self.max_filename_bytes_var = tk.StringVar(value="240")
+        bytes_entry = ttk.Entry(bytes_frame, textvariable=self.max_filename_bytes_var, width=10)
+        bytes_entry.pack(side=tk.LEFT, padx=(5, 5))
+        ttk.Label(bytes_frame, text="bytes (留空=不限制)").pack(side=tk.LEFT)
         
         # 演员名保留选项
         self.preserve_actor_var = tk.BooleanVar(value=True)
         preserve_cb = ttk.Checkbutton(process_frame, text="✅ 超出长度时优先保留演员名称", 
                                     variable=self.preserve_actor_var)
         preserve_cb.pack(anchor=tk.W, pady=(0, 5))
+
+        self.include_subdirectories_var = tk.BooleanVar(value=False)
+        include_subdirs_cb = ttk.Checkbutton(
+            process_frame,
+            text="包括子目录（始终跳过 Finish / JFO_Logs）",
+            variable=self.include_subdirectories_var,
+            command=self._reanalyze_selected_folder,
+        )
+        include_subdirs_cb.pack(anchor=tk.W, pady=(0, 5))
         
         # v1.9 简化：只用输入框控制批量处理
         batch_frame = ttk.Frame(process_frame)
@@ -540,7 +562,9 @@ class JavFileOrganizer:
             self.website_var.trace_add('write', lambda *args: self.on_website_change())
         except AttributeError:
             self.website_var.trace('w', self.on_website_change)
-        self.on_website_change()  # 初始化配置
+        self._saved_config = self._load_saved_config()
+        self.on_website_change()  # 初始化 provider 默认配置
+        self._apply_saved_config(self._saved_config)
         
         # v1.4.3: 初始化反爬虫处理器（GUI 创建后）
         self.anti_crawl = OptimizedAntiCrawlHandler(log_callback=self.log)
@@ -668,11 +692,50 @@ class JavFileOrganizer:
         self.image_selector_var.set(image_selectors[0])
         
         self.log(f"🌐 切换到网站: {config.get('name', website)}", "INFO")
+
+    def _config_path(self):
+        return os.path.join(os.path.dirname(__file__), CONFIG_FILENAME)
+
+    def _load_saved_config(self):
+        try:
+            config_path = self._config_path()
+            if not os.path.exists(config_path):
+                return {}
+            with open(config_path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+    def _apply_saved_config(self, config):
+        """Apply user-saved processing settings after provider defaults are loaded."""
+        if not isinstance(config, dict):
+            return
+        if 'search_url' in config:
+            self.search_url_var.set(config.get('search_url') or '')
+        if 'text_selector' in config:
+            self.text_selector_var.set(config.get('text_selector') or '')
+        if 'image_selector' in config:
+            self.image_selector_var.set(config.get('image_selector') or '')
+        if 'max_filename_length' in config:
+            self.max_filename_length_var.set(str(config.get('max_filename_length') or ''))
+        if hasattr(self, 'max_filename_bytes_var') and 'max_filename_bytes' in config:
+            self.max_filename_bytes_var.set(str(config.get('max_filename_bytes') or ''))
+        if 'preserve_actor' in config:
+            self.preserve_actor_var.set(bool(config.get('preserve_actor')))
+        if 'batch_count' in config:
+            self.batch_count_var.set(str(config.get('batch_count') or ''))
+        if hasattr(self, 'dry_run_var') and 'dry_run' in config:
+            self.dry_run_var.set(bool(config.get('dry_run')))
+        # 递归扫描是高风险/高成本选项：新会话与新目录选择始终回到“仅当前目录”，
+        # 避免远程盘或大目录被上次保存的设置意外递归遍历。
     
     def select_folder(self):
         """选择文件夹。"""
         folder = filedialog.askdirectory(title="选择包含视频文件的文件夹")
         if folder:
+            if hasattr(self, 'include_subdirectories_var'):
+                self.include_subdirectories_var.set(False)
             self.folder_var.set(folder)
             
             self.analyze_folder(folder)
@@ -680,7 +743,10 @@ class JavFileOrganizer:
     def analyze_folder(self, folder_path):
         """分析文件夹内容"""
         try:
+            scan_started = time.time()
             scan = self._scan_video_files(folder_path)
+            scan_elapsed = time.time() - scan_started
+            self._remember_folder_scan(folder_path, scan, scan_elapsed)
             filtered_video_names = scan['accepted']
             file_sizes = scan.get('file_sizes', {})
             video_files = []
@@ -696,6 +762,11 @@ class JavFileOrganizer:
             # 显示详细统计
             self.log(f"📁 已选择文件夹: {folder_path}", "SUCCESS")
             self.log(f"📊 文件夹分析结果:", "INFO")
+            self.log(
+                f"📝   🔎 扫描范围: {'当前目录 + 子目录' if self._include_subdirectories() else '仅当前目录'}",
+                "INFO",
+            )
+            self.log(f"📝   ⏱️ 扫描耗时: {scan_elapsed:.1f}秒", "INFO")
             self.log(f"📝   📁 总文件数: {scan.get('total_files', len(scan.get('manifest_entries', [])))}", "INFO")
             self.log(f"📝   🎬 视频文件数: {len(video_files)}", "INFO")
             if skipped_hidden:
@@ -720,6 +791,52 @@ class JavFileOrganizer:
             
         except Exception as e:
             self.log(f"❌ 分析文件夹失败: {e}", "ERROR")
+
+    def _include_subdirectories(self):
+        var = getattr(self, 'include_subdirectories_var', None)
+        if var is None:
+            return False
+        try:
+            return bool(var.get())
+        except Exception:
+            return False
+
+    def _reanalyze_selected_folder(self):
+        folder_path = self.folder_var.get() if hasattr(self, 'folder_var') else ''
+        if folder_path and os.path.exists(folder_path):
+            self.analyze_folder(folder_path)
+
+    def _remember_folder_scan(self, folder_path, scan, elapsed_seconds):
+        self._folder_scan_cache = {
+            'folder_path': os.path.abspath(folder_path),
+            'minimum_video_size_bytes': getattr(self, 'minimum_video_size_bytes', 16 * 1024),
+            'video_extensions': tuple(sorted(self.video_extensions)),
+            'include_subdirectories': self._include_subdirectories(),
+            'scan': scan,
+            'elapsed_seconds': elapsed_seconds,
+            'created_at': time.time(),
+        }
+
+    def _get_recent_folder_scan(self, folder_path):
+        cache = getattr(self, '_folder_scan_cache', None)
+        if not cache:
+            return None
+        if cache.get('folder_path') != os.path.abspath(folder_path):
+            return None
+        if cache.get('minimum_video_size_bytes') != getattr(self, 'minimum_video_size_bytes', 16 * 1024):
+            return None
+        if cache.get('video_extensions') != tuple(sorted(self.video_extensions)):
+            return None
+        if cache.get('include_subdirectories') != self._include_subdirectories():
+            return None
+        age = time.time() - cache.get('created_at', 0)
+        if age > getattr(self, '_folder_scan_cache_ttl_seconds', 120):
+            return None
+        return {
+            'scan': cache.get('scan'),
+            'age_seconds': age,
+            'elapsed_seconds': cache.get('elapsed_seconds'),
+        }
     
     def format_size(self, size_bytes):
         """格式化文件大小"""
@@ -755,53 +872,14 @@ class JavFileOrganizer:
 
     def _scan_video_files(self, folder_path):
         """扫描可处理的视频文件，并返回过滤统计。"""
-        result = {
-            'accepted': [],
-            'skipped_hidden': [],
-            'skipped_small': [],
-            'manifest_entries': [],
-            'file_sizes': {},
-            'total_files': 0,
-        }
-        skip_dirs = {'Finish', 'JFO_Logs', '.jfo_transactions', '__MACOSX'}
-        for dirpath, dirnames, filenames in os.walk(folder_path):
-            dirnames[:] = [
-                dirname for dirname in dirnames
-                if not dirname.startswith('.') and dirname not in skip_dirs
-            ]
-            for file in filenames:
-                file_path = os.path.join(dirpath, file)
-                rel_path = os.path.relpath(file_path, folder_path)
-                try:
-                    st = os.stat(file_path)
-                except OSError:
-                    continue
-                result['total_files'] += 1
-                _, ext = os.path.splitext(file.lower())
-                is_hidden = file.startswith('.')
-                is_video = ext in self.video_extensions
-                result['manifest_entries'].append({
-                    'name': rel_path,
-                    'size': st.st_size,
-                    'mtime': st.st_mtime,
-                    'extension': ext,
-                    'is_hidden': is_hidden,
-                    'is_video': is_video,
-                })
-                if self._should_skip_video_file(file):
-                    result['skipped_hidden'].append(rel_path)
-                    continue
-                if ext not in self.video_extensions:
-                    continue
-                if st.st_size < getattr(self, 'minimum_video_size_bytes', 16 * 1024):
-                    result['skipped_small'].append(rel_path)
-                    continue
-                result['accepted'].append(rel_path)
-                result['file_sizes'][rel_path] = st.st_size
-        result['accepted'].sort()
-        result['skipped_hidden'].sort()
-        result['skipped_small'].sort()
-        return result
+        from manifest_utils import scan_video_files
+
+        return scan_video_files(
+            folder_path,
+            video_extensions=self.video_extensions,
+            minimum_video_size_bytes=getattr(self, 'minimum_video_size_bytes', 16 * 1024),
+            include_subdirectories=self._include_subdirectories(),
+        )
 
     def _collect_video_files(self, folder_path):
         """收集可处理的视频文件（已过滤隐藏/AppleDouble/异常小视频）。"""
@@ -854,7 +932,7 @@ class JavFileOrganizer:
         self.log(f"📝 文件名处理: {filename} -> {result}", "INFO")
         return result
     
-    def sanitize_filename(self, filename):
+    def sanitize_filename(self, filename, max_bytes=None):
         """清理文件名中的非法字符 - v1.4.4 改用共享纯函数
 
         thin wrapper around filename_utils.sanitize_filename().
@@ -865,7 +943,7 @@ class JavFileOrganizer:
         - [javbus] / (javbus) / javbus - xxx 等格式现在也能清理
         """
         from filename_utils import sanitize_filename as _sanitize
-        return _sanitize(filename)
+        return _sanitize(filename, max_bytes=max_bytes)
     
 
     def extract_series_info(self, filename):
@@ -1077,6 +1155,9 @@ class JavFileOrganizer:
             dry_run=bool(dry_run),
             batch_count_text=self.batch_count_var.get().strip(),
             max_length_text=self.max_filename_length_var.get().strip(),
+            max_filename_bytes_text=self.max_filename_bytes_var.get().strip()
+            if hasattr(self, 'max_filename_bytes_var') else '',
+            include_subdirectories=self._include_subdirectories(),
         )
 
     def _show_messagebox(self, kind, title, message):
@@ -1431,6 +1512,7 @@ class JavFileOrganizer:
             self.log(f"📝 配置信息:", "INFO")
             self.log(f"   网站: {website_config.get('name', website)}", "INFO")
             self.log(f"   搜索URL: {website_config['search_url']}", "INFO")
+            self.log(f"   扫描范围: {'当前目录 + 子目录' if request.include_subdirectories else '仅当前目录'}", "INFO")
             if dry_run:
                 self.log("🧪 当前为 Dry Run：只审计，不移动文件、不下载图片", "WARNING")
 
@@ -1439,9 +1521,19 @@ class JavFileOrganizer:
             logs_dir = os.path.dirname(run_log_path)
 
             scan_started = time.time()
-            scan = self._scan_video_files(folder_path)
-            scan_elapsed = time.time() - scan_started
-            self.log(f"⏱️ 文件扫描耗时: {scan_elapsed:.1f}秒", "INFO")
+            cached_scan = self._get_recent_folder_scan(folder_path)
+            if cached_scan and cached_scan.get('scan'):
+                scan = cached_scan['scan']
+                scan_elapsed = time.time() - scan_started
+                self.log(
+                    f"⏱️ 文件扫描耗时: {scan_elapsed:.1f}秒（复用 {cached_scan.get('age_seconds', 0):.0f}秒前的目录扫描缓存）",
+                    "INFO",
+                )
+            else:
+                scan = self._scan_video_files(folder_path)
+                scan_elapsed = time.time() - scan_started
+                self._remember_folder_scan(folder_path, scan, scan_elapsed)
+                self.log(f"⏱️ 文件扫描耗时: {scan_elapsed:.1f}秒", "INFO")
             total_files_preview = len(scan['accepted'])
             batch_count_str = request.batch_count_text
             batch_count = None
@@ -1481,6 +1573,15 @@ class JavFileOrganizer:
                 except ValueError:
                     self.log("⚠️ 文件名长度格式错误，将使用完整长度", "WARNING")
 
+            max_filename_bytes = None
+            max_filename_bytes_str = request.max_filename_bytes_text
+            if max_filename_bytes_str:
+                try:
+                    max_filename_bytes = int(max_filename_bytes_str)
+                    self.log(f"📝 文件系统字节上限: {max_filename_bytes} bytes", "INFO")
+                except ValueError:
+                    self.log("⚠️ 文件系统字节上限格式错误，将不做额外字节截断", "WARNING")
+
             workflow_dependencies = WorkflowDependencies(
                 provider_factory=self._build_provider_factory(),
                 atomic_processor=self.atomic_processor,
@@ -1503,12 +1604,14 @@ class JavFileOrganizer:
                 finish_folder=finish_folder,
                 website=website,
                 max_length=max_length,
+                max_filename_bytes=max_filename_bytes,
                 batch_count=batch_count,
                 dry_run=dry_run,
                 log_path=run_log_path,
                 logs_dir=logs_dir,
                 initial_scan=scan,
                 initial_scan_elapsed_seconds=scan_elapsed,
+                include_subdirectories=request.include_subdirectories,
             )
 
             self._run_on_ui_thread(
@@ -1719,12 +1822,15 @@ class JavFileOrganizer:
                 'text_selector': self.text_selector_var.get(),
                 'image_selector': self.image_selector_var.get(),
                 'max_filename_length': self.max_filename_length_var.get(),
+                'max_filename_bytes': self.max_filename_bytes_var.get()
+                if hasattr(self, 'max_filename_bytes_var') else '',
                 'preserve_actor': self.preserve_actor_var.get(),
                 'batch_count': self.batch_count_var.get(),
-                'dry_run': self.dry_run_var.get()
+                'dry_run': self.dry_run_var.get(),
+                'include_subdirectories': self._include_subdirectories(),
             }
             
-            config_path = os.path.join(os.path.dirname(__file__), CONFIG_FILENAME)
+            config_path = self._config_path()
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
             
@@ -1746,9 +1852,15 @@ class JavFileOrganizer:
         image_selectors = config.get('image_selectors', ['img'])
         self.image_selector_var.set(image_selectors[0])
         
-        self.max_filename_length_var.set('')
+        self.max_filename_length_var.set('80')
+        if hasattr(self, 'max_filename_bytes_var'):
+            self.max_filename_bytes_var.set('240')
         self.preserve_actor_var.set(True)
         self.batch_count_var.set('')
+        if hasattr(self, 'dry_run_var'):
+            self.dry_run_var.set(False)
+        if hasattr(self, 'include_subdirectories_var'):
+            self.include_subdirectories_var.set(False)
         
         self.log("🔄 配置已重置为默认值", "INFO")
         messagebox.showinfo("重置完成", "✅ 配置已重置为默认值")

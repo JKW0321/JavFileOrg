@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Callable
 
 from app_metadata import BASELINE_VERSION
-from manifest_utils import build_manifest_from_entries, build_run_summary, scan_folder_manifest, write_json_report
+from manifest_utils import build_manifest_from_entries, build_run_summary, scan_folder_manifest, scan_video_files, write_json_report
 from provider_router import route_provider
 from providers import create_provider
 
@@ -58,6 +58,7 @@ class WorkflowService:
         self.progress_callback = progress_callback or (lambda completed, total, label='': None)
         self.app_version = app_version
         self._created_finish_folders = set()
+        self._provider_instances = {}
         self._validate_dependencies()
 
     def _validate_dependencies(self):
@@ -78,48 +79,25 @@ class WorkflowService:
         except Exception as e:
             self.log(f'⚠️ 进度更新失败: {e}', 'WARNING')
 
-    def _scan_video_files(self, folder_path):
-        result = {'accepted': [], 'skipped_hidden': [], 'skipped_small': [], 'manifest_entries': []}
-        for dirpath, dirnames, filenames in os.walk(folder_path):
-            dirnames[:] = [
-                dirname for dirname in dirnames
-                if not dirname.startswith('.') and dirname not in SKIP_SCAN_DIRS
-            ]
-            for file in filenames:
-                file_path = os.path.join(dirpath, file)
-                rel_path = os.path.relpath(file_path, folder_path)
-                try:
-                    st = os.stat(file_path)
-                except OSError:
-                    continue
-                _, ext = os.path.splitext(file.lower())
-                is_hidden = file.startswith('.')
-                is_video = ext in VIDEO_EXTENSIONS
-                result['manifest_entries'].append({
-                    'name': rel_path,
-                    'size': st.st_size,
-                    'mtime': st.st_mtime,
-                    'extension': ext,
-                    'is_hidden': is_hidden,
-                    'is_video': is_video,
-                })
-                if file.startswith('._') or file.startswith('.'):
-                    result['skipped_hidden'].append(rel_path)
-                    continue
-                if ext not in VIDEO_EXTENSIONS:
-                    continue
-                if st.st_size < self.minimum_video_size_bytes:
-                    result['skipped_small'].append(rel_path)
-                    continue
-                result['accepted'].append(rel_path)
-        result['accepted'].sort()
-        result['skipped_hidden'].sort()
-        result['skipped_small'].sort()
-        return result
+    def _scan_video_files(self, folder_path, *, include_subdirectories=True):
+        return scan_video_files(
+            folder_path,
+            video_extensions=VIDEO_EXTENSIONS,
+            minimum_video_size_bytes=self.minimum_video_size_bytes,
+            include_subdirectories=include_subdirectories,
+        )
+
+    def _sanitize_filename(self, filename, *, max_bytes=None):
+        try:
+            return self.sanitize_filename(filename, max_bytes=max_bytes)
+        except TypeError:
+            return self.sanitize_filename(filename)
 
     def _resolve_provider(self, preferred_provider, filename, search_query):
         decision = route_provider(preferred_provider, filename, search_query)
-        provider = self.provider_factory(preferred_provider)
+        if preferred_provider not in self._provider_instances:
+            self._provider_instances[preferred_provider] = self.provider_factory(preferred_provider)
+        provider = self._provider_instances[preferred_provider]
         return decision, provider, preferred_provider
 
     def _search_query_for_file(self, *, website, filename, file_path, folder_path):
@@ -248,6 +226,29 @@ class WorkflowService:
             'total_files': total_files,
         }
 
+    def _log_pre_report_summary(self, stats, *, dry_run, logs_dir):
+        total_files = stats.get('total_files', 0)
+        handled_count = (
+            stats.get('success_count', 0)
+            + stats.get('failed_count', 0)
+            + stats.get('planned_count', 0)
+            + stats.get('skipped_provider_count', 0)
+            + stats.get('needs_review_count', 0)
+            + stats.get('cancelled_count', 0)
+        )
+        self.log(f"✅ {'审计主流程完成' if dry_run else '主处理流程完成'}，正在收尾...", 'SUCCESS')
+        self.log(
+            f"📝 📊 当前统计: 已记录 {handled_count}/{total_files} | "
+            f"成功 {stats.get('success_count', 0)} | "
+            f"失败 {stats.get('failed_count', 0)} | "
+            f"Provider/跳过 {stats.get('skipped_provider_count', 0)} | "
+            f"封面成功 {stats.get('image_success_count', 0)} | "
+            f"封面失败 {stats.get('image_failed_count', 0)}",
+            'INFO',
+        )
+        if logs_dir:
+            self.log('⏳ 正在生成审计报告，慢速远程目录可能需要额外等待...', 'INFO')
+
     def _write_file_results(self, *, logs_dir, website, folder_path, dry_run, file_results):
         payload = {
             'generated_at': datetime.now().isoformat(),
@@ -335,7 +336,8 @@ class WorkflowService:
 
     def _write_run_reports(self, *, logs_dir, website, folder_path, dry_run, log_path,
                            before_manifest_path, routed_counts, file_results,
-                           total_files, video_files, folder_scan_elapsed_seconds=None):
+                           total_files, video_files, folder_scan_elapsed_seconds=None,
+                           include_subdirectories=True):
         stats = self._derive_result_stats(file_results, total_files)
         cancelled = stats['cancelled_count'] > 0 or self.stop_requested()
         after_manifest_elapsed_seconds = None
@@ -347,10 +349,11 @@ class WorkflowService:
                 'WARNING',
             )
         else:
+            self.log('⏳ 正在扫描处理后清单...', 'INFO')
             after_manifest_started = time.time()
             after_manifest_path = write_json_report(
                 os.path.join(logs_dir, f'manifest_after_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'),
-                scan_folder_manifest(folder_path),
+                scan_folder_manifest(folder_path, include_subdirectories=include_subdirectories),
             )
             after_manifest_elapsed_seconds = round(time.time() - after_manifest_started, 3)
             self.log(f'⏱️ 处理后清单扫描耗时: {after_manifest_elapsed_seconds:.1f}秒', 'INFO')
@@ -438,6 +441,9 @@ class WorkflowService:
     def _should_cache_provider_result(self, result):
         if result.get('ok'):
             return True
+        if result.get('error_type') == 'network-error':
+            message = (result.get('message') or '').lower()
+            return '404' in message or 'not found' in message
         return result.get('error_type') not in {
             'verification-timeout',
             'verification-required',
@@ -584,13 +590,15 @@ class WorkflowService:
             self.log(f'   返回图片: {image_url}', 'WARNING')
 
     def run(self, *, folder_path, finish_folder, website, max_length=None,
-            batch_count=None, dry_run=False, log_path=None, logs_dir=None,
-            initial_scan=None, initial_scan_elapsed_seconds=None):
+            max_filename_bytes=None, batch_count=None, dry_run=False, log_path=None, logs_dir=None,
+            initial_scan=None, initial_scan_elapsed_seconds=None,
+            include_subdirectories=True):
         start_time = time.time()
         self._created_finish_folders = set()
+        self._provider_instances = {}
         if initial_scan is None:
             scan_started = time.time()
-            scan = self._scan_video_files(folder_path)
+            scan = self._scan_video_files(folder_path, include_subdirectories=include_subdirectories)
             initial_scan_elapsed_seconds = time.time() - scan_started
         else:
             scan = initial_scan
@@ -745,7 +753,13 @@ class WorkflowService:
             atomic_started = time.time()
             finish_folder = self._safe_finish_folder(folder_path, finish_folder, dry_run)
             image_request = self._image_request_from_result(result, provider_name)
-            ok, payload, message = self.atomic_processor.process_series_group_atomic(files, title, image_request, finish_folder)
+            ok, payload, message = self.atomic_processor.process_series_group_atomic(
+                files,
+                title,
+                image_request,
+                finish_folder,
+                max_filename_bytes=max_filename_bytes,
+            )
             atomic_elapsed = round(time.time() - atomic_started, 3)
             file_elapsed = round(time.time() - item_started, 3)
             self.log(
@@ -907,11 +921,17 @@ class WorkflowService:
             if max_length:
                 title = self.smart_truncate_filename(title, filename, max_length)
             file_ext = os.path.splitext(filename)[1]
-            new_filename = self.sanitize_filename(f'{title}{file_ext}')
+            new_filename = self._sanitize_filename(f'{title}{file_ext}', max_bytes=max_filename_bytes)
             atomic_started = time.time()
             finish_folder = self._safe_finish_folder(folder_path, finish_folder, dry_run)
             image_request = self._image_request_from_result(result, provider_name)
-            ok, payload, message = self.atomic_processor.process_file_atomic(file_path, new_filename, image_request, finish_folder)
+            ok, payload, message = self.atomic_processor.process_file_atomic(
+                file_path,
+                new_filename,
+                image_request,
+                finish_folder,
+                max_filename_bytes=max_filename_bytes,
+            )
             atomic_elapsed = round(time.time() - atomic_started, 3)
             file_elapsed = round(time.time() - item_started, 3)
             self.log(
@@ -969,6 +989,7 @@ class WorkflowService:
 
         stats = self._derive_result_stats(file_results, total_files)
         self._cleanup_empty_finish_folder(finish_folder, dry_run, stats['success_count'])
+        self._log_pre_report_summary(stats, dry_run=dry_run, logs_dir=logs_dir)
 
         paths = self._empty_paths()
         if logs_dir:
@@ -984,6 +1005,7 @@ class WorkflowService:
                 total_files=total_files,
                 video_files=video_files,
                 folder_scan_elapsed_seconds=initial_scan_elapsed_seconds,
+                include_subdirectories=include_subdirectories,
             )
             stats = paths['stats']
 

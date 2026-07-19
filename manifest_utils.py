@@ -9,6 +9,8 @@ from datetime import datetime
 
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.rmvb'}
 SKIP_SCAN_DIRS = {'Finish', 'JFO_Logs', '.jfo_transactions', '__MACOSX'}
+SKIP_SCAN_DIRS_NORMALIZED = {name.lower() for name in SKIP_SCAN_DIRS}
+DEFAULT_MINIMUM_VIDEO_SIZE_BYTES = 16 * 1024
 
 
 def build_manifest_from_entries(folder_path: str, entries: list[dict]) -> dict:
@@ -20,30 +22,86 @@ def build_manifest_from_entries(folder_path: str, entries: list[dict]) -> dict:
     }
 
 
-def scan_folder_manifest(folder_path: str) -> dict:
-    entries = []
-    for dirpath, dirnames, filenames in os.walk(folder_path):
-        dirnames[:] = [
-            dirname for dirname in dirnames
-            if not dirname.startswith('.') and dirname not in SKIP_SCAN_DIRS
-        ]
-        for name in filenames:
-            file_path = os.path.join(dirpath, name)
-            rel_path = os.path.relpath(file_path, folder_path)
+def scan_video_files(folder_path: str, *, video_extensions: set[str] | None = None,
+                     minimum_video_size_bytes: int = DEFAULT_MINIMUM_VIDEO_SIZE_BYTES,
+                     include_subdirectories: bool = True) -> dict:
+    """Scan a source folder once and return workflow-ready file lists plus manifest entries.
+
+    Uses os.scandir recursively so remote filesystems can reuse DirEntry metadata and
+    avoid the extra path work from os.walk + os.stat for every file.
+    """
+    video_extensions = {ext.lower() for ext in (video_extensions or VIDEO_EXTENSIONS)}
+    result = {
+        'accepted': [],
+        'skipped_hidden': [],
+        'skipped_small': [],
+        'manifest_entries': [],
+        'file_sizes': {},
+        'total_files': 0,
+    }
+
+    def visit(abs_dir: str, rel_dir: str = ''):
+        try:
+            with os.scandir(abs_dir) as iterator:
+                dir_entries = list(iterator)
+        except OSError:
+            return
+
+        for entry in dir_entries:
+            name = entry.name
+            rel_path = f'{rel_dir}/{name}' if rel_dir else name
             try:
-                st = os.stat(file_path)
+                is_dir = entry.is_dir(follow_symlinks=False)
             except OSError:
                 continue
+            if is_dir:
+                if name.startswith('.') or name.lower() in SKIP_SCAN_DIRS_NORMALIZED:
+                    continue
+                if include_subdirectories:
+                    visit(entry.path, rel_path)
+                continue
+
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            result['total_files'] += 1
             _, ext = os.path.splitext(name.lower())
-            entries.append({
+            entry_payload = {
                 'name': rel_path,
                 'size': st.st_size,
                 'mtime': st.st_mtime,
                 'extension': ext,
                 'is_hidden': name.startswith('.'),
                 'is_video': ext in VIDEO_EXTENSIONS,
-            })
-    return build_manifest_from_entries(folder_path, entries)
+            }
+            result['manifest_entries'].append(entry_payload)
+            if name.startswith('._') or name.startswith('.'):
+                result['skipped_hidden'].append(rel_path)
+                continue
+            if ext not in video_extensions:
+                continue
+            if st.st_size < minimum_video_size_bytes:
+                result['skipped_small'].append(rel_path)
+                continue
+            result['accepted'].append(rel_path)
+            result['file_sizes'][rel_path] = st.st_size
+
+    visit(folder_path)
+    result['accepted'].sort()
+    result['skipped_hidden'].sort()
+    result['skipped_small'].sort()
+    return result
+
+
+def scan_folder_manifest(folder_path: str, *, include_subdirectories: bool = True) -> dict:
+    scan = scan_video_files(
+        folder_path,
+        video_extensions=VIDEO_EXTENSIONS,
+        minimum_video_size_bytes=0,
+        include_subdirectories=include_subdirectories,
+    )
+    return build_manifest_from_entries(folder_path, scan['manifest_entries'])
 
 
 def write_json_report(path: str, payload: dict) -> str:

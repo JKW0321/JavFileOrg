@@ -37,6 +37,7 @@ class AtomicProcessor:
         self.temp_dir = Path(tempfile.mkdtemp(prefix="jav_file_organizer_", dir=tempfile.gettempdir()))
         self._transaction_lock = threading.Lock()
         self._active_transactions = 0
+        self._clean_recovery_checked_folders = set()
 
     def _begin_transaction(self) -> None:
         with self._transaction_lock:
@@ -55,6 +56,81 @@ class AtomicProcessor:
         if self.stop_requested():
             suffix = f': {stage}' if stage else ''
             raise AtomicOperationCancelled(f'用户取消{suffix}')
+
+    def _sanitize_filename(self, filename: str, max_filename_bytes: Optional[int] = None) -> str:
+        try:
+            return self.sanitize_filename(filename, max_bytes=max_filename_bytes)
+        except TypeError:
+            return self.sanitize_filename(filename)
+
+    def _truncate_text_to_utf8_bytes(self, value: str, max_bytes: int, marker: str = '...') -> str:
+        if max_bytes <= 0:
+            return ''
+        if len(value.encode('utf-8')) <= max_bytes:
+            return value
+        marker_bytes = marker.encode('utf-8')
+        budget = max(0, max_bytes - len(marker_bytes))
+        chunks = []
+        used = 0
+        for char in value:
+            char_len = len(char.encode('utf-8'))
+            if used + char_len > budget:
+                break
+            chunks.append(char)
+            used += char_len
+        stem = ''.join(chunks).rstrip('. ')
+        return (stem + marker) if stem else ''
+
+    def _filename_with_counter_suffix(
+        self,
+        base_filename: str,
+        counter: int,
+        max_filename_bytes: Optional[int] = None,
+    ) -> str:
+        stem, ext = os.path.splitext(os.path.basename(base_filename))
+        suffix = f'_{counter}'
+        candidate = f'{stem}{suffix}{ext}'
+        if not max_filename_bytes or len(candidate.encode('utf-8')) <= max_filename_bytes:
+            return candidate
+
+        suffix_and_ext_bytes = len(f'{suffix}{ext}'.encode('utf-8'))
+        stem_budget = max_filename_bytes - suffix_and_ext_bytes
+        if stem_budget <= 0:
+            fallback = f'{counter}{ext}'
+            return self._sanitize_filename(fallback, max_filename_bytes)
+        safe_stem = self._truncate_text_to_utf8_bytes(stem, stem_budget)
+        return f'{safe_stem}{suffix}{ext}'
+
+    def _replace_extension(self, filename: str, new_ext: str,
+                           max_filename_bytes: Optional[int] = None) -> str:
+        stem, _ext = os.path.splitext(os.path.basename(filename))
+        candidate = f'{stem}{new_ext}'
+        if max_filename_bytes and len(candidate.encode('utf-8')) > max_filename_bytes:
+            ext_bytes = len(new_ext.encode('utf-8'))
+            safe_stem = self._truncate_text_to_utf8_bytes(stem, max_filename_bytes - ext_bytes)
+            return f'{safe_stem}{new_ext}'
+        return candidate
+
+    def _available_target_path(
+        self,
+        finish_folder: str,
+        filename: str,
+        max_filename_bytes: Optional[int] = None,
+        reserved_targets: Optional[set] = None,
+    ) -> str:
+        reserved_targets = reserved_targets or set()
+        base_filename = os.path.basename(filename)
+        target_path = os.path.join(finish_folder, base_filename)
+        counter = 1
+        while os.path.exists(target_path) or target_path in reserved_targets:
+            candidate = self._filename_with_counter_suffix(
+                base_filename,
+                counter,
+                max_filename_bytes,
+            )
+            target_path = os.path.join(finish_folder, candidate)
+            counter += 1
+        return target_path
     
     def validate_image(self, image_path: Path) -> bool:
         """
@@ -84,7 +160,8 @@ class AtomicProcessor:
             print(f"图片验证失败: {e}")
             return False
     
-    def download_image_to_temp(self, image_source, filename: str) -> Tuple[bool, Optional[Path], str]:
+    def download_image_to_temp(self, image_source, filename: str,
+                               max_filename_bytes: Optional[int] = None) -> Tuple[bool, Optional[Path], str]:
         """
         下载图片到临时目录
         
@@ -98,7 +175,7 @@ class AtomicProcessor:
         try:
             self._raise_if_stopped('下载图片前')
             # 清理文件名
-            sanitized_name = self.sanitize_filename(filename)
+            sanitized_name = self._sanitize_filename(filename, max_filename_bytes)
             
             # 生成临时文件路径
             temp_image_path = self.temp_dir / sanitized_name
@@ -241,7 +318,46 @@ class AtomicProcessor:
         digest = hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]
         return self._transaction_dir_for_target(target_path) / f'op_{digest}.json'
 
+    def _recovery_folder_key(self, finish_folder: str) -> str:
+        return os.path.abspath(finish_folder)
+
+    def _journal_finish_folder(self, journal_path: Path) -> str:
+        return str(journal_path.parent.parent)
+
+    def _mark_recovery_dirty(self, journal_path: Path) -> None:
+        self._clean_recovery_checked_folders.discard(
+            self._recovery_folder_key(self._journal_finish_folder(journal_path))
+        )
+
+    def _mark_recovery_clean_if_empty(self, journal_path: Path) -> None:
+        journal_dir = journal_path.parent
+        try:
+            if not journal_dir.exists() or not any(journal_dir.iterdir()):
+                self._clean_recovery_checked_folders.add(
+                    self._recovery_folder_key(self._journal_finish_folder(journal_path))
+                )
+        except Exception:
+            self._clean_recovery_checked_folders.discard(
+                self._recovery_folder_key(self._journal_finish_folder(journal_path))
+            )
+
+    def _recover_pending_transactions_for_commit(self, finish_folder: str) -> List[str]:
+        key = self._recovery_folder_key(finish_folder)
+        if key in self._clean_recovery_checked_folders:
+            return []
+        actions = self.recover_pending_transactions(finish_folder)
+        journal_dir = Path(finish_folder) / '.jfo_transactions'
+        try:
+            if not journal_dir.exists() or not any(journal_dir.iterdir()):
+                self._clean_recovery_checked_folders.add(key)
+            else:
+                self._clean_recovery_checked_folders.discard(key)
+        except Exception:
+            self._clean_recovery_checked_folders.discard(key)
+        return actions
+
     def _write_transaction_journal(self, journal_path: Path, payload: Dict[str, Any]) -> None:
+        self._mark_recovery_dirty(journal_path)
         journal_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = journal_path.with_suffix('.json.tmp')
         with open(temp_path, 'w', encoding='utf-8') as f:
@@ -261,6 +377,7 @@ class AtomicProcessor:
                 self._fsync_parent_dir(str(journal_path.parent))
         except Exception:
             pass
+        self._mark_recovery_clean_if_empty(journal_path)
 
     def _same_size(self, left: str, right: str, expected_size: Optional[int] = None) -> bool:
         if not (os.path.exists(left) and os.path.exists(right)):
@@ -301,9 +418,7 @@ class AtomicProcessor:
                 if expected_size is not None and os.path.getsize(target_path) != expected_size:
                     unresolved.append(f'size-mismatch:{os.path.basename(target_path)}')
                     continue
-                self._move_video(target_path, source_path)
-                self._fsync_committed_path(source_path)
-                self._fsync_parent_dir(target_path)
+                self._commit_video_move(target_path, source_path)
                 rolled_back += 1
             elif target_exists and source_exists:
                 if self._same_size(source_path, target_path, expected_size):
@@ -428,14 +543,25 @@ class AtomicProcessor:
                     pass
             raise
 
-    def _move_video(self, source_path: str, target_path: str) -> None:
+    def _move_video(self, source_path: str, target_path: str) -> str:
         """移动视频文件；跨文件系统时用目标目录临时文件提交，避免半成品目标文件。"""
         try:
             self._rename_video(source_path, target_path)
+            return 'rename'
         except OSError as exc:
             if exc.errno != errno.EXDEV:
                 raise
             self._copy_across_filesystems(source_path, target_path)
+            return 'copy'
+
+    def _commit_video_move(self, source_path: str, target_path: str) -> str:
+        """Move a video and durably commit only the metadata needed for that move."""
+        mode = self._move_video(source_path, target_path)
+        if mode == 'rename':
+            self._fsync_parent_dir(source_path)
+            if os.path.dirname(os.path.abspath(source_path)) != os.path.dirname(os.path.abspath(target_path)):
+                self._fsync_parent_dir(target_path)
+        return mode
 
     def _rollback_video(self, target_path: str, original_path: str) -> bool:
         """尽量把已移动的视频放回源路径。"""
@@ -447,13 +573,11 @@ class AtomicProcessor:
                 if os.path.getsize(original_path) == os.path.getsize(target_path):
                     os.remove(target_path)
                     self._fsync_parent_dir(target_path)
-                    self._fsync_committed_path(original_path)
+                    self._fsync_parent_dir(original_path)
                     self._remove_transaction_journal(journal_path)
                     return True
                 return False
-            self._move_video(target_path, original_path)
-            self._fsync_committed_path(original_path)
-            self._fsync_parent_dir(target_path)
+            self._commit_video_move(target_path, original_path)
             self._remove_transaction_journal(journal_path)
             return True
         except Exception:
@@ -472,7 +596,8 @@ class AtomicProcessor:
         }
     
     def process_file_atomic(self, file_path: str, new_filename: str, image_source,
-                           finish_folder: str) -> Tuple[bool, Dict[str, Any], str]:
+                           finish_folder: str,
+                           max_filename_bytes: Optional[int] = None) -> Tuple[bool, Dict[str, Any], str]:
         """
         原子性处理文件：先下载图片，验证成功后再移动文件
         
@@ -498,13 +623,18 @@ class AtomicProcessor:
                 message = "缺少图片URL，严格事务模式下不移动源视频"
                 return False, self._empty_file_result(reason=message), message
 
-            self.recover_pending_transactions(finish_folder)
+            self._recover_pending_transactions_for_commit(finish_folder)
             source_size = os.path.getsize(file_path)
+            new_filename = self._sanitize_filename(new_filename, max_filename_bytes)
             # 步骤1: 如果有图片URL，先下载到临时目录
             video_basename = os.path.splitext(new_filename)[0]
             image_filename = f"{video_basename}.jpg"
             
-            success, temp_image_path, message = self.download_image_to_temp(image_source, image_filename)
+            success, temp_image_path, message = self.download_image_to_temp(
+                image_source,
+                image_filename,
+                max_filename_bytes=max_filename_bytes,
+            )
             if not success:
                 reason = f"图片下载失败: {message}"
                 return False, self._empty_file_result(reason=reason), reason
@@ -513,25 +643,23 @@ class AtomicProcessor:
             transaction_started = True
             
             # 步骤2: 移动视频文件
-            new_video_path = os.path.join(finish_folder, new_filename)
-            
-            # 处理重名文件
-            counter = 1
-            base_new_path = new_video_path
-            while os.path.exists(new_video_path):
-                name, ext = os.path.splitext(base_new_path)
-                new_video_path = f"{name}_{counter}{ext}"
-                counter += 1
+            new_video_path = self._available_target_path(
+                finish_folder,
+                new_filename,
+                max_filename_bytes,
+            )
 
             video_basename = os.path.splitext(os.path.basename(new_video_path))[0]
-            image_filename = f"{video_basename}.jpg"
-            final_image_path = os.path.join(finish_folder, image_filename)
-            counter = 1
-            base_image_path = final_image_path
-            while os.path.exists(final_image_path):
-                name, ext = os.path.splitext(base_image_path)
-                final_image_path = f"{name}_{counter}{ext}"
-                counter += 1
+            image_filename = self._replace_extension(
+                f'{video_basename}.jpg',
+                '.jpg',
+                max_filename_bytes,
+            )
+            final_image_path = self._available_target_path(
+                finish_folder,
+                image_filename,
+                max_filename_bytes,
+            )
 
             self._ensure_space_for_commit(
                 [(file_path, source_size)],
@@ -552,7 +680,7 @@ class AtomicProcessor:
                 'final_image_path': final_image_path,
             })
             
-            self._move_video(file_path, new_video_path)
+            self._commit_video_move(file_path, new_video_path)
             
             # v1.5.1: 移动后做大小校验，防止占位/异常小文件混入 Finish
             moved_size = os.path.getsize(new_video_path)
@@ -560,7 +688,6 @@ class AtomicProcessor:
                 raise RuntimeError(
                     f"视频大小校验失败: source={source_size} bytes, target={moved_size} bytes"
                 )
-            self._fsync_committed_path(new_video_path)
             self._raise_if_stopped('图片提交前')
 
             # 步骤3: 如果有临时图片，移动到最终位置
@@ -631,7 +758,8 @@ class AtomicProcessor:
             if transaction_started:
                 self._end_transaction()
 
-    def process_series_group_atomic(self, series_files, title: str, image_source, finish_folder: str):
+    def process_series_group_atomic(self, series_files, title: str, image_source, finish_folder: str,
+                                    max_filename_bytes: Optional[int] = None):
         """以事务性方式处理一个序列文件组。
 
         series_files: [(file_path, sequence), ...]
@@ -656,9 +784,13 @@ class AtomicProcessor:
                     'image_downloaded': False,
                 }, '缺少图片URL，严格事务模式下不移动源视频'
 
-            self.recover_pending_transactions(finish_folder)
+            self._recover_pending_transactions_for_commit(finish_folder)
             # 1) 先下载图片到临时目录，确保不会先移动视频后图失败
-            success, temp_image_path, message = self.download_image_to_temp(image_source, f"{title}.jpg")
+            success, temp_image_path, message = self.download_image_to_temp(
+                image_source,
+                f"{title}.jpg",
+                max_filename_bytes=max_filename_bytes,
+            )
             if not success:
                 return False, {
                     'status': 'failed',
@@ -677,24 +809,22 @@ class AtomicProcessor:
                 filename = os.path.basename(file_path)
                 file_ext = os.path.splitext(filename)[1]
                 source_size = os.path.getsize(file_path)
-                new_filename = self.sanitize_filename(f"{title}-{sequence}{file_ext}")
-                target_path = os.path.join(finish_folder, new_filename)
-                counter = 1
-                base_target_path = target_path
-                while os.path.exists(target_path) or target_path in reserved_targets:
-                    name, ext = os.path.splitext(base_target_path)
-                    target_path = f"{name}_{counter}{ext}"
-                    counter += 1
+                new_filename = self._sanitize_filename(f"{title}-{sequence}{file_ext}", max_filename_bytes)
+                target_path = self._available_target_path(
+                    finish_folder,
+                    new_filename,
+                    max_filename_bytes,
+                    reserved_targets=reserved_targets,
+                )
                 planned.append((file_path, target_path, source_size))
                 reserved_targets.add(target_path)
 
-            final_image_path = os.path.join(finish_folder, self.sanitize_filename(f"{title}.jpg"))
-            counter = 1
-            base_image_path = final_image_path
-            while os.path.exists(final_image_path):
-                name, ext = os.path.splitext(base_image_path)
-                final_image_path = f"{name}_{counter}{ext}"
-                counter += 1
+            final_image_filename = self._sanitize_filename(f"{title}.jpg", max_filename_bytes)
+            final_image_path = self._available_target_path(
+                finish_folder,
+                final_image_filename,
+                max_filename_bytes,
+            )
 
             self._ensure_space_for_commit(
                 [(file_path, source_size) for file_path, _, source_size in planned],
@@ -723,13 +853,12 @@ class AtomicProcessor:
             transaction_started = True
             for file_path, target_path, source_size in planned:
                 self._raise_if_stopped('序列组视频移动中')
-                self._move_video(file_path, target_path)
+                self._commit_video_move(file_path, target_path)
                 moved_size = os.path.getsize(target_path)
                 if moved_size != source_size:
                     raise RuntimeError(
                         f"视频大小校验失败: source={source_size} bytes, target={moved_size} bytes"
                     )
-                self._fsync_committed_path(target_path)
                 moved_videos.append((file_path, target_path))
 
             # 4) 全部视频成功后，再提交图片

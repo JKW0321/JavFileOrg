@@ -3,6 +3,7 @@
 
 import threading
 import tempfile
+import json
 from pathlib import Path
 
 import jav_file_organizer as jfo_mod
@@ -86,8 +87,11 @@ def make_shell_with_inputs():
     obj.text_selector_var = FakeVar('h1')
     obj.image_selector_var = FakeVar('img.cover')
     obj.max_filename_length_var = FakeVar('90')
+    obj.max_filename_bytes_var = FakeVar('240')
+    obj.preserve_actor_var = FakeVar(False)
     obj.batch_count_var = FakeVar('12')
     obj.dry_run_var = FakeVar(True)
+    obj.include_subdirectories_var = FakeVar(False)
     obj.website_configs = {
         'javhoo': {
             'name': 'JavHoo',
@@ -204,10 +208,98 @@ def test_capture_processing_request_copies_ui_values():
     assert request.dry_run is True
     assert request.batch_count_text == '12'
     assert request.max_length_text == '90'
+    assert request.max_filename_bytes_text == '240'
+    assert request.include_subdirectories is False
     assert request.website_config['search_url'] == 'https://example/search/{query}'
     assert request.website_config['title_selectors'] == ['h1']
     assert request.website_config['image_selectors'] == ['img.cover']
     assert obj.website_configs['javhoo']['search_url'] == 'old'
+
+
+def test_save_config_includes_processing_settings(monkeypatch, tmp_path):
+    obj = make_shell_with_inputs()
+    obj.log = lambda *a, **k: None
+    monkeypatch.setattr(jfo_mod.messagebox, 'showinfo', lambda *a, **k: None)
+    obj._config_path = lambda: str(tmp_path / jfo_mod.CONFIG_FILENAME)
+
+    obj.save_config()
+
+    payload = json.loads((tmp_path / jfo_mod.CONFIG_FILENAME).read_text(encoding='utf-8'))
+    assert payload['max_filename_length'] == '90'
+    assert payload['max_filename_bytes'] == '240'
+    assert payload['preserve_actor'] is False
+    assert payload['batch_count'] == '12'
+    assert payload['dry_run'] is True
+    assert payload['include_subdirectories'] is False
+
+
+def test_apply_saved_config_restores_processing_settings():
+    obj = make_shell_with_inputs()
+    obj.include_subdirectories_var = FakeVar(False)
+    obj._apply_saved_config({
+        'search_url': 'https://saved/search/{query}',
+        'text_selector': '.saved-title',
+        'image_selector': '.saved-cover',
+        'max_filename_length': '70',
+        'max_filename_bytes': '220',
+        'preserve_actor': True,
+        'batch_count': '8',
+        'dry_run': False,
+        'include_subdirectories': True,
+    })
+
+    assert obj.search_url_var.value == 'https://saved/search/{query}'
+    assert obj.text_selector_var.value == '.saved-title'
+    assert obj.image_selector_var.value == '.saved-cover'
+    assert obj.max_filename_length_var.value == '70'
+    assert obj.max_filename_bytes_var.value == '220'
+    assert obj.preserve_actor_var.value is True
+    assert obj.batch_count_var.value == '8'
+    assert obj.dry_run_var.value is False
+    assert obj.include_subdirectories_var.value is False
+
+
+def test_reset_config_resets_processing_settings(monkeypatch):
+    obj = make_shell_with_inputs()
+    obj.website_var = FakeVar('javhoo')
+    obj.search_url_var = FakeVar('')
+    obj.text_selector_var = FakeVar('')
+    obj.image_selector_var = FakeVar('')
+    obj.max_filename_length_var = FakeVar('50')
+    obj.max_filename_bytes_var = FakeVar('120')
+    obj.preserve_actor_var = FakeVar(False)
+    obj.batch_count_var = FakeVar('3')
+    obj.dry_run_var = FakeVar(True)
+    obj.include_subdirectories_var = FakeVar(True)
+    obj.log = lambda *a, **k: None
+    monkeypatch.setattr(jfo_mod.messagebox, 'showinfo', lambda *a, **k: None)
+
+    obj.reset_config()
+
+    assert obj.search_url_var.value == 'old'
+    assert obj.text_selector_var.value == 'title'
+    assert obj.image_selector_var.value == 'img'
+    assert obj.max_filename_length_var.value == '80'
+    assert obj.max_filename_bytes_var.value == '240'
+    assert obj.preserve_actor_var.value is True
+    assert obj.batch_count_var.value == ''
+    assert obj.dry_run_var.value is False
+    assert obj.include_subdirectories_var.value is False
+
+
+def test_select_folder_resets_recursive_scan_scope(monkeypatch):
+    obj = make_shell_with_inputs()
+    obj.include_subdirectories_var = FakeVar(True)
+    selected = '/tmp/new-source'
+    analyzed = []
+    obj.analyze_folder = lambda folder: analyzed.append(folder)
+    monkeypatch.setattr(jfo_mod.filedialog, 'askdirectory', lambda **_kwargs: selected)
+
+    obj.select_folder()
+
+    assert obj.folder_var.value == selected
+    assert obj.include_subdirectories_var.value is False
+    assert analyzed == [selected]
 
 
 def test_start_processing_passes_plain_request_to_worker(monkeypatch):
@@ -236,6 +328,34 @@ def test_start_processing_passes_plain_request_to_worker(monkeypatch):
     assert obj.status_var.value == "处理中..."
 
 
+def test_smart_truncate_preserves_actor_name_when_enabled():
+    obj = make_shell()
+    obj.preserve_actor_var = FakeVar(True)
+    logs = []
+    obj.log = lambda message, level='INFO': logs.append((level, message))
+    title = 'HMN-875 中出ししないと出れない部屋 借金返済がチャラになると集められた 黒島玲衣'
+
+    result = obj.smart_truncate_filename(title, 'HMN-875.mp4', 36)
+
+    assert result.startswith('HMN-875')
+    assert result.endswith('黒島玲衣')
+    assert len(result) <= 36
+    assert any('保留演员名' in message for _, message in logs)
+
+
+def test_smart_truncate_plain_when_actor_preserve_disabled():
+    obj = make_shell()
+    obj.preserve_actor_var = FakeVar(False)
+    obj.log = lambda *a, **k: None
+    title = 'HMN-875 中出ししないと出れない部屋 借金返済がチャラになると集められた 黒島玲衣'
+
+    result = obj.smart_truncate_filename(title, 'HMN-875.mp4', 36)
+
+    assert len(result) <= 36
+    assert result.endswith('...')
+    assert not result.endswith('黒島玲衣')
+
+
 def test_gui_scan_video_files_returns_manifest_entries_for_workflow_reuse():
     obj = make_shell()
     obj.video_extensions = {'.mp4', '.mkv'}
@@ -261,6 +381,26 @@ def test_gui_scan_video_files_returns_manifest_entries_for_workflow_reuse():
     assert entries['note.txt']['is_video'] is False
     assert entries['._SONE-753.mp4']['is_hidden'] is True
     assert scan['file_sizes']['SONE-753.mp4'] == 32768
+
+
+def test_gui_scan_video_files_can_include_subdirectories():
+    obj = make_shell()
+    obj.video_extensions = {'.mp4'}
+    obj.minimum_video_size_bytes = 16 * 1024
+    obj.include_subdirectories_var = FakeVar(True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / 'root.mp4').write_bytes(b'a' * 32768)
+        (root / 'nested').mkdir()
+        (root / 'nested' / 'child.mp4').write_bytes(b'b' * 32768)
+        (root / 'Finish').mkdir()
+        (root / 'Finish' / 'done.mp4').write_bytes(b'c' * 32768)
+
+        scan = obj._scan_video_files(str(root))
+
+    assert scan['accepted'] == ['nested/child.mp4', 'root.mp4']
+    assert 'Finish/done.mp4' not in scan['accepted']
 
 
 def test_run_log_keeps_line_buffered_handle_until_close():

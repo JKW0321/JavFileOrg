@@ -34,6 +34,14 @@ def test_carib_like_code_warns_but_keeps_manual_provider():
     assert decision['warning_only'] is True
 
 
+def test_uncensored_marker_warns_for_javbus_too():
+    decision = route_provider('javbus', '420STH-123.mp4', '420sth-123')
+    assert decision['action'] == 'process'
+    assert decision['provider'] == 'javbus'
+    assert decision['reason'] == 'marker:420sth'
+    assert decision['warning_only'] is True
+
+
 def test_1pon_like_code_warns_but_keeps_manual_provider():
     decision = route_provider('javlibrary', '031726_001-1PON.mp4', '031726_001-1pon')
     assert decision['provider'] == 'javlibrary'

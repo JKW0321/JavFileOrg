@@ -29,6 +29,12 @@ class FailingStreamResponse(DummyResponse):
         raise RuntimeError('stream interrupted')
 
 
+class ResponseStatusError(RuntimeError):
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.response = type('Response', (), {'status_code': status_code})()
+
+
 class RecordingSession:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -148,6 +154,30 @@ def test_download_image_retries_when_stream_breaks_mid_download(monkeypatch):
         assert any('stream interrupted' in message for _, message in obj.logs)
 
 
+def test_download_image_retries_incomplete_read_even_with_response_status(monkeypatch):
+    session = RecordingSession([
+        ResponseStatusError(
+            "('Connection broken: IncompleteRead(40442 bytes read, 775217 more expected)', "
+            "IncompleteRead(40442 bytes read, 775217 more expected))",
+            200,
+        ),
+        DummyResponse([b'complete']),
+    ])
+    obj = make_downloader(session)
+    sleeps = []
+    monkeypatch.setattr(download_service.time, 'sleep', lambda seconds: sleeps.append(seconds))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'cover.jpg'
+        ok = obj.download_image('http://example/cover.jpg', str(path), max_retries=2)
+
+        assert ok is True
+        assert path.read_bytes() == b'complete'
+        assert len(session.calls) == 2
+        assert sleeps == [0.25, 0.25, 0.25, 0.25]
+        assert any('IncompleteRead' in message for _, message in obj.logs)
+
+
 def test_download_image_final_stream_failure_leaves_no_partial(monkeypatch):
     session = RecordingSession([FailingStreamResponse([])])
     obj = make_downloader(session)
@@ -189,6 +219,33 @@ def test_download_image_uses_provider_context_and_fallback_without_retrying_403(
         assert all(call['headers']['Referer'] == 'https://provider.example/detail/1' for call in session.calls)
         assert all(call['headers']['Origin'] == 'https://provider.example' for call in session.calls)
         assert sleeps == []
+
+
+def test_download_image_skips_invalid_primary_url_and_uses_fallback(monkeypatch):
+    session = RecordingSession([
+        DummyResponse([b'fallback-ok']),
+    ])
+    obj = make_downloader(session)
+    sleeps = []
+    monkeypatch.setattr(download_service.time, 'sleep', lambda seconds: sleeps.append(seconds))
+
+    image_task = {
+        'image_url': 'https:///moviepages/061819_001/images/str.jpg',
+        'fallback_images': ['https://www.1pondo.tv/assets/sample/061819_001/str.jpg'],
+        'referer': 'https://www.1pondo.tv/movies/061819_001/',
+        'provider': 'uncensored',
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'cover.jpg'
+        ok = obj.download_image(image_task, str(path), max_retries=3)
+
+        assert ok is True
+        assert path.read_bytes() == b'fallback-ok'
+        assert [call['url'] for call in session.calls] == [
+            'https://www.1pondo.tv/assets/sample/061819_001/str.jpg',
+        ]
+        assert sleeps == []
+        assert any('跳过非法图片URL' in message for _, message in obj.logs)
 
 
 def test_download_image_retry_wait_can_be_cancelled(monkeypatch):
@@ -245,3 +302,22 @@ def test_connection_probe_downloads_with_provider_aware_image_task():
         'provider': 'uncensored',
         'fallback_images': ['https://cdn.example/fallback.jpg'],
     }]
+
+
+def test_folder_scan_cache_reuses_recent_matching_scan():
+    obj = jfo_mod.JavFileOrganizer.__new__(jfo_mod.JavFileOrganizer)
+    obj.minimum_video_size_bytes = 16 * 1024
+    obj.video_extensions = {'.mp4', '.mkv'}
+    obj._folder_scan_cache = None
+    obj._folder_scan_cache_ttl_seconds = 120
+    scan = {'accepted': ['a.mp4'], 'manifest_entries': []}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        obj._remember_folder_scan(tmp, scan, 12.3)
+        cached = obj._get_recent_folder_scan(tmp)
+
+        assert cached['scan'] is scan
+        assert cached['elapsed_seconds'] == 12.3
+
+        obj.minimum_video_size_bytes = 32 * 1024
+        assert obj._get_recent_folder_scan(tmp) is None

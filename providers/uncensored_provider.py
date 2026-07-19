@@ -53,11 +53,15 @@ class UncensoredProvider(BaseProvider):
 
     URABUKKAKE_TOUR_PAGES = 12
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._urabukkake_page_cache = {}
+
     UNSUPPORTED_FAMILY_PATTERNS = (
         ('night24-dms', re.compile(r'\b(?:DMS[-_\s]*)?NIGHT24[-_\s]*[A-Z]?\d+\b|^DMS[-_\s]*NIGHT24[-_\s]*[A-Z]?\d+\b', re.IGNORECASE)),
         ('s-cute', re.compile(r'\bS[-_]?CUTE[-_\s]*\d+\b', re.IGNORECASE)),
         ('mesubuta', re.compile(r'\bMESUBUTA[-_\s]*\d{6}[-_\s]*\d{3}\b', re.IGNORECASE)),
-        ('madou', re.compile(r'\bMM[-_\s]*\d+\b|麻豆|MADOU', re.IGNORECASE)),
+        ('madou', re.compile(r'\b(?:MM|MD|MDHG|MDL|MDSR)[-_\s]*\d+\b|麻豆|MADOU', re.IGNORECASE)),
         ('number-name-series', re.compile(r'^\d{2,4}[-_\s]+[A-Z][A-Z]+', re.IGNORECASE)),
     )
 
@@ -71,7 +75,7 @@ class UncensoredProvider(BaseProvider):
 
     MGSTAGE_PREFIXES = (
         '300MIUM', '393OTIM', '420HPT', '420STH', '546EROFV', '583ERKR',
-        '328CNSTV', '476MLA', '253KAKU',
+        '328CNSTV', '328HMDNV', '476MLA', '253KAKU',
     )
 
     def _request(self, url):
@@ -178,7 +182,7 @@ class UncensoredProvider(BaseProvider):
                 ],
             }
 
-        match = re.search(r'\b(?:TOKYO[-_\s]*HOT|TOKYOHOT)[-_\s]*([A-Z]\d{3,6})\b', compact)
+        match = re.search(r'\b(?:TOKYO[-_\s]*HOT|TOKYOHOT|NYOSHIN)[-_\s]*([A-Z]\d{3,6})\b', compact)
         if match:
             code = match.group(1).lower()
             display_code = f'TOKYO-HOT-{code.upper()}'
@@ -387,6 +391,24 @@ class UncensoredProvider(BaseProvider):
 
         return None
 
+    def _normalize_image_url(self, image_url, base_url):
+        image_url = (image_url or '').strip()
+        if not image_url:
+            return None
+        if image_url.startswith('https:///') and not image_url.startswith('https:////'):
+            image_url = image_url[len('https://'):]
+        if image_url.startswith('http:///') and not image_url.startswith('http:////'):
+            image_url = image_url[len('http://'):]
+        return urljoin(base_url, image_url)
+
+    def _fallback_images(self, primary_url, meta):
+        candidates = []
+        for url in meta.get('image_candidates') or []:
+            normalized = self._normalize_image_url(url, meta.get('detail_url') or '')
+            if normalized and normalized != primary_url and normalized not in candidates:
+                candidates.append(normalized)
+        return candidates
+
     def _extract_fc2_storage_image(self, html_text, detail_url):
         if not html_text:
             return None
@@ -432,6 +454,7 @@ class UncensoredProvider(BaseProvider):
             or data.get('ThumbMed')
             or data.get('ThumbLow')
         )
+        image_url = self._normalize_image_url(image_url, meta.get('detail_url') or meta.get('json_url') or '')
         return {
             'title': self._clean_title(title, meta),
             'image_url': image_url,
@@ -481,6 +504,70 @@ class UncensoredProvider(BaseProvider):
                 return [term[:-len(suffix)], suffix]
         return [term]
 
+    def _japanhdv_target_date(self, meta):
+        match = re.search(r'JAPANHDV-(\d{2})(\d{2})(\d{2})', meta.get('code') or '', re.IGNORECASE)
+        if not match:
+            return None
+        yy, mm, dd = match.groups()
+        return f'20{yy}-{int(mm):02d}-{int(dd):02d}'
+
+    def _japanhdv_candidate_context(self, link, image_element):
+        fragments = [
+            link.get('title') or '',
+            link.get('href') or '',
+            link.get_text(' ', strip=True),
+        ]
+        if image_element:
+            fragments.extend([
+                image_element.get('alt') or '',
+                image_element.get('src') or '',
+                image_element.get('data-src') or '',
+                image_element.get('data-original') or '',
+            ])
+        parent = link.parent
+        if parent and parent.name not in {'body', 'html'}:
+            parent_text = parent.get_text(' ', strip=True)
+            if parent_text and len(parent_text) < 800:
+                fragments.append(parent_text)
+        return ' '.join(fragment for fragment in fragments if fragment)
+
+    def _extract_japanhdv_date(self, text):
+        if not text:
+            return None
+        month_map = {
+            'jan': 1, 'january': 1,
+            'feb': 2, 'february': 2,
+            'mar': 3, 'march': 3,
+            'apr': 4, 'april': 4,
+            'may': 5,
+            'jun': 6, 'june': 6,
+            'jul': 7, 'july': 7,
+            'aug': 8, 'august': 8,
+            'sep': 9, 'sept': 9, 'september': 9,
+            'oct': 10, 'october': 10,
+            'nov': 11, 'november': 11,
+            'dec': 12, 'december': 12,
+        }
+
+        for year, month, day in re.findall(r'\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b', text):
+            return f'{int(year):04d}-{int(month):02d}-{int(day):02d}'
+        for month, day, year in re.findall(r'\b(\d{1,2})[-/.](\d{1,2})[-/.](20\d{2})\b', text):
+            return f'{int(year):04d}-{int(month):02d}-{int(day):02d}'
+        month_names = '|'.join(month_map.keys())
+        for month_name, day, year in re.findall(
+            rf'\b({month_names})\s+(\d{{1,2}}),?\s+(20\d{{2}})\b',
+            text,
+            re.IGNORECASE,
+        ):
+            return f'{int(year):04d}-{month_map[month_name.lower()]:02d}-{int(day):02d}'
+        for day, month_name, year in re.findall(
+            rf'\b(\d{{1,2}})\s+({month_names})\s+(20\d{{2}})\b',
+            text,
+            re.IGNORECASE,
+        ):
+            return f'{int(year):04d}-{month_map[month_name.lower()]:02d}-{int(day):02d}'
+        return None
+
     def _search_japanhdv(self, meta, query):
         detail_url = meta.get('detail_url')
         response = self._request(detail_url)
@@ -522,11 +609,13 @@ class UncensoredProvider(BaseProvider):
             score = self._score_terms(search_terms, title)
             if score <= 0:
                 continue
+            context = self._japanhdv_candidate_context(link, image_element)
             candidates.append({
                 'score': score,
                 'title': title,
                 'image_url': urljoin(detail_url, image_url),
                 'detail_url': urljoin(detail_url, link.get('href')),
+                'release_date': self._extract_japanhdv_date(context),
             })
         if not candidates:
             return ProviderResult(
@@ -539,7 +628,39 @@ class UncensoredProvider(BaseProvider):
                 message='japanhdv search results did not match filename terms',
                 raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
             )
-        best = max(candidates, key=lambda item: item['score'])
+        best_score = max(item['score'] for item in candidates)
+        best_candidates = [item for item in candidates if item['score'] == best_score]
+        unique_best_urls = {item['detail_url'] for item in best_candidates}
+        if len(unique_best_urls) > 1:
+            target_date = self._japanhdv_target_date(meta)
+            dated_candidates = [
+                item for item in best_candidates
+                if target_date and item.get('release_date') == target_date
+            ]
+            unique_dated_urls = {item['detail_url'] for item in dated_candidates}
+            if len(unique_dated_urls) == 1:
+                best_candidates = dated_candidates
+                unique_best_urls = unique_dated_urls
+            else:
+                raw_meta = {
+                    'family': meta.get('family'),
+                    'code': meta.get('code'),
+                    'candidate_count': len(unique_best_urls),
+                }
+                if target_date:
+                    raw_meta['target_date'] = target_date
+                    raw_meta['date_matched_candidates'] = len(unique_dated_urls)
+                return ProviderResult(
+                    ok=False,
+                    provider=self.name,
+                    query=query,
+                    detail_url=detail_url,
+                    referer=detail_url,
+                    error_type='ambiguous-result',
+                    message='japanhdv search returned multiple equally plausible matches',
+                    raw_meta=raw_meta,
+                )
+        best = best_candidates[0]
         return ProviderResult(
             ok=True,
             title=self._clean_title(best['title'], meta),
@@ -579,9 +700,7 @@ class UncensoredProvider(BaseProvider):
                     raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
                 )
             page_url = f'{base_url}?page={page}'
-            response = self._request(page_url)
-            soup = BeautifulSoup(response.content, 'html.parser')
-            blocked_failure = self._blocked_page_failure(soup)
+            sections, blocked_failure = self._load_urabukkake_page_sections(page_url)
             if blocked_failure:
                 error_type, message = blocked_failure
                 return ProviderResult(
@@ -594,7 +713,7 @@ class UncensoredProvider(BaseProvider):
                     message=message,
                     raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
                 )
-            for section in self._iter_urabukkake_sections(soup, page_url):
+            for section in sections:
                 score = self._score_terms(search_terms, section.get('title', ''))
                 if score <= 0:
                     continue
@@ -626,6 +745,19 @@ class UncensoredProvider(BaseProvider):
             fallback_images=best.get('fallback_images') or [],
             raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
         )
+
+    def _load_urabukkake_page_sections(self, page_url):
+        if page_url in self._urabukkake_page_cache:
+            return self._urabukkake_page_cache[page_url], None
+
+        response = self._request(page_url)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        blocked_failure = self._blocked_page_failure(soup)
+        if blocked_failure:
+            return [], blocked_failure
+        sections = list(self._iter_urabukkake_sections(soup, page_url))
+        self._urabukkake_page_cache[page_url] = sections
+        return sections, None
 
     def _iter_urabukkake_sections(self, soup, page_url):
         for top in soup.select('#section-top'):
@@ -715,14 +847,16 @@ class UncensoredProvider(BaseProvider):
                     self.log(f'⚠️ 无码源 JSON 详情失败，改用页面解析: {exc}', 'WARNING')
 
             if self._json_detail_is_complete(json_detail):
+                image_url = json_detail.get('image_url')
                 return ProviderResult(
                     ok=True,
                     title=json_detail.get('title'),
-                    image_url=json_detail.get('image_url'),
+                    image_url=image_url,
                     provider=self.name,
                     query=query,
                     detail_url=detail_url,
                     referer=detail_url,
+                    fallback_images=self._fallback_images(image_url, meta),
                     raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
                 )
 
@@ -826,6 +960,7 @@ class UncensoredProvider(BaseProvider):
                 title = self._clean_title(title, meta)
             if not image_url or self._is_placeholder_image(image_url):
                 image_url = self._select_image(soup, detail_url, meta.get('image_candidates') or [], meta=meta)
+            image_url = self._normalize_image_url(image_url, detail_url)
             if not image_url:
                 return ProviderResult(
                     ok=False,
@@ -846,6 +981,7 @@ class UncensoredProvider(BaseProvider):
                 query=query,
                 detail_url=detail_url,
                 referer=detail_url,
+                fallback_images=self._fallback_images(image_url, meta),
                 raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
             )
         except requests.exceptions.RequestException as exc:
@@ -891,6 +1027,18 @@ class UncensoredProvider(BaseProvider):
         message_lower = message.lower()
         response = getattr(exc, 'response', None)
         status_code = getattr(response, 'status_code', None)
+        if status_code == 404 or '404' in message_lower or 'not found' in message_lower:
+            family = meta.get('family') or 'uncensored source'
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                detail_url=detail_url,
+                referer=detail_url,
+                error_type='not-found',
+                message=f'{family} page not found',
+                raw_meta={'family': meta.get('family'), 'code': meta.get('code')},
+            )
         access_denied = (
             status_code in (401, 403, 451)
             or '401' in message_lower

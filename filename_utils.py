@@ -42,6 +42,32 @@ _SITE_NAMES = ('javbus', 'javhoo')
 # 下载站前缀模式：4k2.com@, hhd800.com@, 169bbs.com@, javbus.com@, some-site.org@ 等
 # 匹配规则：开头、至少一个 . 或 - 分隔的字母数字段、紧跟 @
 _DOWNLOAD_SITE_PREFIX = re.compile(r'^[\w][\w.-]*@')
+def _looks_like_mmddyy(value: str) -> bool:
+    if not re.fullmatch(r'\d{6}', value or ''):
+        return False
+    month = int(value[:2])
+    day = int(value[2:4])
+    return 1 <= month <= 12 and 1 <= day <= 31
+
+
+def _truncate_utf8_bytes(value: str, max_bytes: int, *, marker: str = '...') -> str:
+    encoded = (value or '').encode('utf-8')
+    if len(encoded) <= max_bytes:
+        return value
+    marker_bytes = marker.encode('utf-8')
+    budget = max(0, max_bytes - len(marker_bytes))
+    chunks = []
+    used = 0
+    for char in value:
+        char_len = len(char.encode('utf-8'))
+        if used + char_len > budget:
+            break
+        chunks.append(char)
+        used += char_len
+    truncated = ''.join(chunks).rstrip('. ')
+    if not truncated:
+        return marker[:max_bytes]
+    return truncated + marker
 
 
 def strip_site_markers(name: str) -> str:
@@ -193,13 +219,13 @@ def extract_series_info(filename):
     # 直接 rsplit('.', 1)[0] 会得到 '4k2'。
     stem = _stem_for_filename_analysis(filename)
 
-    base, sequence = _extract_series_info_from_stem(stem)
-    if base:
-        return base, sequence
-
     candidate = analyze_unknown_filename(filename)
     if candidate and candidate.get('usable_for_search') and candidate.get('sequence'):
         return candidate.get('normalized_code'), candidate.get('sequence')
+
+    base, sequence = _extract_series_info_from_stem(stem)
+    if base:
+        return base, sequence
 
     return None, None
 
@@ -268,7 +294,7 @@ def _candidate(rule_id, filename, normalized_code, *, confidence, usable_for_sea
 
 MGSTAGE_PREFIXES = (
     '300MIUM', '393OTIM', '420HPT', '420STH', '546EROFV', '583ERKR',
-    '328CNSTV', '476MLA', '253KAKU',
+    '328CNSTV', '328HMDNV', '476MLA', '253KAKU',
 )
 
 
@@ -306,7 +332,7 @@ def analyze_unknown_filename(filename: str):
         )
 
     tokyo_hot = re.search(
-        r'\bTOKYO[-_\s]*HOT[-_\s]*([A-Z]\d{3,6})(?:[-_\s]+(\d{1,3}))?\b',
+        r'\b(?:TOKYO[-_\s]*HOT|TOKYOHOT|NYOSHIN)[-_\s]*([A-Z]\d{3,6})(?:[-_\s]+(\d{1,3}))?\b',
         compact,
         re.IGNORECASE,
     )
@@ -340,7 +366,7 @@ def analyze_unknown_filename(filename: str):
         )
 
     heydouga = re.search(
-        r'\b(?:HEYDOUGA|HEY)[-_\s]*4030[-_\s]*(?:PPV)?(\d{3,6})(?:[-_\s]+(\d{1,3}))?\b',
+        r'\b(?:HEYDOUGA|HEY)[-_\s]*4030[-_\s]*(?:PPV[-_\s]*)?(\d{3,6})(?:[-_\s]+(?:HD)?(\d{1,3}))?\b',
         compact,
         re.IGNORECASE,
     )
@@ -419,7 +445,7 @@ def analyze_unknown_filename(filename: str):
         )
 
     night24 = re.search(
-        r'\b(?:DMS[-_\s]*)?NIGHT24[-_\s]+([A-Z]?\d{1,4})(?:\s*\(\d+\))?',
+        r'\b(?:DMS[-_\s]*)?NIGHT24[-_\s]+([A-Z]?\d{1,5})(?:\s*\(\d+\))?',
         compact,
         re.IGNORECASE,
     )
@@ -492,7 +518,7 @@ def analyze_unknown_filename(filename: str):
         )
 
     carib_suffix = re.search(
-        r'\b(\d{6})[-_\s]+(\d{2,5})[-_\s]+(CARIB|CARIBBEANCOM)\b',
+        r'(?:^|[^0-9])(\d{6})[-_\s]+(\d{2,5})[-_\s]+(CARIB|CARIBBEANCOM)\b',
         compact,
         re.IGNORECASE,
     )
@@ -509,7 +535,7 @@ def analyze_unknown_filename(filename: str):
         )
 
     onepondo_suffix = re.search(
-        r'\b(\d{6})[-_\s]+(\d{2,5})[-_\s]+(1PON|1PONDO)\b',
+        r'(?:^|[^0-9])(\d{6})[-_\s]+(\d{2,5})[-_\s]+(1PON|1PONDO)\b',
         compact,
         re.IGNORECASE,
     )
@@ -523,6 +549,51 @@ def analyze_unknown_filename(filename: str):
             usable_for_search=True,
             reason='matched 1Pondo suffix code',
             pattern_shape='<date/id digits>[-_ ]<part digits>[-_ ]1PON',
+        )
+
+    pacopacomama_suffix = re.search(
+        r'(?:^|[^0-9])(\d{6})[-_\s]+(\d{2,5})[-_\s]+(PACO|PACOPACOM|PACOPACOMAMA)\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if pacopacomama_suffix:
+        normalized = f"PACOPACOMAMA-{pacopacomama_suffix.group(1)}-{pacopacomama_suffix.group(2)}"
+        return _candidate(
+            'pacopacomama_suffix',
+            filename,
+            normalized,
+            confidence=0.92,
+            usable_for_search=True,
+            reason='matched Pacopacomama suffix code',
+            pattern_shape='<date/id digits>[-_ ]<part digits>[-_ ]PACO',
+        )
+
+    bare_date_code = re.search(
+        r'(?:^|[^0-9])(\d{6})[-_\s]+(\d{3})(?:[-_\s]+(?:1080P|720P|2160P|4K|FHD|HD))?\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if bare_date_code and '_' in compact and _looks_like_mmddyy(bare_date_code.group(1)):
+        normalized = f"1PONDO-{bare_date_code.group(1)}-{bare_date_code.group(2)}"
+        return _candidate(
+            '1pondo_bare_underscore_date_code',
+            filename,
+            normalized,
+            confidence=0.86,
+            usable_for_search=True,
+            reason='matched bare 1Pondo-style MMDDYY_item code',
+            pattern_shape='<MMDDYY digits>_<3 digit item>',
+        )
+    if bare_date_code and _looks_like_mmddyy(bare_date_code.group(1)):
+        normalized = f"1PONDO-{bare_date_code.group(1)}-{bare_date_code.group(2)}"
+        return _candidate(
+            '1pondo_bare_date_code',
+            filename,
+            normalized,
+            confidence=0.84,
+            usable_for_search=True,
+            reason='matched bare 1Pondo-style date/item code with high item number',
+            pattern_shape='<date digits>[-_ ]<3 digit item >=100>',
         )
 
     standard_base, _standard_seq = _extract_series_info_from_stem(stem)
@@ -636,7 +707,7 @@ def clean_filename_for_search(filename: str) -> str:
     return name.lower()
 
 
-def sanitize_filename(filename: str) -> str:
+def sanitize_filename(filename: str, max_bytes: int | None = None) -> str:
     """生成最终文件名：清理网站名 + 移除 Windows 非法字符 + 长度限制。
 
     与 clean_filename_for_search 的区别：
@@ -686,5 +757,11 @@ def sanitize_filename(filename: str) -> str:
             result = name[:max_name_len] + ext
         else:
             result = name[:200]
+
+    if max_bytes and max_bytes > 0 and len(result.encode('utf-8')) > max_bytes:
+        ext_bytes = len(ext.encode('utf-8'))
+        max_name_bytes = max(1, max_bytes - ext_bytes)
+        name = _truncate_utf8_bytes(name, max_name_bytes)
+        result = name + ext
 
     return result

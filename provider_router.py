@@ -3,10 +3,12 @@
 """Simple provider router for mixed-source video filenames."""
 from __future__ import annotations
 
-NON_JAVLIB_MARKERS = {
+JAV_GENERAL_PROVIDERS = {'javbus', 'javhoo', 'javlibrary'}
+
+NON_JAV_GENERAL_MARKERS = {
     'carib', '1pon', 'nyoshin', '10musume', 'pacopacomama', 'muramura',
     '300mium', '393otim', '420hpt', '420sth', '546erofv', '583erkr', '328cnstv',
-    '476mla', '253kaku'
+    '328hmdnv', '476mla', '253kaku',
 }
 
 
@@ -22,8 +24,8 @@ def route_provider(preferred_provider: str, filename: str, search_query: str) ->
         }
 
     mismatch_reason = None
-    if preferred_provider == 'javlibrary':
-        for marker in sorted(NON_JAVLIB_MARKERS):
+    if preferred_provider in JAV_GENERAL_PROVIDERS:
+        for marker in sorted(NON_JAV_GENERAL_MARKERS):
             if marker in normalized_filename or marker in normalized_query:
                 mismatch_reason = f'marker:{marker}'
                 break

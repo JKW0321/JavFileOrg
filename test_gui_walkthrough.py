@@ -126,9 +126,11 @@ def make_organizer(folder_path, finish_path):
     obj.text_selector_var = FakeVar('title')
     obj.image_selector_var = FakeVar('img')
     obj.max_filename_length_var = FakeVar('')
+    obj.max_filename_bytes_var = FakeVar('240')
     obj.preserve_actor_var = FakeVar(True)
     obj.batch_count_var = FakeVar('')
     obj.dry_run_var = FakeVar(False)
+    obj.include_subdirectories_var = FakeVar(False)
 
     # 网站配置（和真实 GUI 一样）
     obj.website_configs = {

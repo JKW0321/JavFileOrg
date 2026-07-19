@@ -218,7 +218,39 @@ def test_workflow_run_reuses_initial_scan_without_rescanning_folder():
             },
         )
 
+    assert result['planned_count'] == 1
+    assert provider.calls == []
+
+
+def test_workflow_can_process_current_directory_only():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / 'SONE-753.mp4').write_bytes(b'a' * 32768)
+        (root / 'nested').mkdir()
+        (root / 'nested' / 'ABF-139.mp4').write_bytes(b'b' * 32768)
+        provider = DummyProvider()
+        svc = WorkflowService(
+            log=lambda *a, **k: None,
+            provider_factory=lambda name: provider,
+            atomic_processor=AtomicProcessor(_download, _sanitize),
+            clean_filename_for_search=clean_filename_for_search,
+            sanitize_filename=_sanitize,
+            detect_series_files=lambda files: ({}, files),
+            smart_truncate_filename=lambda title, original, max_length: title,
+            stop_requested=lambda: False,
+            minimum_video_size_bytes=16384,
+        )
+
+        result = svc.run(
+            folder_path=str(root),
+            finish_folder=str(root / 'Finish'),
+            website='javhoo',
+            dry_run=True,
+            include_subdirectories=False,
+        )
+
         assert result['planned_count'] == 1
+        assert result['total_files'] == 1
         assert provider.calls == []
 
 
@@ -678,6 +710,117 @@ def test_provider_search_does_not_retry_non_transient_network_error():
     assert cache == {}
 
 
+def test_provider_search_caches_network_not_found_failures():
+    class MissingPageProvider:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            return {
+                'ok': False,
+                'title': None,
+                'image_url': None,
+                'provider': 'uncensored',
+                'detail_url': None,
+                'referer': None,
+                'error_type': 'network-error',
+                'message': '404 Client Error: Not Found',
+            }
+
+    provider = MissingPageProvider()
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda name: provider,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+        stop_requested=lambda: False,
+    )
+    cache = {}
+
+    first = svc._provider_search(cache, 'uncensored', provider, 'FC2-PPV-9999999')
+    second = svc._provider_search(cache, 'uncensored', provider, 'FC2-PPV-9999999')
+
+    assert first is second
+    assert first['error_type'] == 'network-error'
+    assert provider.calls == ['FC2-PPV-9999999']
+    assert ('uncensored', 'FC2-PPV-9999999') in cache
+
+
+def test_provider_search_caches_not_found_failures():
+    class NotFoundProvider:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            return {
+                'ok': False,
+                'title': None,
+                'image_url': None,
+                'provider': 'uncensored',
+                'detail_url': f'https://example.test/{query}',
+                'referer': f'https://example.test/{query}',
+                'error_type': 'not-found',
+                'message': 'page not found',
+            }
+
+    provider = NotFoundProvider()
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda name: provider,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+        stop_requested=lambda: False,
+    )
+    cache = {}
+
+    first = svc._provider_search(cache, 'uncensored', provider, '1pondo-122422-001')
+    second = svc._provider_search(cache, 'uncensored', provider, '1pondo-122422-001')
+
+    assert first is second
+    assert first['error_type'] == 'not-found'
+    assert provider.calls == ['1pondo-122422-001']
+    assert ('uncensored', '1pondo-122422-001') in cache
+
+
+def test_workflow_logs_summary_before_report_phase():
+    logs = []
+    svc = WorkflowService(
+        log=lambda message, level='INFO': logs.append((level, message)),
+        provider_factory=lambda name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+        stop_requested=lambda: False,
+    )
+    stats = {
+        'total_files': 3,
+        'success_count': 1,
+        'failed_count': 1,
+        'planned_count': 0,
+        'skipped_provider_count': 1,
+        'needs_review_count': 0,
+        'cancelled_count': 0,
+        'image_success_count': 1,
+        'image_failed_count': 0,
+    }
+
+    svc._log_pre_report_summary(stats, dry_run=False, logs_dir='/tmp/JFO_Logs')
+
+    assert any('主处理流程完成' in message for _, message in logs)
+    assert any('当前统计: 已记录 3/3' in message for _, message in logs)
+    assert any('正在生成审计报告' in message for _, message in logs)
+
+
 def test_workflow_cancelled_files_are_audited(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -942,9 +1085,11 @@ def test_workflow_passes_provider_aware_image_request_to_atomic_processor():
     class RecordingAtomic:
         def __init__(self):
             self.image_request = None
+            self.max_filename_bytes = None
 
-        def process_file_atomic(self, file_path, new_filename, image_request, finish_folder):
+        def process_file_atomic(self, file_path, new_filename, image_request, finish_folder, **kwargs):
             self.image_request = image_request
+            self.max_filename_bytes = kwargs.get('max_filename_bytes')
             finish = Path(finish_folder)
             finish.mkdir(exist_ok=True)
             video_path = finish / new_filename
@@ -960,7 +1105,7 @@ def test_workflow_passes_provider_aware_image_request_to_atomic_processor():
                 'image_downloaded': True,
             }, 'ok'
 
-        def process_series_group_atomic(self, files, title, image_request, finish_folder):
+        def process_series_group_atomic(self, files, title, image_request, finish_folder, **kwargs):
             raise AssertionError('not used')
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -987,9 +1132,11 @@ def test_workflow_passes_provider_aware_image_request_to_atomic_processor():
             website='uncensored',
             dry_run=False,
             logs_dir=str(logs),
+            max_filename_bytes=180,
         )
 
         assert result['success_count'] == 1
+        assert atomic.max_filename_bytes == 180
         assert atomic.image_request == {
             'image_url': 'https://cdn.example/primary.jpg',
             'referer': 'https://my.tokyo-hot.com/product/?q=n0839',
@@ -1014,7 +1161,7 @@ def test_workflow_cleans_empty_finish_after_atomic_failure():
             }
 
     class FailingAtomic:
-        def process_file_atomic(self, file_path, new_filename, image_url, finish_folder):
+        def process_file_atomic(self, file_path, new_filename, image_url, finish_folder, **kwargs):
             return False, {
                 'status': 'failed',
                 'reason': 'simulated atomic failure',
@@ -1022,7 +1169,7 @@ def test_workflow_cleans_empty_finish_after_atomic_failure():
                 'image_downloaded': False,
             }, 'simulated atomic failure'
 
-        def process_series_group_atomic(self, files, title, image_url, finish_folder):
+        def process_series_group_atomic(self, files, title, image_url, finish_folder, **kwargs):
             raise AssertionError('not used')
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -1068,7 +1215,7 @@ def test_workflow_does_not_remove_preexisting_empty_finish_after_atomic_failure(
             }
 
     class FailingAtomic:
-        def process_file_atomic(self, file_path, new_filename, image_url, finish_folder):
+        def process_file_atomic(self, file_path, new_filename, image_url, finish_folder, **kwargs):
             return False, {
                 'status': 'failed',
                 'reason': 'simulated atomic failure',
@@ -1076,7 +1223,7 @@ def test_workflow_does_not_remove_preexisting_empty_finish_after_atomic_failure(
                 'image_downloaded': False,
             }, 'simulated atomic failure'
 
-        def process_series_group_atomic(self, files, title, image_url, finish_folder):
+        def process_series_group_atomic(self, files, title, image_url, finish_folder, **kwargs):
             raise AssertionError('not used')
 
     with tempfile.TemporaryDirectory() as tmp:

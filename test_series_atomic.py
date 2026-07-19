@@ -9,6 +9,7 @@ from pathlib import Path
 from PIL import Image
 
 from atomic_processor_v11 import AtomicProcessor
+from filename_utils import sanitize_filename as real_sanitize_filename
 
 
 def _dummy_download(url, dest):
@@ -117,7 +118,9 @@ def test_process_file_atomic_fsyncs_committed_outputs():
             str(out),
         )
         assert ok is True, message
-        assert 'SONE-753 TITLE.mp4' in p.synced
+        assert 'dir:src' in p.synced
+        assert 'dir:Finish' in p.synced
+        assert 'SONE-753 TITLE.mp4' not in p.synced
         assert 'SONE-753 TITLE.jpg' in p.synced
 
 
@@ -160,15 +163,17 @@ def test_process_file_atomic_marks_active_transaction_during_commit_and_rollback
             super().__init__(*args, **kwargs)
             self.active_during_move = None
             self.active_during_rollback = None
+            self.fail_finish_dir_once = True
 
         def _move_video(self, source_path, target_path):
             self.active_during_move = self.has_active_transaction()
-            super()._move_video(source_path, target_path)
+            return super()._move_video(source_path, target_path)
 
-        def _fsync_committed_path(self, path):
-            if str(path).endswith('.mp4') and Path(path).parent.name == 'Finish':
-                raise RuntimeError('forced fsync failure')
-            return None
+        def _fsync_parent_dir(self, path):
+            if self.fail_finish_dir_once and str(path).endswith('.mp4') and Path(path).parent.name == 'Finish':
+                self.fail_finish_dir_once = False
+                raise RuntimeError('forced dir fsync failure')
+            return super()._fsync_parent_dir(path)
 
         def _rollback_video(self, target_path, original_path):
             self.active_during_rollback = self.has_active_transaction()
@@ -332,10 +337,15 @@ def test_recover_pending_operation_keeps_journal_if_final_image_cleanup_fails():
 
 def test_process_file_atomic_rolls_back_if_fsync_fails():
     class BrokenSyncProcessor(AtomicProcessor):
-        def _fsync_committed_path(self, path):
-            if str(path).endswith('.mp4') and Path(path).parent.name == 'Finish':
-                raise RuntimeError('fsync failed')
-            return None
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.fail_finish_dir_once = True
+
+        def _fsync_parent_dir(self, path):
+            if self.fail_finish_dir_once and str(path).endswith('.mp4') and Path(path).parent.name == 'Finish':
+                self.fail_finish_dir_once = False
+                raise RuntimeError('dir fsync failed')
+            return super()._fsync_parent_dir(path)
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -593,6 +603,106 @@ def test_process_series_group_atomic_avoids_duplicate_planned_targets():
         ]
 
 
+def test_process_file_atomic_duplicate_suffix_respects_byte_limit():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / 'src'
+        out = root / 'Finish'
+        src.mkdir()
+        out.mkdir()
+        source = src / 'HMN-875.mp4'
+        source.write_bytes(b'a' * 1024 * 32)
+        long_name = f"HMN-875 {'中出ししないと出れない部屋' * 10} 黒島玲衣.mp4"
+        existing_name = real_sanitize_filename(long_name, max_bytes=90)
+        (out / existing_name).write_bytes(b'existing')
+        p = AtomicProcessor(_dummy_download, real_sanitize_filename)
+
+        ok, result, message = p.process_file_atomic(
+            str(source),
+            long_name,
+            'http://example/image.jpg',
+            str(out),
+            max_filename_bytes=90,
+        )
+
+        assert ok is True, message
+        video_name = Path(result['video_path']).name
+        image_name = Path(result['image_path']).name
+        assert video_name.endswith('_1.mp4')
+        assert image_name.endswith('_1.jpg')
+        assert len(video_name.encode('utf-8')) <= 90
+        assert len(image_name.encode('utf-8')) <= 90
+
+
+def test_process_series_group_duplicate_suffix_respects_byte_limit():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / 'src'
+        out = root / 'Finish'
+        src.mkdir()
+        out.mkdir()
+        f1 = src / 'ABF-139-1a.mp4'
+        f2 = src / 'ABF-139-1b.mp4'
+        f1.write_bytes(b'a' * 1024 * 32)
+        f2.write_bytes(b'b' * 1024 * 32)
+        title = f"ABF-139 {'貸し切り温泉と濃密性交と' * 10}"
+        p = AtomicProcessor(_dummy_download, real_sanitize_filename)
+
+        ok, result, message = p.process_series_group_atomic(
+            [(str(f1), '1'), (str(f2), '1')],
+            title,
+            'http://example/image.jpg',
+            str(out),
+            max_filename_bytes=95,
+        )
+
+        assert ok is True, message
+        names = sorted(Path(path).name for path in result['video_paths'])
+        assert names[1].endswith('_1.mp4')
+        assert all(len(name.encode('utf-8')) <= 95 for name in names)
+        assert len(Path(result['image_path']).name.encode('utf-8')) <= 95
+
+
+def test_atomic_recovery_check_is_cached_for_clean_finish_folder():
+    class CountingAtomicProcessor(AtomicProcessor):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.recovery_calls = 0
+
+        def recover_pending_transactions(self, finish_folder):
+            self.recovery_calls += 1
+            return super().recover_pending_transactions(finish_folder)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / 'src'
+        out = root / 'Finish'
+        src.mkdir()
+        out.mkdir()
+        f1 = src / 'ABF-217.mp4'
+        f2 = src / 'ABF-244.mp4'
+        f1.write_bytes(b'a' * 1024 * 32)
+        f2.write_bytes(b'b' * 1024 * 32)
+        p = CountingAtomicProcessor(_dummy_download, _sanitize)
+
+        ok1, _result1, message1 = p.process_file_atomic(
+            str(f1),
+            'ABF-217 TITLE.mp4',
+            'http://example/image.jpg',
+            str(out),
+        )
+        ok2, _result2, message2 = p.process_file_atomic(
+            str(f2),
+            'ABF-244 TITLE.mp4',
+            'http://example/image.jpg',
+            str(out),
+        )
+
+        assert ok1 is True, message1
+        assert ok2 is True, message2
+        assert p.recovery_calls == 1
+
+
 def test_process_series_group_atomic_requires_image_url_and_keeps_sources():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -659,9 +769,11 @@ def test_process_series_group_atomic_cancel_after_one_move_rolls_back_group():
     stop = {'value': False}
 
     class StopAfterFirstVideoProcessor(AtomicProcessor):
-        def _fsync_committed_path(self, path):
-            if str(path).endswith('.mp4') and Path(path).parent.name == 'Finish':
+        def _commit_video_move(self, source_path, target_path):
+            mode = super()._commit_video_move(source_path, target_path)
+            if str(target_path).endswith('.mp4') and Path(target_path).parent.name == 'Finish':
                 stop['value'] = True
+            return mode
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

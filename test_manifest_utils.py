@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from manifest_utils import build_manifest_from_entries, build_run_summary, scan_folder_manifest, write_json_report
+from manifest_utils import build_manifest_from_entries, build_run_summary, scan_folder_manifest, scan_video_files, write_json_report
 
 
 def test_scan_folder_manifest_marks_hidden_and_video():
@@ -51,6 +51,37 @@ def test_scan_folder_manifest_recurses_and_skips_output_dirs():
         assert entries['nested/FC2-PPV-1234567.rmvb']['is_video'] is True
         assert 'Finish/already-done.mp4' not in entries
         assert 'JFO_Logs/run.log' not in entries
+
+
+def test_scan_video_files_can_skip_subdirectories_but_still_skip_finish():
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp)
+        (p / 'root.mp4').write_bytes(b'a' * 32768)
+        (p / 'nested').mkdir()
+        (p / 'nested' / 'child.mp4').write_bytes(b'b' * 32768)
+        (p / 'Finish').mkdir()
+        (p / 'Finish' / 'done.mp4').write_bytes(b'c' * 32768)
+
+        current_only = scan_video_files(str(p), include_subdirectories=False)
+        recursive = scan_video_files(str(p), include_subdirectories=True)
+
+        assert current_only['accepted'] == ['root.mp4']
+        assert 'nested/child.mp4' not in current_only['accepted']
+        assert 'Finish/done.mp4' not in current_only['accepted']
+        assert recursive['accepted'] == ['nested/child.mp4', 'root.mp4']
+        assert 'Finish/done.mp4' not in recursive['accepted']
+
+
+def test_scan_video_files_skips_finish_case_insensitively():
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp)
+        (p / 'root.mp4').write_bytes(b'a' * 32768)
+        (p / 'finish').mkdir()
+        (p / 'finish' / 'done.mp4').write_bytes(b'b' * 32768)
+
+        scan = scan_video_files(str(p), include_subdirectories=True)
+
+        assert scan['accepted'] == ['root.mp4']
 
 
 def test_build_manifest_from_entries_sorts_without_rescanning():

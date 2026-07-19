@@ -44,21 +44,38 @@ class ImageDownloader:
         except OSError as exc:
             self.log(f"⚠️ 无法清理不完整图片: {exc}", "WARNING")
 
+    def _normalize_download_url(self, url):
+        url = (url or '').strip()
+        if not url:
+            return None
+        if url.startswith('//'):
+            url = f'https:{url}'
+        parsed = urlparse(url)
+        if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+            return None
+        return url
+
     def _image_task(self, image_source):
         if isinstance(image_source, dict):
             primary = image_source.get('image_url') or image_source.get('url')
             fallbacks = image_source.get('fallback_images') or []
             urls = []
             for url in [primary] + list(fallbacks):
-                if url and url not in urls:
-                    urls.append(url)
+                normalized = self._normalize_download_url(url)
+                if normalized and normalized not in urls:
+                    urls.append(normalized)
+                elif url:
+                    self.log(f"⚠️ 跳过非法图片URL: {url}", "WARNING")
             return {
                 'urls': urls,
                 'referer': image_source.get('referer') or image_source.get('detail_url') or self.referer,
                 'provider': image_source.get('provider'),
             }
+        normalized = self._normalize_download_url(image_source)
+        if image_source and not normalized:
+            self.log(f"⚠️ 跳过非法图片URL: {image_source}", "WARNING")
         return {
-            'urls': [image_source] if image_source else [],
+            'urls': [normalized] if normalized else [],
             'referer': self.referer,
             'provider': None,
         }
@@ -72,6 +89,21 @@ class ImageDownloader:
         return int(match.group(1)) if match else None
 
     def _is_retryable_exception(self, exc):
+        text = str(exc).lower()
+        retryable_transport_markers = (
+            'incompleteread',
+            'incomplete read',
+            'chunkedencodingerror',
+            'protocolerror',
+            'connection broken',
+            'connection reset',
+            'remote end closed connection',
+            'read timed out',
+            'readtimeout',
+            'timed out',
+        )
+        if any(marker in text for marker in retryable_transport_markers):
+            return True
         status_code = self._status_code_from_exception(exc)
         if status_code is not None:
             if status_code in {408, 409, 425, 429}:
@@ -79,7 +111,6 @@ class ImageDownloader:
             if 500 <= status_code <= 599:
                 return True
             return False
-        text = str(exc).lower()
         non_retryable_markers = ('forbidden', 'not found', '404', '403')
         if any(marker in text for marker in non_retryable_markers):
             return False
