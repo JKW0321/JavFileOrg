@@ -38,13 +38,21 @@ hiddenimports = [
     'provider_router',
     'selenium_cookie_helper',
     'selenium_javlibrary',
+    'webview_app',
     'workflow_service',
 ]
 
+datas += [('${ROOT_DIR}/webui', 'webui')]
 datas += collect_data_files('webdriver_manager')
 hiddenimports += collect_submodules('providers')
 hiddenimports += collect_submodules('selenium')
 hiddenimports += collect_submodules('webdriver_manager')
+hiddenimports += collect_submodules('webview')
+
+tmp_ret = collect_all('webview')
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
 
 tmp_ret = collect_all('PIL')
 datas += tmp_ret[0]
@@ -52,7 +60,7 @@ binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 
 a = Analysis(
-    ['${ROOT_DIR}/jav_file_organizer.py'],
+    ['${ROOT_DIR}/webview_app.py'],
     pathex=['${ROOT_DIR}'],
     binaries=binaries,
     datas=datas,
@@ -116,6 +124,25 @@ if [[ ! -d "$APP_PATH" ]]; then
 fi
 
 xattr -cr "$APP_PATH" || true
+find "$APP_PATH" -name Python.framework -exec xattr -d com.apple.FinderInfo {} \; 2>/dev/null || true
+find "$APP_PATH" -name Python.framework -exec xattr -d 'com.apple.fileprovider.fpfs#P' {} \; 2>/dev/null || true
+find "$APP_PATH" -name Python.framework -exec xattr -d com.apple.provenance {} \; 2>/dev/null || true
+find "$APP_PATH" -name Python.framework -exec xattr -d -s com.apple.FinderInfo {} \; 2>/dev/null || true
+find "$APP_PATH" -name Python.framework -exec xattr -d -s 'com.apple.fileprovider.fpfs#P' {} \; 2>/dev/null || true
+find "$APP_PATH" -name Python.framework -exec xattr -d -s com.apple.provenance {} \; 2>/dev/null || true
+for framework_path in \
+  "$APP_PATH/Contents/Frameworks/Python.framework" \
+  "$APP_PATH/Contents/Resources/Python.framework"
+do
+  if [[ -e "$framework_path" || -L "$framework_path" ]]; then
+    xattr -d com.apple.FinderInfo "$framework_path" 2>/dev/null || true
+    xattr -d 'com.apple.fileprovider.fpfs#P' "$framework_path" 2>/dev/null || true
+    xattr -d com.apple.provenance "$framework_path" 2>/dev/null || true
+    xattr -d -s com.apple.FinderInfo "$framework_path" 2>/dev/null || true
+    xattr -d -s 'com.apple.fileprovider.fpfs#P' "$framework_path" 2>/dev/null || true
+    xattr -d -s com.apple.provenance "$framework_path" 2>/dev/null || true
+  fi
+done
 codesign --force --deep --sign - "$APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 

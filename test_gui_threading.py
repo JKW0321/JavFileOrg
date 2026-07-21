@@ -175,9 +175,9 @@ def test_stop_processing_func_fast_cancels_network_when_no_file_transaction():
     assert obj.stop_processing is True
     assert obj.session.closed is True
     assert obj.stop_btn.state == jfo_mod.tk.DISABLED
-    assert obj.stop_btn.text == "⏳ 安全停止中..."
+    assert obj.stop_btn.text == "安全停止中..."
     assert "正在快速停止" in obj.status_var.value
-    assert obj.progress_var.value == "⏹️ 正在快速停止..."
+    assert obj.progress_var.value == "正在快速停止"
     assert "当前无落盘事务" in obj.speed_var.value
     assert any("快速取消" in message for _, message in logs)
 
@@ -192,9 +192,9 @@ def test_stop_processing_func_keeps_safe_stop_when_file_transaction_active():
     assert obj.stop_processing is True
     assert obj.session.closed is False
     assert obj.stop_btn.state == jfo_mod.tk.DISABLED
-    assert obj.stop_btn.text == "⏳ 安全停止中..."
+    assert obj.stop_btn.text == "安全停止中..."
     assert "正在安全停止" in obj.status_var.value
-    assert obj.progress_var.value == "⏳ 正在安全停止..."
+    assert obj.progress_var.value == "正在安全停止"
     assert "停止请求已提交" in obj.speed_var.value
 
 
@@ -468,7 +468,7 @@ def test_update_processing_progress_shows_timing_estimates(monkeypatch):
 
     obj._update_processing_progress(0, 4, '准备处理')
     assert obj.progress_bar['value'] == 0
-    assert obj.progress_var.value == '🔄 处理中: 0/4'
+    assert obj.progress_var.value == '处理中: 0/4 | 准备处理'
     assert obj.progress_percent_var.value == '0%'
     assert obj.speed_var.value == '平均: 计算中 | 已用时间: 0.0秒 | 剩余时间: 计算中'
 

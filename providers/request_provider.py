@@ -15,6 +15,11 @@ class RequestHtmlProvider(BaseProvider):
     search_page_is_detail = False
     use_anti_crawl_session = False
     site_suffixes = ()
+    connect_timeout = 5
+    read_timeout = 10
+    retry_network_errors = 1
+    retry_backoff = 0.5
+    fallback_to_detail_on_search_error = False
 
     def _get_session(self):
         if self.use_anti_crawl_session and self.anti_crawl:
@@ -33,16 +38,71 @@ class RequestHtmlProvider(BaseProvider):
             })
         return self.session
 
+    def _prepare_session_for_request(self, session, url: str):
+        return None
+
+    def _request_timeout(self):
+        return (self.connect_timeout, self.read_timeout)
+
+    def _is_retryable_exception(self, exc):
+        return isinstance(exc, (
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+        ))
+
+    def _error_type_from_exception(self, exc):
+        message = str(exc or '').lower()
+        if any(marker in message for marker in (
+            '500',
+            '502',
+            '503',
+            '504',
+            'server error',
+            'too many 500',
+            'too many 502',
+            'too many 503',
+            'too many 504',
+        )):
+            return 'server-error'
+        return 'network-error'
+
+    def _stop_aware_sleep(self, seconds):
+        deadline = time.monotonic() + max(float(seconds or 0), 0)
+        while time.monotonic() < deadline:
+            if self.should_stop():
+                return
+            time.sleep(min(0.1, deadline - time.monotonic()))
+
     def _request(self, url: str):
         session = self._get_session()
-        started = time.monotonic()
-        try:
-            response = session.get(url, timeout=(5, 10))
-            response.raise_for_status()
-            return response
-        finally:
-            elapsed = time.monotonic() - started
-            self.log(f'⏱️ {self.name} HTTP耗时 {elapsed:.1f}秒: {url}', 'INFO')
+        self._prepare_session_for_request(session, url)
+        attempts = max(int(self.retry_network_errors or 0), 0) + 1
+        last_exc = None
+        for attempt in range(1, attempts + 1):
+            started = time.monotonic()
+            try:
+                response = session.get(url, timeout=self._request_timeout())
+                response.raise_for_status()
+                return response
+            except requests.exceptions.HTTPError:
+                raise
+            except requests.exceptions.RequestException as exc:
+                last_exc = exc
+                if (
+                    attempt >= attempts
+                    or self.should_stop()
+                    or not self._is_retryable_exception(exc)
+                ):
+                    raise
+                self.log(
+                    f'⚠️ {self.name} 网络短重试 {attempt}/{attempts - 1}: {exc}',
+                    'WARNING',
+                )
+                self._stop_aware_sleep(self.retry_backoff * attempt)
+            finally:
+                elapsed = time.monotonic() - started
+                self.log(f'⏱️ {self.name} HTTP耗时 {elapsed:.1f}秒: {url}', 'INFO')
+        raise last_exc
 
     def _clean_title(self, title: str) -> str:
         title = (title or '').strip()
@@ -109,6 +169,74 @@ class RequestHtmlProvider(BaseProvider):
 
     def _should_use_detail_title(self, current_title, detail_title):
         return bool(detail_title and len(detail_title) > len(current_title or ''))
+
+    def _direct_detail_url(self, query: str):
+        if not self.detail_url_pattern:
+            return None
+        return self.detail_url_pattern.format(code_lower=str(query or '').lower())
+
+    def _result_from_detail_fallback(self, query, search_url, original_error):
+        detail_url = self._direct_detail_url(query)
+        if not detail_url:
+            return None
+        if self.should_stop():
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                referer=search_url,
+                detail_url=detail_url,
+                error_type='cancelled',
+                message='user stopped before detail fallback',
+            )
+        self.log(f'⚠️ 搜索页失败，尝试直连详情页: {detail_url}', 'WARNING')
+        try:
+            title, image_url = self._fetch_detail_page(detail_url)
+        except requests.exceptions.RequestException as detail_error:
+            error_type = self._error_type_from_exception(detail_error)
+            if self._error_type_from_exception(original_error) == 'server-error':
+                error_type = 'server-error'
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                referer=search_url,
+                detail_url=detail_url,
+                error_type=error_type,
+                message=f'{original_error}; detail fallback also failed: {detail_error}',
+            )
+        if not title:
+            return ProviderResult(
+                ok=False,
+                provider=self.name,
+                query=query,
+                referer=search_url,
+                detail_url=detail_url,
+                error_type='not-found',
+                message=f'{original_error}; detail fallback title not found',
+            )
+        invalid_reason = self._invalid_result_reason(title, image_url, detail_url, search_url)
+        if invalid_reason:
+            return ProviderResult(
+                ok=False,
+                title=title,
+                image_url=image_url,
+                provider=self.name,
+                query=query,
+                detail_url=detail_url,
+                referer=search_url,
+                error_type='invalid-result',
+                message=invalid_reason,
+            )
+        return ProviderResult(
+            ok=True,
+            title=title,
+            image_url=image_url,
+            provider=self.name,
+            query=query,
+            detail_url=detail_url,
+            referer=search_url,
+        )
 
     def search(self, query: str) -> ProviderResult:
         if self.should_stop():
@@ -253,12 +381,16 @@ class RequestHtmlProvider(BaseProvider):
                     error_type='cancelled',
                     message='user stopped during network request',
                 )
+            if self.fallback_to_detail_on_search_error:
+                fallback = self._result_from_detail_fallback(query, search_url, str(e))
+                if fallback is not None:
+                    return fallback
             return ProviderResult(
                 ok=False,
                 provider=self.name,
                 query=query,
                 referer=search_url,
-                error_type='network-error',
+                error_type=self._error_type_from_exception(e),
                 message=str(e),
             )
         except Exception as e:

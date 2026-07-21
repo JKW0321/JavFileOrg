@@ -18,6 +18,11 @@ class JavHooProvider(RequestHtmlProvider):
         '.movie-poster img',
     )
     site_suffixes = ('-JAVHOO', '-JavHoo', ' - JAVHOO', ' - JavHoo', '-javhoo')
+    connect_timeout = 8
+    read_timeout = 25
+    retry_network_errors = 2
+    retry_backoff = 0.75
+    fallback_to_detail_on_search_error = True
 
     def _invalid_result_reason(self, title, image_url, detail_url, referer):
         reasons = []

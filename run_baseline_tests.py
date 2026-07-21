@@ -9,6 +9,7 @@ run_baseline_tests.py
 
 - 纯函数/文件名规则（pytest）
 - Provider 解析层（pytest）
+- WebView bridge / OpenDesign 页面接线（pytest）
 - 序列文件端到端（本地、无网络）
 - 修复前 vs 修复后 对比
 - 可选：JavHoo 真实网络测试
@@ -58,7 +59,7 @@ def main() -> int:
     steps: list[tuple[str, list[str], bool]] = [
         (
             'Pure utility regression (pytest)',
-            [PY, '-m', 'pytest', 'test_filename_utils.py', 'test_javlibrary_parser.py', 'test_batch_filters.py', 'test_manifest_utils.py', 'test_provider_result.py', 'test_provider_router.py', 'test_javhoo_provider.py', 'test_javbus_provider.py', 'test_javlibrary_provider.py', 'test_bestjavporn_provider.py', 'test_uncensored_provider.py', 'test_gui_threading.py', 'test_gui_download.py', 'test_dry_run.py', 'test_series_atomic.py', 'test_workflow_service.py', '-q'],
+            [PY, '-m', 'pytest', 'test_filename_utils.py', 'test_javlibrary_parser.py', 'test_batch_filters.py', 'test_manifest_utils.py', 'test_provider_result.py', 'test_provider_router.py', 'test_javhoo_provider.py', 'test_javbus_provider.py', 'test_javlibrary_provider.py', 'test_bestjavporn_provider.py', 'test_uncensored_provider.py', 'test_gui_threading.py', 'test_gui_download.py', 'test_dry_run.py', 'test_series_atomic.py', 'test_workflow_service.py', 'test_webview_bridge.py', '-q'],
             False,
         ),
         (

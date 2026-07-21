@@ -16,6 +16,9 @@ class RecordingSession:
     def __init__(self, html: str):
         self.html = html
         self.calls = []
+        self.headers = {}
+        from requests.cookies import RequestsCookieJar
+        self.cookies = RequestsCookieJar()
 
     def get(self, url, timeout=None):
         self.calls.append((url, timeout))
@@ -55,7 +58,9 @@ def test_javbus_uses_anti_crawl_session_and_returns_audit_fields():
     assert result.detail_url == 'https://www.javbus.com/SONE-753'
     assert result.referer == 'https://www.javbus.com/SONE-753'
     assert direct_session.calls == []
-    assert anti_session.calls == [('https://www.javbus.com/SONE-753', (5, 10))]
+    assert anti_session.calls == [('https://www.javbus.com/SONE-753', (8, 15))]
+    assert anti_session.cookies.get('existmag', domain='www.javbus.com', path='/') == 'mag'
+    assert anti_session.cookies.get('existmag', domain='.javbus.com', path='/') == 'mag'
 
 
 def test_javbus_rejects_age_verification_page():

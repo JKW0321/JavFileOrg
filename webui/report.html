@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运行报告 · JAV File Organizer</title>
+<style>
+  /* ─── tokens · 科技/工具型 · 浅色（与 index / workspace 一致）─────── */
+  :root {
+    --bg:      oklch(98% 0.005 250);
+    --surface: oklch(100% 0 0);
+    --fg:      oklch(22% 0.02 240);
+    --muted:   oklch(50% 0.018 240);
+    --border:  oklch(90% 0.008 240);
+    --accent:  oklch(56% 0.17 255);
+
+    --ok:      oklch(58% 0.16 145);
+    --warn:    oklch(64% 0.14 70);
+    --err:     oklch(56% 0.19 27);
+    --info:    oklch(54% 0.15 255);
+
+    --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+    --ok-soft:     color-mix(in oklch, var(--ok) 12%, transparent);
+    --warn-soft:   color-mix(in oklch, var(--warn) 16%, transparent);
+    --err-soft:    color-mix(in oklch, var(--err) 10%, transparent);
+    --info-soft:   color-mix(in oklch, var(--info) 10%, transparent);
+    --fg-soft:     color-mix(in oklch, var(--fg) 5%, transparent);
+    --fg-softer:   color-mix(in oklch, var(--fg) 2.5%, transparent);
+
+    --font-display: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+    --font-body:    -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+    --font-mono:    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+
+    --radius: 8px;
+    --radius-sm: 6px;
+    --fs-meta: 12px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  button { font: inherit; cursor: pointer; }
+  a { color: inherit; text-decoration: none; }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .hidden { display: none !important; }
+
+  /* ─── app shell ───────────────────────────────────────────────── */
+  .app { height: 100vh; display: grid; grid-template-rows: auto auto 1fr auto; }
+
+  /* appbar */
+  .appbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .appbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .appmark { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); flex: none; overflow: hidden; }
+  .appmark img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .appname { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; white-space: nowrap; }
+  .ver {
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+    color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; white-space: nowrap;
+  }
+  .appbar-actions { display: flex; align-items: center; gap: 8px; }
+
+  /* buttons */
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 8px 14px; border-radius: var(--radius);
+    border: 1px solid transparent;
+    font-size: 13px; font-weight: 500; letter-spacing: -0.005em;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease, color 0.15s ease;
+    white-space: nowrap;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+  .btn-primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+  .btn-primary:hover:not(:disabled) { background: color-mix(in oklch, var(--accent) 88%, black); }
+  .btn-secondary { background: var(--surface); color: var(--fg); border-color: var(--border); }
+  .btn-secondary:hover:not(:disabled) { border-color: var(--muted); }
+  .btn-ghost { background: transparent; color: var(--muted); }
+  .btn-ghost:hover { color: var(--fg); }
+  .btn-ghost[aria-current="page"] { color: var(--fg); background: var(--fg-soft); }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+  /* run selector bar */
+  .runbar {
+    display: flex; align-items: stretch; gap: 0;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .run {
+    display: flex; flex-direction: column; gap: 3px;
+    padding: 10px 18px; min-width: 230px;
+    border: 0; border-right: 1px solid var(--border);
+    background: transparent; text-align: left; cursor: pointer;
+    position: relative;
+  }
+  .run:hover { background: var(--fg-softer); }
+  .run[aria-pressed="true"] { background: var(--accent-soft); box-shadow: inset 0 -2px 0 var(--accent); }
+  .run .r-top { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .run .r-sum { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  .mode-tag {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.03em;
+    padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted);
+  }
+  .mode-tag.audit { color: var(--info); border-color: color-mix(in oklch, var(--info) 35%, transparent); background: var(--info-soft); }
+
+  /* status pills */
+  .st {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em;
+    padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+    border: 1px solid var(--border); color: var(--muted); background: var(--surface);
+  }
+  .st-ok   { color: var(--ok);   background: var(--ok-soft);   border-color: color-mix(in oklch, var(--ok) 35%, transparent); }
+  .st-err  { color: var(--err);  background: var(--err-soft);  border-color: color-mix(in oklch, var(--err) 35%, transparent); }
+  .st-warn { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in oklch, var(--warn) 40%, transparent); }
+  .st-info { color: var(--info); background: var(--info-soft); border-color: color-mix(in oklch, var(--info) 35%, transparent); }
+
+  /* ─── page ────────────────────────────────────────────────────── */
+  .page { overflow-y: auto; min-height: 0; }
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px 64px; }
+  .sec { padding: 26px 0 34px; border-top: 1px solid var(--border); }
+  .sec:first-child { border-top: 0; }
+  .side-title {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); margin: 0;
+  }
+  .sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  .sec-hint { font-family: var(--font-mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+  /* summary stats */
+  .stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+  .statcell { padding: 14px 16px 12px; border-right: 1px solid var(--border); }
+  .statcell:last-child { border-right: 0; }
+  .statcell .s-num { font-family: var(--font-mono); font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; letter-spacing: -0.02em; }
+  .statcell .s-label { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+  .statcell .s-num.ok { color: var(--ok); }
+  .statcell .s-num.err { color: var(--err); }
+  .statcell .s-num.warn { color: var(--warn); }
+
+  /* filter chips */
+  .fchips { display: flex; gap: 6px; }
+  .fchip {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 4px 11px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--surface);
+    font-size: 12px; color: var(--muted);
+  }
+  .fchip:hover { border-color: var(--muted); color: var(--fg); }
+  .fchip[aria-pressed="true"] { color: var(--fg); background: var(--fg-soft); border-color: var(--muted); }
+  .fchip .count { font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+  /* results table */
+  .tablewrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+  .ds-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ds-table th, .ds-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .ds-table th {
+    background: var(--bg);
+    color: var(--muted); font-weight: 500; font-family: var(--font-mono);
+    font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
+  }
+  .ds-table tbody tr:last-child td { border-bottom: 0; }
+  .ds-table tbody tr:hover { background: var(--fg-softer); }
+  .ds-table .num-col { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .ds-table .fname { font-family: var(--font-mono); font-size: 12.5px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ds-table .fnew { font-family: var(--font-mono); font-size: 12px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ds-table .fcode { font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; }
+  .ds-table .fnote { font-size: 12px; color: var(--muted); max-width: 220px; }
+  .ds-table tr.skipped { opacity: 0.55; }
+
+  /* review cards（待确认命名规则） */
+  .review-card {
+    display: grid; grid-template-columns: 1fr auto; gap: 6px 16px; align-items: center;
+    border: 1px solid color-mix(in oklch, var(--warn) 40%, transparent);
+    background: var(--warn-soft);
+    border-radius: var(--radius); padding: 12px 14px; margin-bottom: 10px;
+  }
+  .review-card .rv-name { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; word-break: break-all; }
+  .review-card .rv-sug { font-size: 12.5px; color: var(--fg); }
+  .review-card .rv-sug code { font-family: var(--font-mono); font-size: 11.5px; background: var(--surface); border: 1px solid var(--border); padding: 1px 6px; border-radius: 4px; }
+  .review-card .rv-actions { grid-row: span 2; display: flex; gap: 8px; }
+  .empty-note { font-size: 13px; color: var(--muted); padding: 6px 0; }
+
+  /* artifact list */
+  .art-row {
+    display: grid; grid-template-columns: 150px 1fr 74px auto; gap: 12px; align-items: center;
+    padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 12.5px;
+  }
+  .art-row:last-child { border-bottom: 0; }
+  .art-row .ak { color: var(--muted); }
+  .art-row .av { font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
+  .art-row .asize { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+  .copybtn {
+    border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+    font-family: var(--font-mono); font-size: 11px; border-radius: var(--radius-sm); padding: 3px 9px;
+  }
+  .copybtn:hover { color: var(--fg); border-color: var(--muted); }
+
+  /* status bar */
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 5px 16px; border-top: 1px solid var(--border); background: var(--surface);
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  }
+  .statusbar .s-left { display: inline-flex; align-items: center; gap: 8px; }
+  .statusbar .s-right { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* toast */
+  .toast {
+    position: fixed; right: 20px; bottom: 44px; z-index: 80;
+    background: var(--fg); color: var(--bg);
+    font-family: var(--font-mono); font-size: 12px;
+    padding: 9px 14px; border-radius: var(--radius);
+    opacity: 0; transform: translateY(6px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+
+  @media (max-width: 960px) {
+    .stats { grid-template-columns: repeat(3, 1fr); }
+    .statcell:nth-child(3n) { border-right: 0; }
+    .statcell:nth-child(-n+3) { border-bottom: 1px solid var(--border); }
+    .art-row { grid-template-columns: 1fr auto; }
+    .art-row .ak, .art-row .asize { display: none; }
+    .review-card { grid-template-columns: 1fr; }
+    .review-card .rv-actions { grid-row: auto; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ─── app bar ─────────────────────────────────────────────── -->
+  <header class="appbar" data-od-id="appbar">
+    <a class="appbar-left" href="index.html" aria-label="返回工作区">
+      <span class="appmark" aria-hidden="true"><img src="app-icon.png" alt=""></span>
+      <span class="appname">JAV File Organizer</span>
+      <span class="ver">v--</span>
+    </a>
+    <nav class="appbar-actions" aria-label="主导航">
+      <a class="btn btn-ghost" href="index.html">工作区</a>
+      <a class="btn btn-ghost" href="report.html" aria-current="page">运行报告</a>
+      <a class="btn btn-ghost" href="settings.html">设置</a>
+    </nav>
+  </header>
+
+  <!-- ─── run selector ──────────────────────────────────────────── -->
+  <div class="runbar" id="runbar" data-od-id="runbar" role="group" aria-label="选择运行记录"></div>
+
+  <!-- ─── page ────────────────────────────────────────────────── -->
+  <main class="page" data-od-id="page">
+    <div class="wrap">
+
+      <!-- summary -->
+      <section class="sec" data-od-id="summary">
+        <div class="sec-head">
+          <h2 class="side-title">运行摘要</h2>
+          <span class="sec-hint" id="sumHint"></span>
+        </div>
+        <div class="stats" id="statsRow"></div>
+      </section>
+
+      <!-- per-file results -->
+      <section class="sec" data-od-id="results">
+        <div class="sec-head">
+          <h2 class="side-title">逐文件结果</h2>
+          <div class="fchips" id="fchips" role="group" aria-label="按状态筛选"></div>
+        </div>
+        <div class="tablewrap">
+          <table class="ds-table">
+            <thead>
+              <tr>
+                <th>状态</th><th>原文件名</th><th>番号</th><th>新文件名</th>
+                <th class="num-col">大小</th><th class="num-col">耗时</th><th>备注</th>
+              </tr>
+            </thead>
+            <tbody id="resultTbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- naming rule candidates -->
+      <section class="sec" data-od-id="review" id="reviewSec">
+        <div class="sec-head">
+          <h2 class="side-title">待确认命名规则</h2>
+          <span class="sec-hint">filename_rule_candidates</span>
+        </div>
+        <div id="reviewList"></div>
+      </section>
+
+      <!-- audit artifacts -->
+      <section class="sec" data-od-id="artifacts">
+        <div class="sec-head">
+          <h2 class="side-title">审计产物</h2>
+          <span class="sec-hint" id="artHint"></span>
+        </div>
+        <div id="artList"></div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- ─── status bar ──────────────────────────────────────────── -->
+  <footer class="statusbar" data-od-id="statusbar">
+    <span class="s-left"><span class="sdot" style="background: var(--ok)"></span><span>正在连接应用后端…</span></span>
+    <span class="s-right">审计目录 JFO_Logs/ · 运行摘要 · 逐文件结果 · 命名规则候选</span>
+  </footer>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function bridgeReady(){
+  if(window.pywebview && window.pywebview.api) return Promise.resolve(true);
+  return new Promise(resolve=>{
+    let done=false;
+    const finish=()=>{ if(done)return; done=true; resolve(!!(window.pywebview&&window.pywebview.api)); };
+    window.addEventListener('pywebviewready', finish, {once:true});
+    setTimeout(finish, 3000);
+  });
+}
+async function api(name,...args){ const ready=await bridgeReady(); if(!ready) return {ok:false,message:'pywebview not ready'}; return window.pywebview.api[name](...args); }
+function fmtDur(sec){ sec=Number(sec||0); const s=Math.max(0,Math.round(sec)); return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); }
+function fmtSize(n){ n=Number(n||0); if(!n)return '—'; const u=['B','KB','MB','GB','TB']; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++} return `${n.toFixed(i?1:0)} ${u[i]}`; }
+function statusOf(item,dry){ const st=item.status||''; if(dry&&st==='planned') return ['已计划','st st-info']; if(st==='success') return ['成功','st st-ok']; if(st==='failed'||st==='error') return ['失败','st st-err']; if(st==='needs_review') return ['待确认','st st-warn']; if(st==='skipped') return ['已跳过','st']; if(st==='cancelled') return ['已取消','st']; if(st==='planned') return ['已计划','st st-info']; return [st||'—','st']; }
+let state={version:'',build_id:'',build_date:'',result:null,file_results:[],artifacts:[],activeFilter:'all'};
+function fileName(path){ return String(path||'').split('/').pop() || '—'; }
+function afterName(item){ return fileName(item.target_video_path || item.target_image_path || item.planned_video_path || item.planned_image_path || ''); }
+function codeOf(item){ return item.group || item.query || item.code || '—'; }
+function setVersion(){ document.querySelectorAll('.ver').forEach(el=>el.textContent=state.version||'v--'); const s=document.querySelector('.statusbar .s-left span:last-child'); if(s) s.textContent='就绪 - '+(state.version||'v--'); }
+function renderRunbar(){ const r=state.result; if(!r){ $('runbar').innerHTML='<button class="run" aria-pressed="true"><span class="r-top">暂无运行记录</span><span class="r-sum">完成一次处理后会显示真实报告</span></button>'; return; } const total=r.total_files||state.file_results.length||0; $('runbar').innerHTML=`<button class="run" aria-pressed="true"><span class="r-top">${esc((r.generated_at||'').replace('T',' ').slice(0,16)||'最近运行')} · ${esc(r.website||'—')}<span class="mode-tag ${r.dry_run?'audit':''}">${r.dry_run?'仅审计':'处理'}</span></span><span class="r-sum">成功 ${r.success_count||0} · 失败 ${r.failed_count||0} · 待确认 ${r.needs_review_count||0} · 总数 ${total}</span></button>`; }
+function renderSummary(){ const r=state.result; if(!r){ $('sumHint').textContent='尚未找到运行摘要'; $('statsRow').innerHTML=[['—','成功',''],['—','失败',''],['—','待确认',''],['—','已跳过',''],['—','总耗时',''],['—','成功率','']].map(([n,l,c])=>`<div class="statcell"><div class="s-num ${c}">${n}</div><div class="s-label">${l}</div></div>`).join(''); return; } const total=r.total_files||state.file_results.length||0; const skipped=(r.skipped_hidden||0)+(r.skipped_small||0)+(r.cancelled_count||0); const ok=r.success_count||0; const err=r.failed_count||0; const review=r.needs_review_count||0; const rate=total?Math.round(ok/total*100)+'%':'—'; $('sumHint').textContent=`${r.generated_at||''} · ${r.website||''} · ${r.folder||state.selected_folder||''}`; $('statsRow').innerHTML=[[ok,r.dry_run?'已计划':'成功','ok'],[err,'失败',err?'err':''],[review,'待确认',review?'warn':''],[skipped,'已跳过',''],[fmtDur(r.total_time),'总耗时',''],[rate,'成功率','']].map(([n,l,c])=>`<div class="statcell"><div class="s-num ${c}">${esc(n)}</div><div class="s-label">${esc(l)}</div></div>`).join(''); }
+function renderFilters(){ const defs=[['all','全部','var(--muted)'],['success','成功','var(--ok)'],['failed','失败','var(--err)'],['needs_review','待确认','var(--warn)'],['skipped','已跳过','var(--muted)']]; const count=id=>id==='all'?state.file_results.length:state.file_results.filter(x=>id==='skipped'?['skipped','cancelled'].includes(x.status):x.status===id).length; $('fchips').innerHTML=defs.map(([id,label,dot])=>`<button class="fchip" data-id="${id}" aria-pressed="${id===state.activeFilter}"><span class="sdot" style="background:${dot}"></span>${label}<span class="count">${count(id)}</span></button>`).join(''); document.querySelectorAll('.fchip').forEach(b=>b.onclick=()=>{state.activeFilter=b.dataset.id;renderFilters();renderTable();}); }
+function visible(item){ if(state.activeFilter==='all')return true; if(state.activeFilter==='skipped')return ['skipped','cancelled'].includes(item.status); return item.status===state.activeFilter; }
+function renderTable(){ const rows=state.file_results.filter(visible); if(!rows.length){ $('resultTbody').innerHTML='<tr><td colspan="7" class="empty-note">没有匹配的文件结果。</td></tr>'; return; } $('resultTbody').innerHTML=rows.map(item=>{ const [label,cls]=statusOf(item,!!(state.result&&state.result.dry_run)); return `<tr class="${['skipped','cancelled'].includes(item.status)?'skipped':''}"><td><span class="${cls}">${esc(label)}</span></td><td><div class="fname" title="${esc(fileName(item.source_path||item.source_name))}">${esc(fileName(item.source_path||item.source_name))}</div></td><td class="fcode">${esc(codeOf(item))}</td><td><div class="fnew" title="${esc(afterName(item))}">${esc(afterName(item))}</div></td><td class="num-col">${esc(item.size_text||fmtSize(item.size))}</td><td class="num-col">${item.file_elapsed_seconds?Number(item.file_elapsed_seconds).toFixed(1)+'s':'—'}</td><td><div class="fnote">${esc(item.reason||item.note||item.title||'—')}</div></td></tr>`; }).join(''); }
+function renderReview(){ const items=state.file_results.filter(x=>x.status==='needs_review'); if(!items.length){ $('reviewList').innerHTML='<p class="empty-note">本次运行没有待确认的命名规则，全部文件名均成功识别。</p>'; return; } $('reviewList').innerHTML=items.map(item=>`<div class="review-card"><div class="rv-name">${esc(fileName(item.source_path||item.source_name))}</div><div class="rv-actions"><button class="btn btn-secondary btn-sm" disabled>源文件保持原样</button></div><div class="rv-sug">${esc(item.reason||'需要人工确认命名规则或数据源')}</div></div>`).join(''); }
+function renderArtifacts(){ $('artHint').textContent=state.result&&state.result.folder?state.result.folder+'/JFO_Logs/':'JFO_Logs/'; if(!state.artifacts.length){ $('artList').innerHTML='<p class="empty-note">尚未找到审计产物。</p>'; return; } $('artList').innerHTML=state.artifacts.map(a=>`<div class="art-row"><span class="ak">${esc(a.kind)}</span><span class="av">${esc(a.path)}</span><span class="asize">${esc(a.size||'')}</span><button class="copybtn" data-copy="${esc(a.path)}">复制路径</button></div>`).join(''); document.querySelectorAll('.copybtn').forEach(btn=>btn.onclick=async()=>{try{await navigator.clipboard.writeText(btn.dataset.copy);}catch(e){} btn.textContent='已复制'; setTimeout(()=>btn.textContent='复制路径',1200);}); }
+function renderAll(){ setVersion(); renderRunbar(); renderSummary(); renderFilters(); renderTable(); renderReview(); renderArtifacts(); }
+const GO={'1':'index.html','2':'report.html','3':'settings.html'}; document.addEventListener('keydown',e=>{ if(e.metaKey||e.ctrlKey||e.altKey)return; const t=e.target; if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable))return; const href=GO[e.key]; if(href&&!href.endsWith('report.html')) window.location.href=href; });
+async function load(){ const s=await api('report_state'); if(!s.version){ state.result=null; renderAll(); return; } state={...state,...s}; renderAll(); }
+load();
+</script>
+</body>
+</html>

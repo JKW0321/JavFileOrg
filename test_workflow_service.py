@@ -154,6 +154,94 @@ def test_workflow_dry_run_keeps_source_files():
         assert summary['counts']['file_result_counts'] == {'planned': 2}
 
 
+def test_workflow_emits_file_result_callback_as_each_file_finishes():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs = root / 'JFO_Logs'
+        (root / 'ABF-139.mp4').write_bytes(b'a' * 32768)
+        (root / 'SONE-753.mp4').write_bytes(b'b' * 32768)
+        emitted = []
+        svc = WorkflowService(
+            log=lambda *a, **k: None,
+            provider_factory=lambda name: DummyProvider(),
+            atomic_processor=AtomicProcessor(_download, _sanitize),
+            clean_filename_for_search=lambda n: Path(n).stem.lower(),
+            sanitize_filename=_sanitize,
+            detect_series_files=lambda files: ({}, files),
+            smart_truncate_filename=lambda title, original, max_length: title,
+            stop_requested=lambda: False,
+            minimum_video_size_bytes=16384,
+            file_result_callback=lambda item: emitted.append(item),
+        )
+
+        result = svc.run(
+            folder_path=str(root),
+            finish_folder=str(root / 'Finish'),
+            website='javhoo',
+            dry_run=True,
+            logs_dir=str(logs),
+        )
+
+        assert result['planned_count'] == 2
+        assert [item['source_name'] for item in emitted] == ['ABF-139.mp4', 'SONE-753.mp4']
+        assert {item['status'] for item in emitted} == {'planned'}
+
+
+def test_workflow_processes_series_and_standalone_in_scan_order():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        logs = root / 'JFO_Logs'
+        for name in ('SONE-753.mp4', 'ABF-139-1.mp4', 'ABF-139-2.mp4', 'JBD-131.mp4'):
+            (root / name).write_bytes(b'a' * 32768)
+        emitted = []
+
+        def detect(files):
+            by_name = {Path(file_path).name: file_path for file_path in files}
+            return {
+                'ABF-139': [
+                    (by_name['ABF-139-1.mp4'], '1'),
+                    (by_name['ABF-139-2.mp4'], '2'),
+                ]
+            }, [by_name['SONE-753.mp4'], by_name['JBD-131.mp4']]
+
+        svc = WorkflowService(
+            log=lambda *a, **k: None,
+            provider_factory=lambda name: DummyProvider(),
+            atomic_processor=AtomicProcessor(_download, _sanitize),
+            clean_filename_for_search=lambda n: Path(n).stem.lower(),
+            sanitize_filename=_sanitize,
+            detect_series_files=detect,
+            smart_truncate_filename=lambda title, original, max_length: title,
+            stop_requested=lambda: False,
+            minimum_video_size_bytes=16384,
+            file_result_callback=lambda item: emitted.append(item),
+        )
+
+        result = svc.run(
+            folder_path=str(root),
+            finish_folder=str(root / 'Finish'),
+            website='javhoo',
+            dry_run=True,
+            logs_dir=str(logs),
+            initial_scan={
+                'accepted': ['SONE-753.mp4', 'ABF-139-1.mp4', 'ABF-139-2.mp4', 'JBD-131.mp4'],
+                'skipped_hidden': [],
+                'skipped_small': [],
+                'manifest_entries': [],
+                'file_sizes': {},
+                'total_files': 4,
+            },
+        )
+
+        assert result['planned_count'] == 4
+        assert [item['source_name'] for item in emitted] == [
+            'SONE-753.mp4',
+            'ABF-139-1.mp4',
+            'ABF-139-2.mp4',
+            'JBD-131.mp4',
+        ]
+
+
 def test_uncensored_workflow_uses_parent_path_for_dms_night24_query():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

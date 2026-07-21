@@ -8,6 +8,20 @@ class JavBusProvider(RequestHtmlProvider):
     image_selectors = ('.bigImage img', 'img[title]', '.movie-poster img')
     search_page_is_detail = True
     use_anti_crawl_session = True
+    connect_timeout = 8
+    read_timeout = 15
+    retry_network_errors = 1
+
+    def _prepare_session_for_request(self, session, url: str):
+        headers = getattr(session, 'headers', None)
+        if headers is not None:
+            headers.setdefault('Accept-Language', 'ja,en-US;q=0.9,en;q=0.8')
+            headers.setdefault('Referer', 'https://www.javbus.com/')
+        cookies = getattr(session, 'cookies', None)
+        if cookies is not None:
+            for domain in ('.javbus.com', 'www.javbus.com'):
+                cookies.set('existmag', 'mag', domain=domain, path='/')
+            cookies.set('existmag', 'mag', path='/')
 
     def _invalid_result_reason(self, title, image_url, detail_url, referer):
         title_lower = (title or '').strip().lower()

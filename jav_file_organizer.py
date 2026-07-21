@@ -35,6 +35,36 @@ from app_metadata import (
     STATUS_READY,
 )
 
+DESIGN_TOKENS = {
+    'bg': '#F6F9FC',
+    'surface': '#FFFFFF',
+    'fg': '#121C23',
+    'muted': '#5A656D',
+    'border': '#D9DFE3',
+    'accent': '#1A73D5',
+    'ok': '#299236',
+    'warn': '#C17A00',
+    'err': '#CC3430',
+    'info': '#266EC3',
+    'accent_soft': '#E4EEFA',
+    'ok_soft': '#E5F2E7',
+    'warn_soft': '#F5EAD6',
+    'err_soft': '#FAEBEA',
+    'info_soft': '#E9F0F9',
+    'fg_soft': '#F3F4F4',
+    'fg_softer': '#F9F9FA',
+    'ring': '#A8CAEF',
+}
+
+STATUS_COLORS = {
+    'planned': ('计划', DESIGN_TOKENS['info']),
+    'running': ('处理中', DESIGN_TOKENS['accent']),
+    'ok': ('成功', DESIGN_TOKENS['ok']),
+    'err': ('失败', DESIGN_TOKENS['err']),
+    'review': ('待确认', DESIGN_TOKENS['warn']),
+    'skip': ('跳过', DESIGN_TOKENS['muted']),
+}
+
 # 立即导入所有必需模块，避免v1.8的导入问题
 try:
     import requests
@@ -56,6 +86,7 @@ class ProcessingRequest:
     max_length_text: str
     max_filename_bytes_text: str
     include_subdirectories: bool
+    selected_files: list[str] | None = None
 
 
 class OptimizedAntiCrawlHandler:
@@ -311,266 +342,532 @@ class JavFileOrganizer:
         """初始化 GUI 界面。"""
         self.window = tk.Tk()
         self.window.title(APP_TITLE)
-        self.window.geometry("1000x700")
+        self.window.geometry("1180x760")
+        self.window.minsize(980, 640)
         self.window.resizable(True, True)
-        
-        # 创建主框架 - 双列布局
-        main_frame = ttk.Frame(self.window)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # 左列：配置和设置
-        left_frame = ttk.Frame(main_frame)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
-        
-        # 右列：控制和日志
-        right_frame = ttk.Frame(main_frame)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
-        
-        # === 左列内容 ===
-        
-        # 文件夹选择
-        folder_frame = ttk.LabelFrame(left_frame, text="📁 文件夹选择", padding=10)
-        folder_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        folder_input_frame = ttk.Frame(folder_frame)
-        folder_input_frame.pack(fill=tk.X)
-        
+
+        self._init_design_styles()
+
         self.folder_var = tk.StringVar()
-        folder_entry = ttk.Entry(folder_input_frame, textvariable=self.folder_var, font=("Arial", 10))
-        folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        
-        folder_btn = ttk.Button(folder_input_frame, text="选择文件夹", command=self.select_folder)
-        folder_btn.pack(side=tk.RIGHT)
-        
-        # 网站选择
-        website_frame = ttk.LabelFrame(left_frame, text="🌐 网站选择", padding=10)
-        website_frame.pack(fill=tk.X, pady=(0, 10))
-        
         self.website_var = tk.StringVar(value='javbus')
-        
-        # 加载网站 logo
-        try:
-            import base64
-            from PIL import Image, ImageTk
-            from io import BytesIO
-            
-            # JavBus logo
-            javbus_data = base64.b64decode(JAVBUS_ICON)
-            javbus_img = Image.open(BytesIO(javbus_data))
-            self.javbus_photo = ImageTk.PhotoImage(javbus_img)
-            
-            # JavHoo logo
-            javhoo_data = base64.b64decode(JAVHOO_ICON)
-            javhoo_img = Image.open(BytesIO(javhoo_data))
-            self.javhoo_photo = ImageTk.PhotoImage(javhoo_img)
-            
-            # 创建单选按钮 - 使用 Grid 布局对齐 logo
-            row = 0
-            for key, config in self.website_configs.items():
-                # 单选按钮
-                rb = ttk.Radiobutton(website_frame, text=config['name'], 
-                                   variable=self.website_var, value=key)
-                rb.grid(row=row, column=0, sticky=tk.W, pady=2)
-                
-                # Logo 标签(固定在第 1 列)
-                if key == 'javhoo':
-                    logo_label = ttk.Label(website_frame, image=self.javhoo_photo)
-                    logo_label.grid(row=row, column=1, sticky=tk.W, padx=(10, 0))
-                elif key == 'javbus':
-                    logo_label = ttk.Label(website_frame, image=self.javbus_photo)
-                    logo_label.grid(row=row, column=1, sticky=tk.W, padx=(10, 0))
-                
-                row += 1
-        except Exception as e:
-            print(f"⚠️ 无法加载网站图标: {e}")
-            # 降级方案:只显示文字
-            for key, config in self.website_configs.items():
-                rb = ttk.Radiobutton(website_frame, text=config['name'], 
-                                   variable=self.website_var, value=key)
-                rb.pack(anchor=tk.W, pady=2)
-        
-        # 网站配置
-        config_frame = ttk.LabelFrame(left_frame, text="⚙️ 网站配置", padding=10)
-        config_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        # 搜索URL
-        ttk.Label(config_frame, text="搜索URL:").pack(anchor=tk.W)
-        self.search_url_var = tk.StringVar(value="https://www.javhoo.com/search/{query}")   # v1.4.4
-        search_url_entry = ttk.Entry(config_frame, textvariable=self.search_url_var, font=("Arial", 9))
-        search_url_entry.pack(fill=tk.X, pady=(2, 5))
-        
-        # 文字选择器
-        ttk.Label(config_frame, text="文字选择器:").pack(anchor=tk.W)
+        self.search_url_var = tk.StringVar(value="https://www.javhoo.com/search/{query}")
         self.text_selector_var = tk.StringVar(value="title")
-        text_selector_entry = ttk.Entry(config_frame, textvariable=self.text_selector_var, font=("Arial", 9))
-        text_selector_entry.pack(fill=tk.X, pady=(2, 5))
-        
-        # 图片选择器
-        ttk.Label(config_frame, text="图片选择器:").pack(anchor=tk.W)
         self.image_selector_var = tk.StringVar(value="a.dt-single-image img")
-        image_selector_entry = ttk.Entry(config_frame, textvariable=self.image_selector_var, font=("Arial", 9))
-        image_selector_entry.pack(fill=tk.X, pady=(2, 10))
-        
-        # 配置按钮
-        config_btn_frame = ttk.Frame(config_frame)
-        config_btn_frame.pack(anchor=tk.CENTER)
-        
-        save_config_btn = ttk.Button(config_btn_frame, text="💾 保存配置", command=self.save_config)
-        save_config_btn.pack(side=tk.LEFT, padx=5)
-        
-        reset_config_btn = ttk.Button(config_btn_frame, text="🔄 重置默认", command=self.reset_config)
-        reset_config_btn.pack(side=tk.LEFT, padx=5)
-        
-        process_frame = ttk.LabelFrame(left_frame, text="🔧 处理设置", padding=10)
-        process_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        # 文件名长度设置
-        length_frame = ttk.Frame(process_frame)
-        length_frame.pack(fill=tk.X, pady=(0, 5))
-        
-        ttk.Label(length_frame, text="最大文件名长度:").pack(side=tk.LEFT)
         self.max_filename_length_var = tk.StringVar(value="80")
-        length_entry = ttk.Entry(length_frame, textvariable=self.max_filename_length_var, width=10)
-        length_entry.pack(side=tk.LEFT, padx=(5, 5))
-        ttk.Label(length_frame, text="字符 (留空=不限制)").pack(side=tk.LEFT)
-
-        bytes_frame = ttk.Frame(process_frame)
-        bytes_frame.pack(fill=tk.X, pady=(0, 5))
-
-        ttk.Label(bytes_frame, text="文件系统字节上限:").pack(side=tk.LEFT)
         self.max_filename_bytes_var = tk.StringVar(value="240")
-        bytes_entry = ttk.Entry(bytes_frame, textvariable=self.max_filename_bytes_var, width=10)
-        bytes_entry.pack(side=tk.LEFT, padx=(5, 5))
-        ttk.Label(bytes_frame, text="bytes (留空=不限制)").pack(side=tk.LEFT)
-        
-        # 演员名保留选项
         self.preserve_actor_var = tk.BooleanVar(value=True)
-        preserve_cb = ttk.Checkbutton(process_frame, text="✅ 超出长度时优先保留演员名称", 
-                                    variable=self.preserve_actor_var)
-        preserve_cb.pack(anchor=tk.W, pady=(0, 5))
-
         self.include_subdirectories_var = tk.BooleanVar(value=False)
-        include_subdirs_cb = ttk.Checkbutton(
-            process_frame,
-            text="包括子目录（始终跳过 Finish / JFO_Logs）",
-            variable=self.include_subdirectories_var,
-            command=self._reanalyze_selected_folder,
-        )
-        include_subdirs_cb.pack(anchor=tk.W, pady=(0, 5))
-        
-        # v1.9 简化：只用输入框控制批量处理
-        batch_frame = ttk.Frame(process_frame)
-        batch_frame.pack(fill=tk.X, pady=(5, 0))
-        
-        ttk.Label(batch_frame, text="批量处理数量:").pack(side=tk.LEFT)
         self.batch_count_var = tk.StringVar()
-        batch_entry = ttk.Entry(batch_frame, textvariable=self.batch_count_var, width=10)
-        batch_entry.pack(side=tk.LEFT, padx=(5, 5))
-        ttk.Label(batch_frame, text="个文件 (留空=处理全部)").pack(side=tk.LEFT)
-
-        # 安全审计 / Dry Run
         self.dry_run_var = tk.BooleanVar(value=False)
-        dry_run_cb = ttk.Checkbutton(process_frame, text="🧪 仅审计（Dry Run，不移动文件不下载图片）",
-                                     variable=self.dry_run_var)
-        dry_run_cb.pack(anchor=tk.W, pady=(6, 0))
-        
-        # === 右列内容 ===
-        
-        # 操作控制
-        control_frame = ttk.LabelFrame(right_frame, text="🎮 操作控制", padding=10)
-        control_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        # 控制按钮 - 一行平均分布
-        btn_frame = ttk.Frame(control_frame)
-        btn_frame.pack(fill=tk.X)
-        
-        self.test_btn = ttk.Button(btn_frame, text="📡 测试连接", command=self.test_connection)
-        self.test_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
-        
-        self.start_btn = ttk.Button(btn_frame, text="🚀 开始处理", command=self.start_processing)
-        self.start_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
-        
-        self.stop_btn = ttk.Button(btn_frame, text="⏹️ 停止处理", command=self.stop_processing_func, state=tk.DISABLED)
-        self.stop_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
-        
-        clear_log_btn = ttk.Button(btn_frame, text="🗑️ 清空日志", command=self.clear_log)
-        clear_log_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
-        
-        # 进度显示
-        progress_frame = ttk.LabelFrame(right_frame, text="📊 处理进度", padding=10)
-        progress_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        # 进度信息区域
-        progress_info_frame = ttk.Frame(progress_frame)
-        progress_info_frame.pack(fill=tk.X, pady=(0, 8))
-        
-        # 左侧：状态文本
-        self.progress_var = tk.StringVar(value="🟢 就绪")
-        progress_label = ttk.Label(progress_info_frame, textvariable=self.progress_var, 
-                                   font=("Arial", 11, "bold"), foreground="#2E7D32")
-        progress_label.pack(side=tk.LEFT)
-        
-        # 右侧：百分比显示
-        self.progress_percent_var = tk.StringVar(value="0%")
-        percent_label = ttk.Label(progress_info_frame, textvariable=self.progress_percent_var,
-                                 font=("Arial", 11, "bold"), foreground="#1976D2")
-        percent_label.pack(side=tk.RIGHT)
-        
-        # 进度条容器（添加边框效果）
-        progress_container = ttk.Frame(progress_frame, relief=tk.SUNKEN, borderwidth=1)
-        progress_container.pack(fill=tk.X)
-        
-        # 自定义进度条样式
-        style = ttk.Style()
-        style.theme_use('clam')  # 使用 clam 主题以支持更多自定义
-        style.configure("Custom.Horizontal.TProgressbar",
-                       troughcolor='#E0E0E0',      # 背景色（浅灰）
-                       background='#4CAF50',        # 进度条颜色（绿色）
-                       bordercolor='#BDBDBD',       # 边框颜色
-                       lightcolor='#66BB6A',        # 高光色
-                       darkcolor='#388E3C',         # 阴影色
-                       thickness=25)                # 进度条高度
-        
-        self.progress_bar = ttk.Progressbar(progress_container, 
-                                           mode='determinate',
-                                           style="Custom.Horizontal.TProgressbar")
-        self.progress_bar.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-        
-        # 处理速度显示
-        self.speed_var = tk.StringVar(value="")
-        speed_label = ttk.Label(progress_frame, textvariable=self.speed_var,
-                               font=("Arial", 9), foreground="#757575")
-        speed_label.pack(anchor=tk.W, pady=(5, 0))
-        
-        # 处理日志
-        log_frame = ttk.LabelFrame(right_frame, text="📝 处理日志", padding=10)
-        log_frame.pack(fill=tk.BOTH, expand=True)
-        
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=20, font=("Consolas", 9))
-        self.log_text.pack(fill=tk.BOTH, expand=True)
-        
-        # 状态栏
+        self.file_search_var = tk.StringVar()
+        self.file_filter_var = tk.StringVar(value='all')
+        self._file_rows = []
+        self._last_result = None
+        self._active_page = 'workspace'
+
+        root = ttk.Frame(self.window, style='App.TFrame', padding=0)
+        root.pack(fill=tk.BOTH, expand=True)
+
+        self._build_appbar(root)
+        self._build_folderbar(root)
+
+        self.page_host = ttk.Frame(root, style='App.TFrame')
+        self.page_host.pack(fill=tk.BOTH, expand=True)
+        self.pages = {}
+        self._build_workspace_page(self.page_host)
+        self._build_report_page(self.page_host)
+        self._build_settings_page(self.page_host)
+        self._show_page('workspace')
+
         self.status_var = tk.StringVar(value=STATUS_READY)
-        status_bar = ttk.Label(self.window, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
-        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-        
-        # 绑定网站选择变化事件
-        # v1.4.5: Tk 9 / Python 3.12+ 下旧式 trace('w', ...) 可能报错：
-        #   bad option "variable": must be add, info, or remove
-        # 优先用 trace_add，旧版 Tk 再降级到 trace。
+        self.status_bar = ttk.Label(
+            root,
+            textvariable=self.status_var,
+            style='Status.TLabel',
+            anchor=tk.W,
+            padding=(12, 5),
+        )
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
         try:
             self.website_var.trace_add('write', lambda *args: self.on_website_change())
         except AttributeError:
             self.website_var.trace('w', self.on_website_change)
+        try:
+            self.dry_run_var.trace_add('write', lambda *args: self._refresh_setting_badges())
+            self.include_subdirectories_var.trace_add('write', lambda *args: self._refresh_setting_badges())
+            self.file_search_var.trace_add('write', lambda *args: self._refresh_file_table())
+        except AttributeError:
+            pass
+
         self._saved_config = self._load_saved_config()
-        self.on_website_change()  # 初始化 provider 默认配置
+        self.on_website_change()
         self._apply_saved_config(self._saved_config)
-        
-        # v1.4.3: 初始化反爬虫处理器（GUI 创建后）
+        self._refresh_setting_badges()
+
         self.anti_crawl = OptimizedAntiCrawlHandler(log_callback=self.log)
-        
-        # 启动日志
         self.log(f"✅ {APP_TITLE} 启动完成 | {self.build_id} | {self.build_date}", "SUCCESS")
+
+    def _init_design_styles(self):
+        tokens = DESIGN_TOKENS
+        self.window.configure(bg=tokens['bg'])
+        style = ttk.Style(self.window)
+        try:
+            style.theme_use('clam')
+        except tk.TclError:
+            pass
+
+        default_font = ("-apple-system", 12)
+        mono_font = ("Menlo", 11)
+
+        style.configure('App.TFrame', background=tokens['bg'])
+        style.configure('Surface.TFrame', background=tokens['surface'], relief='solid', borderwidth=1)
+        style.configure('Panel.TLabelframe', background=tokens['surface'], bordercolor=tokens['border'], relief='solid')
+        style.configure('Panel.TLabelframe.Label', background=tokens['surface'], foreground=tokens['fg'], font=("-apple-system", 12, "bold"))
+        style.configure('TLabel', background=tokens['bg'], foreground=tokens['fg'], font=default_font)
+        style.configure('Surface.TLabel', background=tokens['surface'], foreground=tokens['fg'], font=default_font)
+        style.configure('Muted.TLabel', background=tokens['surface'], foreground=tokens['muted'], font=("-apple-system", 11))
+        style.configure('Heading.TLabel', background=tokens['surface'], foreground=tokens['fg'], font=("-apple-system", 15, "bold"))
+        style.configure('Metric.TLabel', background=tokens['surface'], foreground=tokens['fg'], font=("Menlo", 13, "bold"))
+        style.configure('Status.TLabel', background=tokens['fg_softer'], foreground=tokens['muted'], font=("-apple-system", 11))
+        style.configure('Primary.TButton', background=tokens['accent'], foreground='white', bordercolor=tokens['accent'], focusthickness=2, focuscolor=tokens['ring'], padding=(12, 7))
+        style.map('Primary.TButton', background=[('active', '#155EAE'), ('disabled', tokens['border'])], foreground=[('disabled', tokens['muted'])])
+        style.configure('Danger.TButton', background=tokens['err'], foreground='white', bordercolor=tokens['err'], padding=(12, 7))
+        style.map('Danger.TButton', background=[('active', '#A82B28'), ('disabled', tokens['border'])], foreground=[('disabled', tokens['muted'])])
+        style.configure('Ghost.TButton', background=tokens['surface'], foreground=tokens['fg'], bordercolor=tokens['border'], padding=(10, 6))
+        style.map('Ghost.TButton', background=[('active', tokens['fg_softer'])])
+        style.configure('Nav.TButton', background=tokens['surface'], foreground=tokens['muted'], bordercolor=tokens['surface'], padding=(10, 6))
+        style.map('Nav.TButton', background=[('active', tokens['accent_soft'])], foreground=[('active', tokens['accent'])])
+        style.configure('Card.TRadiobutton', background=tokens['surface'], foreground=tokens['fg'], padding=(6, 4))
+        style.configure('TCheckbutton', background=tokens['surface'], foreground=tokens['fg'], padding=(4, 3))
+        style.configure('TEntry', fieldbackground=tokens['surface'], bordercolor=tokens['border'], lightcolor=tokens['ring'], padding=5)
+        style.configure('Design.Horizontal.TProgressbar', troughcolor=tokens['fg_soft'], background=tokens['accent'], bordercolor=tokens['border'], lightcolor=tokens['accent'], darkcolor=tokens['accent'], thickness=14)
+        style.configure('Treeview', background=tokens['surface'], fieldbackground=tokens['surface'], foreground=tokens['fg'], rowheight=30, bordercolor=tokens['border'], font=("-apple-system", 12))
+        style.configure('Treeview.Heading', background=tokens['fg_softer'], foreground=tokens['muted'], font=("-apple-system", 11, "bold"))
+        style.map('Treeview', background=[('selected', tokens['accent_soft'])], foreground=[('selected', tokens['fg'])])
+        self._mono_font = mono_font
+
+    def _build_appbar(self, parent):
+        tokens = DESIGN_TOKENS
+        bar = ttk.Frame(parent, style='Surface.TFrame', padding=(14, 10))
+        bar.pack(fill=tk.X)
+
+        mark = tk.Canvas(bar, width=34, height=34, bg=tokens['surface'], highlightthickness=0)
+        mark.pack(side=tk.LEFT, padx=(0, 10))
+        mark.create_rectangle(3, 3, 31, 31, outline=tokens['border'], fill=tokens['accent_soft'], width=1)
+        mark.create_rectangle(9, 8, 25, 24, outline=tokens['accent'], fill='white', width=1)
+        mark.create_polygon(14, 12, 14, 20, 21, 16, fill=tokens['accent'])
+
+        title_box = ttk.Frame(bar, style='Surface.TFrame')
+        title_box.pack(side=tk.LEFT)
+        ttk.Label(title_box, text="JAVFileOrganizer", style='Heading.TLabel').pack(anchor=tk.W)
+        ttk.Label(title_box, text=f"{self.version}  |  {self.build_id}", style='Muted.TLabel').pack(anchor=tk.W)
+
+        right = ttk.Frame(bar, style='Surface.TFrame')
+        right.pack(side=tk.RIGHT)
+        self.test_btn = ttk.Button(right, text="测试连接", style='Ghost.TButton', command=self.test_connection)
+        self.test_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self.start_btn = ttk.Button(right, text="开始处理", style='Primary.TButton', command=self.start_processing)
+        self.start_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self.stop_btn = ttk.Button(right, text="停止处理", style='Danger.TButton', command=self.stop_processing_func, state=tk.DISABLED)
+        self.stop_btn.pack(side=tk.LEFT, padx=(0, 12))
+
+        self.nav_buttons = {}
+        for key, text in (('workspace', '工作区'), ('report', '运行报告'), ('settings', '设置')):
+            btn = ttk.Button(right, text=text, style='Nav.TButton', command=lambda k=key: self._show_page(k))
+            btn.pack(side=tk.LEFT, padx=(0, 4))
+            self.nav_buttons[key] = btn
+
+    def _build_folderbar(self, parent):
+        bar = ttk.Frame(parent, style='Surface.TFrame', padding=(14, 9))
+        bar.pack(fill=tk.X, pady=(1, 0))
+
+        ttk.Label(bar, text="源目录", style='Surface.TLabel').pack(side=tk.LEFT, padx=(0, 8))
+        entry = ttk.Entry(bar, textvariable=self.folder_var)
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        ttk.Button(bar, text="选择文件夹", style='Ghost.TButton', command=self.select_folder).pack(side=tk.LEFT, padx=(0, 8))
+
+        self.dry_badge_var = tk.StringVar(value="Dry Run 关闭")
+        self.scope_badge_var = tk.StringVar(value="仅当前目录")
+        ttk.Label(bar, textvariable=self.dry_badge_var, style='Muted.TLabel').pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(bar, textvariable=self.scope_badge_var, style='Muted.TLabel').pack(side=tk.LEFT)
+
+    def _build_workspace_page(self, parent):
+        page = ttk.Frame(parent, style='App.TFrame', padding=12)
+        self.pages['workspace'] = page
+
+        layout = ttk.Frame(page, style='App.TFrame')
+        layout.pack(fill=tk.BOTH, expand=True)
+
+        sidebar = ttk.Frame(layout, style='Surface.TFrame', padding=12, width=286)
+        sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 12))
+        sidebar.pack_propagate(False)
+
+        main = ttk.Frame(layout, style='App.TFrame')
+        main.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._build_provider_panel(sidebar)
+        self._build_processing_panel(sidebar)
+        self._build_filter_panel(sidebar)
+        self._build_file_table(main)
+        self._build_progress_panel(main)
+        self._build_log_panel(main)
+
+    def _build_provider_panel(self, parent):
+        frame = ttk.LabelFrame(parent, text="数据源", style='Panel.TLabelframe', padding=10)
+        frame.pack(fill=tk.X, pady=(0, 12))
+        self.provider_hint_var = tk.StringVar(value="")
+        for key, config in self.website_configs.items():
+            rb = ttk.Radiobutton(
+                frame,
+                text=config['name'],
+                variable=self.website_var,
+                value=key,
+                style='Card.TRadiobutton',
+            )
+            rb.pack(anchor=tk.W, fill=tk.X, pady=2)
+        ttk.Label(frame, textvariable=self.provider_hint_var, style='Muted.TLabel', wraplength=230).pack(anchor=tk.W, pady=(8, 0))
+
+    def _build_processing_panel(self, parent):
+        frame = ttk.LabelFrame(parent, text="处理设置", style='Panel.TLabelframe', padding=10)
+        frame.pack(fill=tk.X, pady=(0, 12))
+
+        ttk.Label(frame, text="最大文件名长度", style='Surface.TLabel').pack(anchor=tk.W)
+        ttk.Entry(frame, textvariable=self.max_filename_length_var, width=10).pack(fill=tk.X, pady=(2, 8))
+
+        ttk.Label(frame, text="文件系统字节上限", style='Surface.TLabel').pack(anchor=tk.W)
+        ttk.Entry(frame, textvariable=self.max_filename_bytes_var, width=10).pack(fill=tk.X, pady=(2, 8))
+
+        ttk.Label(frame, text="批量处理数量", style='Surface.TLabel').pack(anchor=tk.W)
+        ttk.Entry(frame, textvariable=self.batch_count_var, width=10).pack(fill=tk.X, pady=(2, 8))
+
+        ttk.Checkbutton(frame, text="优先保留演员名称", variable=self.preserve_actor_var).pack(anchor=tk.W, pady=2)
+        ttk.Checkbutton(frame, text="包括子目录", variable=self.include_subdirectories_var, command=self._reanalyze_selected_folder).pack(anchor=tk.W, pady=2)
+        ttk.Checkbutton(frame, text="仅审计 Dry Run", variable=self.dry_run_var).pack(anchor=tk.W, pady=2)
+
+    def _build_filter_panel(self, parent):
+        frame = ttk.LabelFrame(parent, text="筛选", style='Panel.TLabelframe', padding=10)
+        frame.pack(fill=tk.X)
+        filters = [('all', '全部'), ('planned', '待处理'), ('ok', '成功'), ('err', '失败'), ('review', '待确认')]
+        for value, text in filters:
+            ttk.Radiobutton(
+                frame,
+                text=text,
+                variable=self.file_filter_var,
+                value=value,
+                command=self._refresh_file_table,
+                style='Card.TRadiobutton',
+            ).pack(anchor=tk.W, fill=tk.X, pady=1)
+
+    def _build_file_table(self, parent):
+        panel = ttk.Frame(parent, style='Surface.TFrame', padding=12)
+        panel.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+
+        top = ttk.Frame(panel, style='Surface.TFrame')
+        top.pack(fill=tk.X, pady=(0, 8))
+        self.table_title_var = tk.StringVar(value="文件队列")
+        self.table_stats_var = tk.StringVar(value="尚未选择目录")
+        ttk.Label(top, textvariable=self.table_title_var, style='Heading.TLabel').pack(side=tk.LEFT)
+        ttk.Label(top, textvariable=self.table_stats_var, style='Muted.TLabel').pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Entry(top, textvariable=self.file_search_var, width=28).pack(side=tk.RIGHT)
+        ttk.Label(top, text="搜索", style='Muted.TLabel').pack(side=tk.RIGHT, padx=(0, 6))
+
+        columns = ('status', 'filename', 'size', 'provider')
+        self.file_table = ttk.Treeview(panel, columns=columns, show='headings', selectmode='browse')
+        self.file_table.heading('status', text='状态')
+        self.file_table.heading('filename', text='文件名')
+        self.file_table.heading('size', text='大小')
+        self.file_table.heading('provider', text='来源')
+        self.file_table.column('status', width=86, anchor=tk.W, stretch=False)
+        self.file_table.column('filename', width=520, anchor=tk.W)
+        self.file_table.column('size', width=96, anchor=tk.E, stretch=False)
+        self.file_table.column('provider', width=130, anchor=tk.W, stretch=False)
+        self.file_table.pack(fill=tk.BOTH, expand=True)
+        self.file_table.bind('<<TreeviewSelect>>', self._on_file_row_selected)
+        self.file_table.tag_configure('ok', foreground=DESIGN_TOKENS['ok'])
+        self.file_table.tag_configure('err', foreground=DESIGN_TOKENS['err'])
+        self.file_table.tag_configure('review', foreground=DESIGN_TOKENS['warn'])
+        self.file_table.tag_configure('skip', foreground=DESIGN_TOKENS['muted'])
+
+        self.file_detail_var = tk.StringVar(value="选择一行查看文件详情。")
+        ttk.Label(panel, textvariable=self.file_detail_var, style='Muted.TLabel', wraplength=760).pack(anchor=tk.W, pady=(8, 0))
+
+    def _build_progress_panel(self, parent):
+        panel = ttk.Frame(parent, style='Surface.TFrame', padding=12)
+        panel.pack(fill=tk.X, pady=(0, 12))
+
+        row = ttk.Frame(panel, style='Surface.TFrame')
+        row.pack(fill=tk.X, pady=(0, 8))
+        self.progress_var = tk.StringVar(value="就绪")
+        self.progress_percent_var = tk.StringVar(value="0%")
+        ttk.Label(row, textvariable=self.progress_var, style='Heading.TLabel').pack(side=tk.LEFT)
+        ttk.Label(row, textvariable=self.progress_percent_var, style='Metric.TLabel').pack(side=tk.RIGHT)
+
+        self.progress_bar = ttk.Progressbar(panel, mode='determinate', style='Design.Horizontal.TProgressbar')
+        self.progress_bar.pack(fill=tk.X)
+
+        self.speed_var = tk.StringVar(value="平均: -- | 已用时间: -- | 剩余时间: --")
+        ttk.Label(panel, textvariable=self.speed_var, style='Muted.TLabel').pack(anchor=tk.W, pady=(7, 0))
+
+    def _build_log_panel(self, parent):
+        panel = ttk.Frame(parent, style='Surface.TFrame', padding=12)
+        panel.pack(fill=tk.BOTH, expand=True)
+        top = ttk.Frame(panel, style='Surface.TFrame')
+        top.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(top, text="实时日志", style='Heading.TLabel').pack(side=tk.LEFT)
+        ttk.Button(top, text="清空日志", style='Ghost.TButton', command=self.clear_log).pack(side=tk.RIGHT)
+        self.log_text = scrolledtext.ScrolledText(
+            panel,
+            height=11,
+            font=self._mono_font,
+            bg=DESIGN_TOKENS['fg_softer'],
+            fg=DESIGN_TOKENS['fg'],
+            insertbackground=DESIGN_TOKENS['fg'],
+            relief=tk.FLAT,
+            borderwidth=1,
+        )
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+        self.log_text.tag_config("ERROR", foreground=DESIGN_TOKENS['err'])
+        self.log_text.tag_config("SUCCESS", foreground=DESIGN_TOKENS['ok'])
+        self.log_text.tag_config("WARNING", foreground=DESIGN_TOKENS['warn'])
+        self.log_text.tag_config("PROCESSING", foreground=DESIGN_TOKENS['accent'])
+
+    def _build_report_page(self, parent):
+        page = ttk.Frame(parent, style='App.TFrame', padding=12)
+        self.pages['report'] = page
+        panel = ttk.Frame(page, style='Surface.TFrame', padding=16)
+        panel.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(panel, text="运行报告", style='Heading.TLabel').pack(anchor=tk.W)
+        self.report_summary_var = tk.StringVar(value="处理完成后会在这里显示本次运行摘要。")
+        ttk.Label(panel, textvariable=self.report_summary_var, style='Muted.TLabel', wraplength=860).pack(anchor=tk.W, pady=(8, 14))
+
+        columns = ('metric', 'value')
+        self.report_table = ttk.Treeview(panel, columns=columns, show='headings', height=12)
+        self.report_table.heading('metric', text='指标')
+        self.report_table.heading('value', text='数值')
+        self.report_table.column('metric', width=260, anchor=tk.W)
+        self.report_table.column('value', width=520, anchor=tk.W)
+        self.report_table.pack(fill=tk.BOTH, expand=True)
+
+    def _build_settings_page(self, parent):
+        page = ttk.Frame(parent, style='App.TFrame', padding=12)
+        self.pages['settings'] = page
+        content = ttk.Frame(page, style='Surface.TFrame', padding=16)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(content, text="设置", style='Heading.TLabel').pack(anchor=tk.W)
+        ttk.Label(content, text="这些字段直接连接当前处理配置，不是展示项。", style='Muted.TLabel').pack(anchor=tk.W, pady=(4, 14))
+
+        grid = ttk.Frame(content, style='Surface.TFrame')
+        grid.pack(fill=tk.X)
+        for row, (label, var) in enumerate((
+            ('搜索 URL', self.search_url_var),
+            ('文字选择器', self.text_selector_var),
+            ('图片选择器', self.image_selector_var),
+            ('最大文件名长度', self.max_filename_length_var),
+            ('文件系统字节上限', self.max_filename_bytes_var),
+            ('批量处理数量', self.batch_count_var),
+        )):
+            ttk.Label(grid, text=label, style='Surface.TLabel').grid(row=row, column=0, sticky=tk.W, padx=(0, 12), pady=5)
+            ttk.Entry(grid, textvariable=var, width=64).grid(row=row, column=1, sticky=tk.EW, pady=5)
+        grid.columnconfigure(1, weight=1)
+
+        checks = ttk.Frame(content, style='Surface.TFrame')
+        checks.pack(fill=tk.X, pady=(14, 12))
+        ttk.Checkbutton(checks, text="优先保留演员名称", variable=self.preserve_actor_var).pack(anchor=tk.W)
+        ttk.Checkbutton(checks, text="包括子目录（跳过 Finish / JFO_Logs）", variable=self.include_subdirectories_var, command=self._reanalyze_selected_folder).pack(anchor=tk.W)
+        ttk.Checkbutton(checks, text="仅审计 Dry Run", variable=self.dry_run_var).pack(anchor=tk.W)
+
+        actions = ttk.Frame(content, style='Surface.TFrame')
+        actions.pack(anchor=tk.W)
+        ttk.Button(actions, text="保存配置", style='Primary.TButton', command=self.save_config).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(actions, text="重置默认", style='Ghost.TButton', command=self.reset_config).pack(side=tk.LEFT)
+
+    def _show_page(self, page_name):
+        for key, page in getattr(self, 'pages', {}).items():
+            if key == page_name:
+                page.pack(fill=tk.BOTH, expand=True)
+            else:
+                page.pack_forget()
+        self._active_page = page_name
+
+    def _refresh_setting_badges(self):
+        if hasattr(self, 'dry_badge_var'):
+            self.dry_badge_var.set("Dry Run 开启" if self.dry_run_var.get() else "Dry Run 关闭")
+        if hasattr(self, 'scope_badge_var'):
+            self.scope_badge_var.set("包括子目录" if self._include_subdirectories() else "仅当前目录")
+
+    def _status_label(self, status):
+        return STATUS_COLORS.get(status, (status or '待处理', DESIGN_TOKENS['muted']))[0]
+
+    def _set_file_rows_from_scan(self, folder_path, video_files):
+        rows = []
+        provider_name = self.website_configs.get(self.website_var.get(), {}).get('name', self.website_var.get())
+        for filename, size in video_files:
+            rows.append({
+                'status': 'planned',
+                'filename': filename,
+                'size': size,
+                'provider': provider_name,
+                'path': os.path.join(folder_path, filename),
+                'reason': '',
+                'title': '',
+            })
+        self._file_rows = rows
+        self._refresh_file_table()
+
+    def _result_status_for_ui(self, status):
+        if status == 'success':
+            return 'ok'
+        if status in ('failed', 'error'):
+            return 'err'
+        if status == 'needs_review':
+            return 'review'
+        if status in ('skipped', 'cancelled'):
+            return 'skip'
+        if status == 'planned':
+            return 'planned'
+        return status or 'planned'
+
+    def _update_file_rows_from_results(self, file_results):
+        if not hasattr(self, '_file_rows'):
+            return
+        by_name = {}
+        for item in file_results or []:
+            source_path = item.get('source_path') or ''
+            name = os.path.basename(source_path)
+            if name:
+                by_name[name] = item
+
+        for row in self._file_rows:
+            item = by_name.get(row.get('filename'))
+            if not item:
+                continue
+            row['status'] = self._result_status_for_ui(item.get('status'))
+            row['provider'] = item.get('provider') or row.get('provider') or ''
+            row['reason'] = item.get('reason') or ''
+            row['title'] = item.get('title') or ''
+            row['target'] = item.get('target_video_path') or item.get('target_image_path') or ''
+        self._refresh_file_table()
+
+    def _refresh_file_table(self):
+        table = getattr(self, 'file_table', None)
+        if table is None:
+            return
+        try:
+            for item_id in table.get_children():
+                table.delete(item_id)
+        except Exception:
+            return
+
+        rows = getattr(self, '_file_rows', [])
+        query = ''
+        try:
+            query = self.file_search_var.get().strip().lower()
+        except Exception:
+            pass
+        active_filter = 'all'
+        try:
+            active_filter = self.file_filter_var.get()
+        except Exception:
+            pass
+
+        visible = []
+        for index, row in enumerate(rows):
+            filename = row.get('filename') or ''
+            status = row.get('status') or 'planned'
+            if active_filter != 'all' and status != active_filter:
+                continue
+            if query and query not in filename.lower() and query not in (row.get('provider') or '').lower():
+                continue
+            visible.append((index, row))
+
+        for index, row in visible:
+            status = row.get('status') or 'planned'
+            table.insert(
+                '',
+                tk.END,
+                iid=str(index),
+                values=(
+                    self._status_label(status),
+                    row.get('filename') or '',
+                    self.format_size(row.get('size') or 0),
+                    row.get('provider') or '',
+                ),
+                tags=(status,),
+            )
+
+        if hasattr(self, 'table_stats_var'):
+            total = len(rows)
+            selected = len(visible)
+            self.table_stats_var.set(f"{selected}/{total} 个文件")
+        if hasattr(self, 'table_title_var'):
+            self.table_title_var.set("文件队列" if rows else "文件队列为空")
+        if not visible and hasattr(self, 'file_detail_var'):
+            self.file_detail_var.set("没有匹配的文件。调整筛选或搜索条件。")
+
+    def _on_file_row_selected(self, event=None):
+        table = getattr(self, 'file_table', None)
+        if table is None:
+            return
+        selected = table.selection()
+        if not selected:
+            return
+        try:
+            row = self._file_rows[int(selected[0])]
+        except Exception:
+            return
+        detail_parts = [
+            f"文件: {row.get('filename', '')}",
+            f"状态: {self._status_label(row.get('status'))}",
+        ]
+        if row.get('provider'):
+            detail_parts.append(f"来源: {row.get('provider')}")
+        if row.get('reason'):
+            detail_parts.append(f"原因: {row.get('reason')}")
+        if row.get('title'):
+            detail_parts.append(f"标题: {row.get('title')}")
+        if row.get('target'):
+            detail_parts.append(f"结果: {row.get('target')}")
+        if hasattr(self, 'file_detail_var'):
+            self.file_detail_var.set(" | ".join(detail_parts))
+
+    def _update_report_view(self, result, run_log_path=None):
+        self._last_result = result
+        table = getattr(self, 'report_table', None)
+        if table is None or not isinstance(result, dict):
+            return
+        for item_id in table.get_children():
+            table.delete(item_id)
+        total = result.get('total_files') or 0
+        success = result.get('success_count') or 0
+        failed = result.get('failed_count') or 0
+        review = result.get('needs_review_count') or 0
+        cancelled = result.get('cancelled_count') or 0
+        total_time = result.get('total_time') or 0
+        avg = total_time / total if total else 0
+        metrics = [
+            ('总文件数', total),
+            ('成功处理', success),
+            ('处理失败', failed),
+            ('待确认规则', review),
+            ('用户取消未处理', cancelled),
+            ('封面成功', result.get('image_success_count') or 0),
+            ('封面失败', result.get('image_failed_count') or 0),
+            ('总用时', self._format_duration(total_time)),
+            ('平均处理时长', f"{avg:.1f} 秒/文件" if total else "--"),
+            ('运行日志', run_log_path or result.get('log_path') or ''),
+            ('文件级结果', result.get('file_results_path') or ''),
+            ('运行摘要', result.get('summary_path') or ''),
+        ]
+        for metric, value in metrics:
+            table.insert('', tk.END, values=(metric, value))
+        if hasattr(self, 'report_summary_var'):
+            self.report_summary_var.set(
+                f"本次运行处理 {total} 个文件，成功 {success}，失败 {failed}，"
+                f"待确认 {review}，总用时 {self._format_duration(total_time)}。"
+            )
+
     def _start_run_log(self, folder_path, website_name):
         """为一次批处理创建落地日志文件。"""
         logs_dir = os.path.join(folder_path, 'JFO_Logs')
@@ -650,22 +947,25 @@ class JavFileOrganizer:
         icon = icons.get(level, "📝")
         log_entry = f"[{timestamp}] {icon} {message}\n"
         self._write_run_log(log_entry)
+        display_entry = f"[{timestamp}] {level:<10} {self._strip_ui_icons(str(message))}\n"
         
         # 在GUI线程中更新日志（实时显示）
         def update_log():
-            self.log_text.insert(tk.END, log_entry)
+            self.log_text.insert(tk.END, display_entry)
             
             # 根据级别设置颜色
             if level == "ERROR":
                 start_line = self.log_text.index(tk.END + "-2l")
                 end_line = self.log_text.index(tk.END + "-1l")
-                self.log_text.tag_add("error", start_line, end_line)
-                self.log_text.tag_config("error", foreground="red")
+                self.log_text.tag_add("ERROR", start_line, end_line)
             elif level == "SUCCESS":
                 start_line = self.log_text.index(tk.END + "-2l")
                 end_line = self.log_text.index(tk.END + "-1l")
-                self.log_text.tag_add("success", start_line, end_line)
-                self.log_text.tag_config("success", foreground="green")
+                self.log_text.tag_add("SUCCESS", start_line, end_line)
+            elif level in ("WARNING", "PROCESSING"):
+                start_line = self.log_text.index(tk.END + "-2l")
+                end_line = self.log_text.index(tk.END + "-1l")
+                self.log_text.tag_add(level, start_line, end_line)
             
             self.log_text.see(tk.END)
             self.window.update_idletasks()
@@ -675,6 +975,22 @@ class JavFileOrganizer:
             update_log()
         else:
             self.window.after(0, update_log)
+
+    def _strip_ui_icons(self, text):
+        """Keep persisted logs untouched while making the live UI text quieter."""
+        if not text:
+            return ''
+        icon_chars = '📝✅⚠️❌🔄📁📊🔎⏱️💾🎬🚀🌐🧪📄🧾🧮📦🧠⏹️⏳🙈🚫🖼️📈🎉✨🔧'
+        cleaned = text
+        changed = True
+        while changed:
+            changed = False
+            before = cleaned
+            cleaned = cleaned.lstrip().lstrip('\ufe0f')
+            while cleaned and cleaned[0] in icon_chars:
+                cleaned = cleaned[1:].lstrip().lstrip('\ufe0f')
+            changed = cleaned != before
+        return cleaned
     
     def on_website_change(self, *args):
         """网站选择变化时更新配置。"""
@@ -690,6 +1006,16 @@ class JavFileOrganizer:
         
         image_selectors = config.get('image_selectors', ['img'])
         self.image_selector_var.set(image_selectors[0])
+
+        if hasattr(self, 'provider_hint_var'):
+            verify_text = "需要浏览器验证" if config.get('requires_verification') else "无需验证或自动处理"
+            self.provider_hint_var.set(f"当前: {config.get('name', website)} | {verify_text}")
+        if hasattr(self, '_file_rows'):
+            provider_name = config.get('name', website)
+            for row in self._file_rows:
+                if row.get('status') == 'planned':
+                    row['provider'] = provider_name
+            self._refresh_file_table()
         
         self.log(f"🌐 切换到网站: {config.get('name', website)}", "INFO")
 
@@ -758,6 +1084,8 @@ class JavFileOrganizer:
                 file_size = file_sizes.get(file, 0)
                 video_files.append((file, file_size))
                 total_size += file_size
+
+            self._set_file_rows_from_scan(folder_path, video_files)
             
             # 显示详细统计
             self.log(f"📁 已选择文件夹: {folder_path}", "SUCCESS")
@@ -1158,6 +1486,7 @@ class JavFileOrganizer:
             max_filename_bytes_text=self.max_filename_bytes_var.get().strip()
             if hasattr(self, 'max_filename_bytes_var') else '',
             include_subdirectories=self._include_subdirectories(),
+            selected_files=None,
         )
 
     def _show_messagebox(self, kind, title, message):
@@ -1287,20 +1616,20 @@ class JavFileOrganizer:
         self.is_processing = False
         self._reset_stop_signal()
         self.start_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(text="⏹️ 停止处理", state=tk.DISABLED)
+        self.stop_btn.config(text="停止处理", state=tk.DISABLED)
         self.status_var.set(STATUS_READY)
         self._close_run_log()
 
     def _apply_stopping_ui(self):
         """Show immediate feedback after a stop request while safe shutdown completes."""
         self._show_safe_stop_dialog()
-        self.stop_btn.config(text="⏳ 安全停止中...", state=tk.DISABLED)
+        self.stop_btn.config(text="安全停止中...", state=tk.DISABLED)
         if self._has_active_file_transaction():
             self.status_var.set("正在安全停止：当前文件会在事务边界收口，源文件保持安全")
-            self.progress_var.set("⏳ 正在安全停止...")
+            self.progress_var.set("正在安全停止")
         else:
             self.status_var.set("正在快速停止：当前无文件落盘事务，正在取消网络请求")
-            self.progress_var.set("⏹️ 正在快速停止...")
+            self.progress_var.set("正在快速停止")
         current_speed = self.speed_var.get()
         if current_speed:
             self.speed_var.set(f"{current_speed} | 停止请求已提交")
@@ -1365,11 +1694,12 @@ class JavFileOrganizer:
         def apply():
             self.progress_bar['value'] = percent
             if self._is_stop_requested():
-                self.progress_var.set(f"⏳ 正在安全停止: {completed}/{total}")
+                self.progress_var.set(f"正在安全停止: {completed}/{total}")
                 self.status_var.set("正在安全停止：等待当前网络/文件事务到达安全边界")
-                self.stop_btn.config(text="⏳ 安全停止中...", state=tk.DISABLED)
+                self.stop_btn.config(text="安全停止中...", state=tk.DISABLED)
             else:
-                self.progress_var.set(f"🔄 处理中: {completed}/{total}")
+                item_text = self._strip_ui_icons(label) if label else ''
+                self.progress_var.set(f"处理中: {completed}/{total}" + (f" | {item_text}" if item_text else ""))
             self.progress_percent_var.set(f"{percent}%")
             if self._is_stop_requested():
                 self.speed_var.set(f"{timing_text} | 停止请求已提交")
@@ -1400,10 +1730,13 @@ class JavFileOrganizer:
         summary_path = result['summary_path']
         filename_rule_candidates_path = result.get('filename_rule_candidates_path')
 
+        self._update_file_rows_from_results(result.get('file_results') or [])
+        self._update_report_view(result, run_log_path=run_log_path)
+
         self.progress_bar['value'] = 100
-        self.progress_var.set("✅ 处理完成！" if not dry_run else "🧪 审计完成")
+        self.progress_var.set("处理完成" if not dry_run else "审计完成")
         self.progress_percent_var.set("100%")
-        self.speed_var.set(f"✨ 总用时: {total_time:.1f} 秒 | 平均: {avg_time:.1f} 秒/文件")
+        self.speed_var.set(f"总用时: {total_time:.1f} 秒 | 平均: {avg_time:.1f} 秒/文件")
 
         self.log(f"✅ 🎉 {'审计完成' if dry_run else '处理完成！'}", "SUCCESS")
         self.log(f"📝 📊 最终统计:", "INFO")
@@ -1438,7 +1771,7 @@ class JavFileOrganizer:
             self.log(f"📝   📦 运行摘要: {summary_path}", "INFO")
 
         if getattr(self, '_safe_stop_requested', False):
-            self.progress_var.set("⏹️ 已安全停止")
+            self.progress_var.set("已安全停止")
             self.speed_var.set(f"已用时间: {total_time:.1f} 秒 | 未处理: {cancelled_count}")
             self._complete_safe_stop_dialog(result)
             return
@@ -1447,47 +1780,47 @@ class JavFileOrganizer:
             self._show_messagebox(
                 'info',
                 "审计完成",
-                f"🧪 Dry Run 审计完成\n\n"
-                f"📊 计划处理: {planned_count}/{total_files}\n"
-                f"🙈 已忽略隐藏文件: {skipped_hidden}\n"
-                f"🚫 已忽略异常小文件: {skipped_small}\n"
-                f"⚠️ Provider 警告文件数: {skipped_provider_count}\n"
-                f"🧠 文件名规则待确认: {needs_review_count}\n"
-                f"⏹️ 用户取消未处理: {cancelled_count}\n"
-                f"📄 日志: {run_log_path}\n"
-                f"🧮 文件结果: {file_results_display}\n"
-                f"📦 摘要: {summary_path}",
+                f"Dry Run 审计完成\n\n"
+                f"计划处理: {planned_count}/{total_files}\n"
+                f"已忽略隐藏文件: {skipped_hidden}\n"
+                f"已忽略异常小文件: {skipped_small}\n"
+                f"Provider 警告文件数: {skipped_provider_count}\n"
+                f"文件名规则待确认: {needs_review_count}\n"
+                f"用户取消未处理: {cancelled_count}\n"
+                f"日志: {run_log_path}\n"
+                f"文件结果: {file_results_display}\n"
+                f"摘要: {summary_path}",
             )
         elif failed_count == 0 and needs_review_count == 0 and cancelled_count == 0:
             self._show_messagebox(
                 'info',
                 "处理完成",
-                f"🎉 所有文件处理完成！\n\n"
-                f"📊 统计结果:\n"
-                f"✅ 成功: {success_count}/{total_files}\n"
-                f"🖼️ 封面成功: {image_success_count} 张\n"
-                f"⏱️ 用时: {total_time:.1f} 秒\n"
-                f"📊 成功率: {success_rate:.1f}%\n\n"
-                f"🧮 文件结果: {file_results_display}",
+                f"所有文件处理完成。\n\n"
+                f"统计结果:\n"
+                f"成功: {success_count}/{total_files}\n"
+                f"封面成功: {image_success_count} 张\n"
+                f"用时: {total_time:.1f} 秒\n"
+                f"成功率: {success_rate:.1f}%\n\n"
+                f"文件结果: {file_results_display}",
             )
         else:
             self._show_messagebox(
                 'warning',
                 "处理完成（有错误）",
-                f"⚠️ 处理完成，但有部分文件失败\n\n"
-                f"📊 统计结果:\n"
-                f"✅ 成功: {success_count}/{total_files}\n"
-                f"❌ 失败: {failed_count}/{total_files}\n"
-                f"🙈 跳过隐藏: {skipped_hidden}\n"
-                f"🚫 跳过小文件: {skipped_small}\n"
-                f"⚠️ Provider 警告文件数: {skipped_provider_count}\n"
-                f"🧠 文件名规则待确认: {needs_review_count}\n"
-                f"⏹️ 用户取消未处理: {cancelled_count}\n"
-                f"🖼️ 封面成功: {image_success_count} 张\n"
-                f"⏱️ 用时: {total_time:.1f} 秒\n"
-                f"📊 成功率: {success_rate:.1f}%\n\n"
-                f"🧮 文件结果: {file_results_display}\n"
-                f"🔍 请查看日志了解失败原因",
+                f"处理完成，但有部分文件失败。\n\n"
+                f"统计结果:\n"
+                f"成功: {success_count}/{total_files}\n"
+                f"失败: {failed_count}/{total_files}\n"
+                f"跳过隐藏: {skipped_hidden}\n"
+                f"跳过小文件: {skipped_small}\n"
+                f"Provider 警告文件数: {skipped_provider_count}\n"
+                f"文件名规则待确认: {needs_review_count}\n"
+                f"用户取消未处理: {cancelled_count}\n"
+                f"封面成功: {image_success_count} 张\n"
+                f"用时: {total_time:.1f} 秒\n"
+                f"成功率: {success_rate:.1f}%\n\n"
+                f"文件结果: {file_results_display}\n"
+                f"请查看日志了解失败原因。",
             )
 
     def _process_files_worker(self, request):
@@ -1534,6 +1867,29 @@ class JavFileOrganizer:
                 scan_elapsed = time.time() - scan_started
                 self._remember_folder_scan(folder_path, scan, scan_elapsed)
                 self.log(f"⏱️ 文件扫描耗时: {scan_elapsed:.1f}秒", "INFO")
+
+            selected_files = [str(name) for name in (request.selected_files or []) if str(name).strip()]
+            if selected_files:
+                selected_set = set(selected_files)
+                original_accepted = list(scan.get('accepted') or [])
+                accepted = [name for name in original_accepted if name in selected_set]
+                scan = dict(scan)
+                scan['accepted'] = accepted
+                scan['file_sizes'] = {
+                    name: size
+                    for name, size in (scan.get('file_sizes') or {}).items()
+                    if name in selected_set
+                }
+                missing_selected = len(selected_set) - len(set(accepted))
+                self.log(
+                    f"📝 勾选处理范围: {len(accepted)}/{len(selected_set)} 个文件",
+                    "INFO",
+                )
+                if missing_selected:
+                    self.log(
+                        f"⚠️ 有 {missing_selected} 个勾选文件已不在当前扫描结果中，已自动忽略",
+                        "WARNING",
+                    )
             total_files_preview = len(scan['accepted'])
             batch_count_str = request.batch_count_text
             batch_count = None
@@ -1591,6 +1947,7 @@ class JavFileOrganizer:
                 smart_truncate_filename=self.smart_truncate_filename,
                 stop_requested=self._is_stop_requested,
                 progress_callback=self._update_processing_progress,
+                file_result_callback=getattr(self, '_file_result_callback', None),
             )
             service = WorkflowService(
                 log=self.log,
@@ -1739,14 +2096,14 @@ class JavFileOrganizer:
                 self.window.after(0, lambda: self._show_messagebox(
                     'info',
                     "测试成功",
-                    f"✅ 连接测试成功！\n\n网站: {website_config.get('name', website)}\n测试查询: {test_query}\n提取标题: {title[:50]}..."
+                    f"连接测试成功。\n\n网站: {website_config.get('name', website)}\n测试查询: {test_query}\n提取标题: {title[:50]}..."
                 ))
             elif error_msg:
                 self.log(f"❌ 连接测试异常: {error_msg}", "ERROR")
                 self.window.after(0, lambda: self._show_messagebox(
                     'error',
                     "测试异常",
-                    f"❌ 连接测试异常\n\n错误: {error_msg}"
+                    f"连接测试异常。\n\n错误: {error_msg}"
                 ))
             else:
                 error_type = result.get('error_type') if result else 'unknown'
@@ -1758,7 +2115,7 @@ class JavFileOrganizer:
                     self.window.after(0, lambda: self._show_messagebox(
                         'warning',
                         "JAVLibrary 需要验证",
-                        "⚠️ JAVLibrary 连接测试未通过。\n\n"
+                        "JAVLibrary 连接测试未通过。\n\n"
                         f"测试查询: {test_query}\n"
                         f"失败原因: {error_type} - {message}\n\n"
                         "请检查是否弹出了 Chrome 浏览器：\n"
@@ -1771,7 +2128,7 @@ class JavFileOrganizer:
                     self.window.after(0, lambda: self._show_messagebox(
                         'error',
                         "测试失败",
-                        "❌ 连接测试失败\n\n请检查网站配置和网络连接"
+                        "连接测试失败。\n\n请检查网站配置和网络连接。"
                     ))
             self.window.after(0, lambda: (
                 self.test_btn.config(state=tk.NORMAL),
@@ -1795,7 +2152,7 @@ class JavFileOrganizer:
         self._safe_stop_dialog_visible = False
         request = self._capture_processing_request()
         self.start_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(text="⏹️ 停止处理", state=tk.NORMAL)
+        self.stop_btn.config(text="停止处理", state=tk.NORMAL)
         self.status_var.set("处理中...")
         
         threading.Thread(target=lambda: self._process_files_worker(request), daemon=True).start()
@@ -1835,11 +2192,11 @@ class JavFileOrganizer:
                 json.dump(config, f, ensure_ascii=False, indent=2)
             
             self.log("💾 配置保存成功", "SUCCESS")
-            messagebox.showinfo("保存成功", "✅ 配置已保存")
+            messagebox.showinfo("保存成功", "配置已保存")
             
         except Exception as e:
             self.log(f"❌ 配置保存失败: {e}", "ERROR")
-            messagebox.showerror("保存失败", f"❌ 配置保存失败\n\n错误: {e}")
+            messagebox.showerror("保存失败", f"配置保存失败。\n\n错误: {e}")
     
     def reset_config(self):
         """重置配置"""
@@ -1863,7 +2220,7 @@ class JavFileOrganizer:
             self.include_subdirectories_var.set(False)
         
         self.log("🔄 配置已重置为默认值", "INFO")
-        messagebox.showinfo("重置完成", "✅ 配置已重置为默认值")
+        messagebox.showinfo("重置完成", "配置已重置为默认值")
     
     def clear_log(self):
         """清空日志"""

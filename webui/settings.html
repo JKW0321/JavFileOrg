@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置 · JAV File Organizer</title>
+<style>
+  /* ─── tokens · 科技/工具型 · 浅色（与 index / workspace 一致）─────── */
+  :root {
+    --bg:      oklch(98% 0.005 250);
+    --surface: oklch(100% 0 0);
+    --fg:      oklch(22% 0.02 240);
+    --muted:   oklch(50% 0.018 240);
+    --border:  oklch(90% 0.008 240);
+    --accent:  oklch(56% 0.17 255);
+
+    --ok:      oklch(58% 0.16 145);
+    --warn:    oklch(64% 0.14 70);
+    --err:     oklch(56% 0.19 27);
+    --info:    oklch(54% 0.15 255);
+
+    --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+    --ok-soft:     color-mix(in oklch, var(--ok) 12%, transparent);
+    --warn-soft:   color-mix(in oklch, var(--warn) 16%, transparent);
+    --err-soft:    color-mix(in oklch, var(--err) 10%, transparent);
+    --info-soft:   color-mix(in oklch, var(--info) 10%, transparent);
+    --fg-soft:     color-mix(in oklch, var(--fg) 5%, transparent);
+    --fg-softer:   color-mix(in oklch, var(--fg) 2.5%, transparent);
+
+    --font-display: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+    --font-body:    -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+    --font-mono:    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+
+    --radius: 8px;
+    --radius-sm: 6px;
+    --fs-meta: 12px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  button { font: inherit; cursor: pointer; }
+  a { color: inherit; text-decoration: none; }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .hidden { display: none !important; }
+
+  /* ─── app shell ───────────────────────────────────────────────── */
+  .app { height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
+
+  /* appbar */
+  .appbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .appbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .appmark { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); flex: none; overflow: hidden; }
+  .appmark img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .appname { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; white-space: nowrap; }
+  .ver {
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+    color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; white-space: nowrap;
+  }
+  .appbar-actions { display: flex; align-items: center; gap: 8px; }
+
+  /* buttons */
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 8px 14px; border-radius: var(--radius);
+    border: 1px solid transparent;
+    font-size: 13px; font-weight: 500; letter-spacing: -0.005em;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease, color 0.15s ease;
+    white-space: nowrap;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+  .btn-primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+  .btn-primary:hover:not(:disabled) { background: color-mix(in oklch, var(--accent) 88%, black); }
+  .btn-secondary { background: var(--surface); color: var(--fg); border-color: var(--border); }
+  .btn-secondary:hover:not(:disabled) { border-color: var(--muted); }
+  .btn-ghost { background: transparent; color: var(--muted); }
+  .btn-ghost:hover { color: var(--fg); }
+  .btn-ghost[aria-current="page"] { color: var(--fg); background: var(--fg-soft); }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+  /* status bar */
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 5px 16px; border-top: 1px solid var(--border); background: var(--surface);
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  }
+  .statusbar .s-left { display: inline-flex; align-items: center; gap: 8px; }
+  .statusbar .s-right { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+  /* ─── page layout ─────────────────────────────────────────────── */
+  .page { overflow-y: auto; min-height: 0; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px 64px; }
+  .settings-grid { display: grid; grid-template-columns: 208px 1fr; gap: 40px; align-items: start; }
+
+  /* settings nav */
+  .setnav { position: sticky; top: 24px; padding-top: 28px; display: flex; flex-direction: column; gap: 2px; }
+  .setnav a {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 7px 10px; border-radius: var(--radius-sm);
+    font-size: 13px; color: var(--muted);
+  }
+  .setnav a:hover { background: var(--fg-softer); color: var(--fg); }
+  .setnav a .n { font-family: var(--font-mono); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .setnav .nav-note { margin-top: 14px; padding: 0 10px; font-family: var(--font-mono); font-size: 11px; line-height: 1.7; color: var(--muted); }
+
+  /* sections */
+  .setsec { padding: 28px 0 36px; border-top: 1px solid var(--border); scroll-margin-top: 16px; }
+  .setsec:first-child { border-top: 0; }
+  .side-title {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 6px;
+  }
+  .sec-desc { margin: 0 0 20px; font-size: 13px; color: var(--muted); max-width: 62ch; }
+
+  /* provider config: list + detail */
+  .prov-grid { display: grid; grid-template-columns: 252px 1fr; gap: 20px; align-items: start; }
+  .provider { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border-radius: var(--radius); border: 1px solid transparent; cursor: pointer; }
+  .provider:hover { background: var(--fg-softer); }
+  .provider[aria-checked="true"] { border-color: color-mix(in oklch, var(--accent) 45%, transparent); background: var(--accent-soft); }
+  .provider .radio {
+    width: 14px; height: 14px; border-radius: 50%; flex: none; margin-top: 3px;
+    border: 1.5px solid var(--muted); display: grid; place-items: center;
+  }
+  .provider[aria-checked="true"] .radio { border-color: var(--accent); }
+  .provider[aria-checked="true"] .radio::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .provider .p-body { min-width: 0; flex: 1; }
+  .provider .p-name { font-size: 13px; font-weight: 550; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .provider .p-desc { font-size: 12px; color: var(--muted); margin-top: 1px; }
+  .p-tag {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.03em;
+    padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted);
+  }
+  .p-tag.warn { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 40%, transparent); background: var(--warn-soft); }
+
+  .prov-detail { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+  .prov-detail-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+  .prov-detail-head h3 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+  .prov-detail-head .testcode { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+
+  /* banner */
+  .banner {
+    display: flex; gap: 10px; align-items: flex-start;
+    border: 1px solid color-mix(in oklch, var(--info) 30%, transparent);
+    background: var(--info-soft); color: var(--fg);
+    border-radius: var(--radius); padding: 10px 12px; margin-bottom: 14px;
+    font-size: 12.5px; line-height: 1.6;
+  }
+  .banner.warn { border-color: color-mix(in oklch, var(--warn) 40%, transparent); background: var(--warn-soft); }
+  .banner .b-ic { font-family: var(--font-mono); font-size: 11px; color: var(--info); flex: none; margin-top: 1px; }
+  .banner.warn .b-ic { color: var(--warn); }
+  .banner code { font-family: var(--font-mono); font-size: 11.5px; background: var(--fg-soft); padding: 1px 5px; border-radius: 4px; }
+
+  /* form fields */
+  .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+  .field label { font-size: 12.5px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+  .field label .hint-r { font-family: var(--font-mono); font-size: 11px; }
+  .input {
+    width: 100%;
+    padding: 8px 11px; font-size: 12.5px; font-family: var(--font-mono);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--surface); color: var(--fg);
+  }
+  .input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .input:disabled { background: var(--fg-softer); color: var(--muted); cursor: not-allowed; }
+  .input.err { border-color: var(--err); }
+  .field .f-err { display: none; font-size: 11.5px; color: var(--err); }
+  .field.invalid .f-err { display: block; }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+  .form-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .form-actions .spacer { flex: 1; }
+  .save-state { font-family: var(--font-mono); font-size: 11px; color: var(--muted); line-height: 1.5; max-width: 360px; }
+  .save-state.dirty { color: var(--warn); }
+  .save-state.testing { color: var(--info); }
+  .save-state.ok { color: var(--ok); }
+  .save-state.error { color: var(--err); }
+
+  /* routing table（无码源） */
+  .rt-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .rt-table th, .rt-table td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  .rt-table th { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .rt-table td:first-child { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+  .rt-table tr:last-child td { border-bottom: 0; }
+  .rt-table .unavail { color: var(--muted); }
+
+  /* toggles（与 workspace 一致） */
+  .toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; cursor: pointer; border-bottom: 1px solid var(--border); }
+  .toggle:last-of-type { border-bottom: 0; }
+  .toggle .t-label { font-size: 13px; }
+  .toggle .t-hint { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+  .switch { width: 32px; height: 18px; border-radius: 999px; background: var(--border); position: relative; flex: none; transition: background 0.15s ease; }
+  .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); transition: left 0.15s ease; box-shadow: 0 1px 2px var(--fg-soft); }
+  .toggle[aria-checked="true"] .switch { background: var(--accent); }
+  .toggle[aria-checked="true"] .switch::after { left: 16px; }
+
+  /* path list */
+  .path-row {
+    display: grid; grid-template-columns: 148px 1fr auto; gap: 12px; align-items: center;
+    padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 12.5px;
+  }
+  .path-row:last-child { border-bottom: 0; }
+  .path-row .pk { color: var(--muted); }
+  .path-row .pv { font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
+  .copybtn {
+    border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+    font-family: var(--font-mono); font-size: 11px; border-radius: var(--radius-sm); padding: 3px 9px;
+  }
+  .copybtn:hover { color: var(--fg); border-color: var(--muted); }
+
+  /* about */
+  .about-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 32px; font-size: 12.5px; }
+  .about-grid .a-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+  .about-grid .a-row span:last-child { font-family: var(--font-mono); font-size: 12px; color: var(--muted); text-align: right; }
+
+  /* toast */
+  .toast {
+    position: fixed; right: 20px; bottom: 44px; z-index: 80;
+    background: var(--fg); color: var(--bg);
+    font-family: var(--font-mono); font-size: 12px;
+    padding: 9px 14px; border-radius: var(--radius);
+    opacity: 0; transform: translateY(6px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+
+  @media (max-width: 960px) {
+    .settings-grid { grid-template-columns: 1fr; gap: 0; }
+    .setnav { position: static; flex-direction: row; flex-wrap: wrap; padding-top: 16px; }
+    .setnav .nav-note { display: none; }
+    .prov-grid { grid-template-columns: 1fr; }
+    .field-row, .about-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ─── app bar ─────────────────────────────────────────────── -->
+  <header class="appbar" data-od-id="appbar">
+    <a class="appbar-left" href="index.html" aria-label="返回工作区">
+      <span class="appmark" aria-hidden="true"><img src="app-icon.png" alt=""></span>
+      <span class="appname">JAV File Organizer</span>
+      <span class="ver">v--</span>
+    </a>
+    <nav class="appbar-actions" aria-label="主导航">
+      <a class="btn btn-ghost" href="index.html">工作区</a>
+      <a class="btn btn-ghost" href="report.html">运行报告</a>
+      <a class="btn btn-ghost" href="settings.html" aria-current="page">设置</a>
+    </nav>
+  </header>
+
+  <!-- ─── page ────────────────────────────────────────────────── -->
+  <main class="page" data-od-id="page">
+    <div class="wrap">
+      <div class="settings-grid">
+
+        <!-- settings nav -->
+        <nav class="setnav" aria-label="设置导航">
+          <a href="#sec-providers"><span>数据源配置</span><span class="n">01</span></a>
+          <a href="#sec-processing"><span>处理设置</span><span class="n">02</span></a>
+          <a href="#sec-paths"><span>存储与路径</span><span class="n">03</span></a>
+          <a href="#sec-about"><span>关于</span><span class="n">04</span></a>
+          <p class="nav-note">配置写入 config.json，<br>随下次启动自动加载。<br>含子目录开关不持久化，<br>每次启动重置为关。</p>
+        </nav>
+
+        <!-- sections -->
+        <div>
+          <!-- 01 数据源配置 -->
+          <section class="setsec" id="sec-providers" data-od-id="sec-providers">
+            <h2 class="side-title">01 · 数据源配置</h2>
+            <p class="sec-desc">选择默认数据源，并按站点调整搜索 URL 与 CSS 选择器。修改保存在本机，切换数据源时自动带出对应配置。</p>
+
+            <div class="prov-grid">
+              <div id="providerList" role="radiogroup" aria-label="数据源"></div>
+
+              <div class="prov-detail">
+                <div class="prov-detail-head">
+                  <h3 id="pdName">—</h3>
+                  <span class="testcode" id="pdTestCode"></span>
+                </div>
+                <div class="banner warn hidden" id="pdBanner">
+                  <span class="b-ic">CF</span>
+                  <span id="pdBannerText"></span>
+                </div>
+                <div id="pdFields">
+                  <div class="field">
+                    <label for="fSearchUrl">搜索 URL <span class="hint-r">{query} = 番号占位符</span></label>
+                    <input class="input mono" id="fSearchUrl" type="text" spellcheck="false">
+                  </div>
+                  <div class="field-row">
+                    <div class="field">
+                      <label for="fTextSel">文字选择器</label>
+                      <input class="input mono" id="fTextSel" type="text" spellcheck="false">
+                    </div>
+                    <div class="field">
+                      <label for="fImgSel">图片选择器</label>
+                      <input class="input mono" id="fImgSel" type="text" spellcheck="false">
+                    </div>
+                  </div>
+                </div>
+                <div id="pdRouting" class="hidden">
+                  <table class="rt-table">
+                    <thead><tr><th>文件名前缀</th><th>路由到内部站点</th><th>状态</th></tr></thead>
+                    <tbody>
+                      <tr><td>CARIB-</td><td>Caribbeancom</td><td>可用</td></tr>
+                      <tr><td>1PON / 1PONDO-</td><td>1Pondo</td><td>可用</td></tr>
+                      <tr><td>10MUSUME-</td><td>10Musume</td><td>可用</td></tr>
+                      <tr><td>HEYZO-</td><td>Heyzo</td><td>可用</td></tr>
+                      <tr><td>300MIUM / 476MLA-</td><td>MGStage</td><td>可用</td></tr>
+                      <tr><td>DMS-NIGHT24-</td><td>night24-dms</td><td class="unavail">暂无可用源</td></tr>
+                      <tr><td>MESUBUTA-</td><td>mesubuta</td><td class="unavail">暂无可用源</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="form-actions">
+                  <button class="btn btn-primary btn-sm" id="btnSaveProv">保存配置</button>
+                  <button class="btn btn-secondary btn-sm" id="btnResetProv">重置默认</button>
+                  <span class="spacer"></span>
+                  <span class="save-state" id="provSaveState"></span>
+                  <button class="btn btn-secondary btn-sm" id="btnTestProv">测试连接</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 02 处理设置 -->
+          <section class="setsec" id="sec-processing" data-od-id="sec-processing">
+            <h2 class="side-title">02 · 处理设置</h2>
+            <p class="sec-desc">控制重命名长度、批量范围与审计模式。留空数值项表示不限制。</p>
+
+            <div class="field-row">
+              <div class="field" id="fwMaxLen">
+                <label for="fMaxLen">最大文件名长度 <span class="hint-r">字符 · 留空 = 不限制</span></label>
+                <input class="input mono" id="fMaxLen" type="text" inputmode="numeric" placeholder="80">
+                <span class="f-err">请输入正整数，或留空表示不限制</span>
+              </div>
+              <div class="field" id="fwMaxBytes">
+                <label for="fMaxBytes">文件系统字节上限 <span class="hint-r">bytes · 留空 = 不限制</span></label>
+                <input class="input mono" id="fMaxBytes" type="text" inputmode="numeric" placeholder="240">
+                <span class="f-err">请输入正整数，或留空表示不限制</span>
+              </div>
+            </div>
+            <div class="field" id="fwBatch" style="max-width: 320px;">
+              <label for="fBatch">批量处理数量 <span class="hint-r">个文件 · 留空 = 处理全部</span></label>
+              <input class="input mono" id="fBatch" type="text" inputmode="numeric" placeholder="">
+              <span class="f-err">请输入正整数，或留空表示处理全部</span>
+            </div>
+
+            <div class="toggle" id="tglActor" role="checkbox" aria-checked="true" tabindex="0">
+              <div>
+                <div class="t-label">超出长度时优先保留演员名称</div>
+                <div class="t-hint">智能截断：优先保留日文演员名，而非简单掐头去尾</div>
+              </div>
+              <span class="switch" aria-hidden="true"></span>
+            </div>
+            <div class="toggle" id="tglSub" role="checkbox" aria-checked="false" tabindex="0">
+              <div>
+                <div class="t-label">包括子目录</div>
+                <div class="t-hint">始终跳过 Finish / JFO_Logs / .jfo_transactions · 此开关不持久化，每次启动重置</div>
+              </div>
+              <span class="switch" aria-hidden="true"></span>
+            </div>
+            <div class="toggle" id="tglDry" role="checkbox" aria-checked="false" tabindex="0">
+              <div>
+                <div class="t-label">仅审计（Dry Run）</div>
+                <div class="t-hint">不移动文件、不下载封面，只产出完整审计产物</div>
+              </div>
+              <span class="switch" aria-hidden="true"></span>
+            </div>
+
+            <div class="form-actions" style="margin-top: 16px;">
+              <button class="btn btn-primary btn-sm" id="btnSaveProc">保存处理设置</button>
+              <button class="btn btn-secondary btn-sm" id="btnResetProc">恢复默认</button>
+              <span class="spacer"></span>
+              <span class="save-state" id="procSaveState"></span>
+            </div>
+          </section>
+
+          <!-- 03 存储与路径 -->
+          <section class="setsec" id="sec-paths" data-od-id="sec-paths">
+            <h2 class="side-title">03 · 存储与路径</h2>
+            <p class="sec-desc">整理输出与审计产物都落在被扫描文件夹内；应用级状态保存在用户目录。</p>
+            <div id="pathList">
+              <div class="path-row"><span class="pk">整理输出</span><span class="pv">{扫描文件夹}/Finish/</span><button class="copybtn" data-copy="{扫描文件夹}/Finish/">复制</button></div>
+              <div class="path-row"><span class="pk">审计产物</span><span class="pv">{扫描文件夹}/JFO_Logs/</span><button class="copybtn" data-copy="{扫描文件夹}/JFO_Logs/">复制</button></div>
+              <div class="path-row"><span class="pk">事务日志</span><span class="pv">{扫描文件夹}/.jfo_transactions/</span><button class="copybtn" data-copy="{扫描文件夹}/.jfo_transactions/">复制</button></div>
+              <div class="path-row"><span class="pk">GUI 配置</span><span class="pv">./config.json</span><button class="copybtn" data-copy="./config.json">复制</button></div>
+              <div class="path-row"><span class="pk">JAVLibrary Cookie</span><span class="pv">~/.jav_organizer/javlibrary_selenium_cookies.pkl</span><button class="copybtn" data-copy="~/.jav_organizer/javlibrary_selenium_cookies.pkl">复制</button></div>
+              <div class="path-row"><span class="pk">Chrome Profile</span><span class="pv">~/.jav_organizer/javlibrary_chrome_profile</span><button class="copybtn" data-copy="~/.jav_organizer/javlibrary_chrome_profile">复制</button></div>
+            </div>
+          </section>
+
+          <!-- 04 关于 -->
+          <section class="setsec" id="sec-about" data-od-id="sec-about">
+            <h2 class="side-title">04 · 关于</h2>
+            <p class="sec-desc">版本与支持范围。</p>
+            <div class="about-grid">
+              <div class="a-row"><span>版本</span><span>加载中</span></div>
+              <div class="a-row"><span>构建日期</span><span>加载中</span></div>
+              <div class="a-row"><span>支持视频格式</span><span>mp4 / avi / mkv / mov / wmv / flv / webm / m4v / rmvb</span></div>
+              <div class="a-row"><span>数据源</span><span>JavHoo · JavBus · JAVLibrary · BestJavPorn · 无码源</span></div>
+              <div class="a-row"><span>刮削方式</span><span>requests + BeautifulSoup · JAVLibrary 走 Selenium</span></div>
+              <div class="a-row"><span>离线回归覆盖</span><span>核心流程 / WebView / 事务处理</span></div>
+            </div>
+          </section>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- ─── status bar ──────────────────────────────────────────── -->
+  <footer class="statusbar" data-od-id="statusbar">
+    <span class="s-left"><span class="sdot" style="background: var(--ok)"></span><span id="statusText">正在连接应用后端…</span></span>
+    <span class="s-right">config.json · 数据源配置 · 文件名规则 · 事务与审计设置</span>
+  </footer>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function bridgeReady(){
+  if(window.pywebview && window.pywebview.api) return Promise.resolve(true);
+  return new Promise(resolve=>{
+    let done=false;
+    const finish=()=>{ if(done)return; done=true; resolve(!!(window.pywebview&&window.pywebview.api)); };
+    window.addEventListener('pywebviewready', finish, {once:true});
+    setTimeout(finish, 3000);
+  });
+}
+async function api(name,...args){ const ready=await bridgeReady(); if(!ready) return {ok:false,message:'pywebview not ready'}; return window.pywebview.api[name](...args); }
+let toastTimer = 0;
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),1600); }
+const TEST_CODES = { javhoo:'SONE-753', javbus:'SONE-753', javlibrary:'JBD-131', bestjavporn:'ABF-311', uncensored:'CARIB-032226-001' };
+let state = { providers: [], settings: {}, activeProvider: 'javbus', version: '', build_id: '', build_date: '', testing: false, lastEventId: 0, seen: new Set() };
+function providerDesc(p){ if(p.key==='uncensored') return '自动匹配内部站点'; if(p.key==='javhoo') return '稳定快速'; if(p.key==='javbus') return '内容丰富 · 智能验证'; if(p.key==='javlibrary') return '数据完整 · 高清封面'; if(p.key==='bestjavporn') return '日文源'; return p.name; }
+function shortName(name){ return String(name||'').split(' - ')[0]; }
+function providerLabel(key){ const p=state.providers.find(item=>item.key===key); return shortName((p||{}).name)||key||shortName(active().name); }
+function setVersionText(){ document.querySelectorAll('.ver').forEach(el=>el.textContent=state.version||'v--'); $('statusText').textContent='就绪 - '+(state.version||'v--'); const about=document.querySelectorAll('.about-grid .a-row span:last-child'); if(about[0]) about[0].textContent=`${state.version||''} · ${state.build_id||''}`; if(about[1]) about[1].textContent=state.build_date||''; if(about[3]) about[3].textContent=state.providers.map(p=>shortName(p.name)).join(' · '); }
+function renderProviders(){ $('providerList').innerHTML = state.providers.map(p => `<div class="provider" role="radio" tabindex="0" data-id="${esc(p.key)}" aria-checked="${p.key===state.activeProvider}"><span class="radio" aria-hidden="true"></span><span class="p-body"><span class="p-name">${esc(shortName(p.name))}${p.requires_verification?'<span class="p-tag warn">需验证</span>':p.key==='uncensored'||p.key==='bestjavporn'?'<span class="p-tag">实验</span>':''}</span><span class="p-desc">${esc(providerDesc(p))}${p.is_overridden?' · 已自定义':''}</span></span></div>`).join(''); document.querySelectorAll('.provider').forEach(el=>{ const pick=async()=>{ state.activeProvider=el.dataset.id; await api('set_active_provider',state.activeProvider); renderProviders(); renderDetail(); }; el.onclick=pick; el.onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){e.preventDefault(); pick();} }; }); }
+function active(){ return state.providers.find(p=>p.key===state.activeProvider) || state.providers[0] || {}; }
+function renderDetail(){ const p=active(); const routed=p.key==='uncensored'; $('pdName').textContent=shortName(p.name)||'—'; $('pdTestCode').textContent='测试番号 '+(TEST_CODES[p.key]||'SONE-753'); $('pdBanner').classList.toggle('hidden',!(p.requires_verification||routed)); $('pdBannerText').textContent=routed?'无码源按文件名前缀自动路由到内部站点，无需手动配置选择器。':'首次使用或 Cookie 失效时，需要在弹出的 Chrome 窗口完成验证。'; $('pdFields').classList.toggle('hidden',routed); $('pdRouting').classList.toggle('hidden',!routed); $('fSearchUrl').value=p.search_url||''; $('fTextSel').value=p.text_selector||''; $('fImgSel').value=p.image_selector||''; $('provSaveState').textContent=''; $('provSaveState').className='save-state'; }
+function renderProc(){ const s=state.settings||{}; $('fMaxLen').value=s.max_filename_length||''; $('fMaxBytes').value=s.max_filename_bytes||''; $('fBatch').value=s.batch_count||''; $('tglActor').setAttribute('aria-checked',String(s.preserve_actor!==false)); $('tglSub').setAttribute('aria-checked',String(!!s.include_subdirectories)); $('tglDry').setAttribute('aria-checked',String(!!s.dry_run)); $('procSaveState').textContent=''; $('procSaveState').classList.remove('dirty'); }
+function connectionAdvice(website,r){ const text=`${r.error_type||''} ${r.message||''}`.toLowerCase(); if(r.advice)return r.advice; if(website==='javbus'&&text.includes('age-verification'))return 'JavBus 返回年龄确认页。请先在浏览器打开 JavBus 完成年龄确认，或稍后重试。'; if(website==='javlibrary'||/cloudflare|challenge/.test(text))return '需要在弹出的 Chrome 窗口完成验证后，再重新测试。'; if(/verification/.test(text))return '目标站点返回验证页，请先在浏览器完成该站点验证或稍后重试。'; if(/detail fallback also failed/.test(text)&&/500|502|503|504|server error|too many 500/.test(text))return '目标站点搜索页和详情页都返回服务端错误；当前源暂时不可用，建议换源或稍后重试。'; if(/500|502|503|504|server error|too many 500/.test(text))return '目标站点返回服务端错误；程序会尝试详情页兜底，仍失败时建议稍后重试或换源。'; if(/timeout|connection|network|dns|reset|proxy/.test(text))return '请检查网络、代理或远程链路，稍后重试。'; if(/403|forbidden/.test(text))return '目标站点拒绝访问，可能需要 Cookie、Referer 或稍后重试。'; if((r.error_type||'')==='image-download-failed')return '详情页可解析，但封面下载验证失败；处理时会继续使用候选封面。'; return '请查看日志中的错误类型和返回信息。'; }
+function setProviderTestState(cls,text){ $('provSaveState').className=`save-state ${cls||''}`.trim(); $('provSaveState').textContent=text; }
+function showProviderTestResult(payload){ const r=payload.result||{}; const ok=!!r.ok; const provider=r.provider_name||providerLabel(payload.website); const query=r.query||payload.query||''; const detail=ok?'标题已提取，封面可下载':`${r.error_type||'失败'}${r.message?`：${r.message}`:''}`; const advice=ok?'':connectionAdvice(payload.website,r); setProviderTestState(ok?'ok':'error',`${ok?'连接测试成功':'连接测试失败'} | ${provider}${query?` | ${query}`:''} | ${detail}${advice?` | 建议：${advice}`:''}`); toast(ok?'连接测试成功':'连接测试失败，已显示原因和建议'); $('statusText').textContent=ok?'连接测试成功':'连接测试失败'; }
+function receive(ev){ if(!ev)return; if(ev.id){ if(state.seen.has(ev.id))return; state.seen.add(ev.id); state.lastEventId=Math.max(state.lastEventId,ev.id); } const p=ev.payload||{}; if(ev.type==='connection'&&p.website===state.activeProvider){ state.testing=false; $('btnTestProv').disabled=false; showProviderTestResult(p); } if(ev.type==='state'&&'testing' in p){ state.testing=!!p.testing; if(!state.testing)$('btnTestProv').disabled=false; } }
+window.JFO={receive};
+function markProvDirty(){ $('provSaveState').textContent='● 未保存'; $('provSaveState').className='save-state dirty'; }
+function markProcDirty(){ $('procSaveState').textContent='● 未保存'; $('procSaveState').classList.add('dirty'); }
+['fSearchUrl','fTextSel','fImgSel'].forEach(id=>$(id).addEventListener('input',markProvDirty));
+['fMaxLen','fMaxBytes','fBatch'].forEach(id=>$(id).addEventListener('input',markProcDirty));
+function bindToggle(id,onChange){ const el=$(id); const flip=()=>{ const on=el.getAttribute('aria-checked')!=='true'; el.setAttribute('aria-checked',String(on)); onChange(on); }; el.onclick=flip; el.onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){e.preventDefault(); flip();} }; }
+bindToggle('tglActor',markProcDirty); bindToggle('tglSub',markProcDirty); bindToggle('tglDry',markProcDirty);
+function validNumField(wrap,input){ const v=$(input).value.trim(); const ok=v===''||(/^\d+$/.test(v)&&Number(v)>0); $(wrap).classList.toggle('invalid',!ok); $(input).classList.toggle('err',!ok); return ok; }
+$('btnSaveProv').onclick=async()=>{ const p=active(); const r=await api('save_provider_config',{website:p.key,search_url:$('fSearchUrl').value.trim(),text_selector:$('fTextSel').value.trim(),image_selector:$('fImgSel').value.trim()}); if(!r.ok){toast(r.message||'保存失败');return;} await load(); $('provSaveState').textContent='已保存'; $('provSaveState').classList.remove('dirty'); toast('数据源配置已写入 config.json'); };
+$('btnResetProv').onclick=async()=>{ const r=await api('reset_provider_config',state.activeProvider); if(!r.ok){toast(r.message||'重置失败');return;} await load(); toast('已恢复该数据源的默认配置'); };
+$('btnTestProv').onclick=async()=>{ const p=active(); $('btnTestProv').disabled=true; state.testing=true; setProviderTestState('testing',`连接测试中 | ${shortName(p.name)} | ${TEST_CODES[p.key]||''} | 正在验证标题提取和封面下载…`); const r=await api('test_connection',{website:p.key,search_url:$('fSearchUrl').value.trim(),text_selector:$('fTextSel').value.trim(),image_selector:$('fImgSel').value.trim(),max_filename_length:$('fMaxLen').value.trim(),max_filename_bytes:$('fMaxBytes').value.trim(),preserve_actor:$('tglActor').getAttribute('aria-checked')==='true',include_subdirectories:$('tglSub').getAttribute('aria-checked')==='true',dry_run:$('tglDry').getAttribute('aria-checked')==='true',batch_count:$('fBatch').value.trim()}); if(!r.started){ state.testing=false; $('btnTestProv').disabled=false; setProviderTestState('error',r.message||'连接测试未能启动'); toast('连接测试未能启动'); } };
+$('btnSaveProc').onclick=async()=>{ const ok=[validNumField('fwMaxLen','fMaxLen'),validNumField('fwMaxBytes','fMaxBytes'),validNumField('fwBatch','fBatch')].every(Boolean); if(!ok){toast('存在无效数值，请修正后再保存');return;} const r=await api('save_processing_settings',{max_filename_length:$('fMaxLen').value.trim(),max_filename_bytes:$('fMaxBytes').value.trim(),batch_count:$('fBatch').value.trim(),preserve_actor:$('tglActor').getAttribute('aria-checked')==='true',include_subdirectories:$('tglSub').getAttribute('aria-checked')==='true',dry_run:$('tglDry').getAttribute('aria-checked')==='true'}); if(!r.ok){toast(r.message||'保存失败');return;} state.settings=r.settings||state.settings; $('procSaveState').textContent='已保存'; $('procSaveState').classList.remove('dirty'); toast('处理设置已写入 config.json'); };
+$('btnResetProc').onclick=async()=>{ const r=await api('reset_processing_settings'); if(!r.ok){toast(r.message||'重置失败');return;} state.settings=r.settings||state.settings; ['fwMaxLen','fwMaxBytes','fwBatch'].forEach(id=>$(id).classList.remove('invalid')); renderProc(); toast('处理设置已恢复默认'); };
+document.querySelectorAll('.copybtn').forEach(btn=>btn.onclick=async()=>{ const text=btn.dataset.copy; try{await navigator.clipboard.writeText(text);}catch(e){} btn.textContent='已复制'; setTimeout(()=>btn.textContent='复制',1200); });
+const GO={'1':'index.html','2':'report.html','3':'settings.html'}; document.addEventListener('keydown',e=>{ if(e.metaKey||e.ctrlKey||e.altKey)return; const t=e.target; if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable))return; const href=GO[e.key]; if(href&&!href.endsWith('settings.html')) window.location.href=href; });
+async function load(){ $('statusText').textContent='正在连接应用后端…'; const s=await api('settings_state'); if(!s.version){ toast(s.message||'应用后端未就绪'); return; } state={...state,...s}; state.activeProvider=(s.settings&&s.settings.website)||state.activeProvider||'javbus'; setVersionText(); renderProviders(); renderDetail(); renderProc(); }
+load();
+setInterval(async()=>{ if(!window.pywebview)return; try{(await window.pywebview.api.poll_events(state.lastEventId)||[]).forEach(receive);}catch(e){} },1000);
+</script>
+</body>
+</html>

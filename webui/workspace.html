@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>主工作区 · JAV File Organizer</title>
+<style>
+  /* ─── tokens · 科技/工具型 · 浅色 ─────────────────────────────── */
+  :root {
+    --bg:      oklch(98% 0.005 250);
+    --surface: oklch(100% 0 0);
+    --fg:      oklch(22% 0.02 240);
+    --muted:   oklch(50% 0.018 240);
+    --border:  oklch(90% 0.008 240);
+    --accent:  oklch(56% 0.17 255);
+
+    --ok:      oklch(58% 0.16 145);
+    --warn:    oklch(64% 0.14 70);
+    --err:     oklch(56% 0.19 27);
+    --info:    oklch(54% 0.15 255);
+
+    --ring:    color-mix(in oklch, var(--accent) 38%, transparent);
+
+    --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+    --ok-soft:     color-mix(in oklch, var(--ok) 12%, transparent);
+    --warn-soft:   color-mix(in oklch, var(--warn) 16%, transparent);
+    --err-soft:    color-mix(in oklch, var(--err) 10%, transparent);
+    --info-soft:   color-mix(in oklch, var(--info) 10%, transparent);
+    --fg-soft:     color-mix(in oklch, var(--fg) 5%, transparent);
+    --fg-softer:   color-mix(in oklch, var(--fg) 2.5%, transparent);
+
+    --font-display: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+    --font-body:    -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+    --font-mono:    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+
+    --radius: 8px;
+    --radius-sm: 6px;
+    --fs-meta: 12px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  button { font: inherit; cursor: pointer; }
+  a { color: inherit; text-decoration: none; }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .hidden { display: none !important; }
+
+  /* ─── app shell ───────────────────────────────────────────────── */
+  .app { height: 100vh; display: grid; grid-template-rows: auto auto 1fr auto; }
+
+  /* appbar */
+  .appbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .appbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .appmark { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); flex: none; overflow: hidden; }
+  .appmark img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .appname { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; white-space: nowrap; }
+  .ver {
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+    color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; white-space: nowrap;
+  }
+  .appbar-actions { display: flex; align-items: center; gap: 8px; }
+  .vdiv { width: 1px; height: 20px; background: var(--border); margin-inline: 4px; }
+
+  /* buttons */
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 8px 14px; border-radius: var(--radius);
+    border: 1px solid transparent;
+    font-size: 13px; font-weight: 500; letter-spacing: -0.005em;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease, color 0.15s ease;
+    white-space: nowrap;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+  .btn-primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+  .btn-primary:hover:not(:disabled) { background: color-mix(in oklch, var(--accent) 88%, black); }
+  .btn-secondary { background: var(--surface); color: var(--fg); border-color: var(--border); }
+  .btn-secondary:hover:not(:disabled) { border-color: var(--muted); }
+  .btn-ghost { background: transparent; color: var(--muted); }
+  .btn-ghost:hover { color: var(--fg); }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+  .btn .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+  /* folder bar */
+  .folderbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .folderbar svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+  .folderpath { font-family: var(--font-mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scanmeta { margin-left: auto; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
+  .drypill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.03em;
+    color: var(--info); background: var(--info-soft);
+    border: 1px solid color-mix(in oklch, var(--info) 30%, transparent);
+    border-radius: 999px; padding: 3px 10px; white-space: nowrap;
+  }
+
+  /* layout */
+  .layout { display: grid; grid-template-columns: 272px 1fr; min-height: 0; }
+
+  /* sidebar */
+  .sidebar {
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    overflow-y: auto;
+    display: flex; flex-direction: column;
+  }
+  .side-block { padding: 16px; border-bottom: 1px solid var(--border); }
+  .side-block:last-child { border-bottom: 0; }
+  .side-title {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 12px;
+  }
+
+  /* provider list */
+  .provider { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border-radius: var(--radius); border: 1px solid transparent; cursor: pointer; }
+  .provider:hover { background: var(--fg-softer); }
+  .provider[aria-checked="true"] { border-color: color-mix(in oklch, var(--accent) 45%, transparent); background: var(--accent-soft); }
+  .provider input { position: absolute; opacity: 0; pointer-events: none; }
+  .provider .radio {
+    width: 14px; height: 14px; border-radius: 50%; flex: none; margin-top: 3px;
+    border: 1.5px solid var(--muted); display: grid; place-items: center;
+  }
+  .provider[aria-checked="true"] .radio { border-color: var(--accent); }
+  .provider[aria-checked="true"] .radio::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .provider .p-body { min-width: 0; flex: 1; }
+  .provider .p-name { font-size: 13px; font-weight: 550; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .provider .p-desc { font-size: 12px; color: var(--muted); margin-top: 1px; }
+  .p-tag {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.03em;
+    padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted);
+  }
+  .p-tag.warn { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 40%, transparent); background: var(--warn-soft); }
+  .test-result {
+    margin-top: 10px; font-size: 11.5px; color: var(--muted); min-height: 16px;
+    border: 1px solid transparent; border-radius: var(--radius-sm); padding: 0;
+  }
+  .test-result.state-running,
+  .test-result.state-ok,
+  .test-result.state-error {
+    padding: 8px 10px; line-height: 1.55;
+  }
+  .test-result.state-running { color: var(--info); background: var(--info-soft); border-color: color-mix(in oklch, var(--info) 28%, transparent); }
+  .test-result.state-ok { color: var(--fg); background: var(--ok-soft); border-color: color-mix(in oklch, var(--ok) 32%, transparent); }
+  .test-result.state-error { color: var(--fg); background: var(--err-soft); border-color: color-mix(in oklch, var(--err) 30%, transparent); }
+  .test-result b { color: var(--fg); font-weight: 650; }
+  .test-result .test-advice { margin-top: 4px; color: var(--muted); }
+  .test-result .ok { color: var(--ok); }
+  .test-result .err { color: var(--err); }
+
+  /* toggles */
+  .toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; cursor: pointer; }
+  .toggle .t-label { font-size: 13px; }
+  .toggle .t-hint { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+  .switch { width: 32px; height: 18px; border-radius: 999px; background: var(--border); position: relative; flex: none; transition: background 0.15s ease; }
+  .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); transition: left 0.15s ease; box-shadow: 0 1px 2px var(--fg-soft); }
+  .toggle[aria-checked="true"] .switch { background: var(--accent); }
+  .toggle[aria-checked="true"] .switch::after { left: 16px; }
+  .side-link { display: inline-block; margin-top: 10px; font-size: 12.5px; color: var(--accent); }
+  .side-link:hover { text-decoration: underline; }
+
+  /* filter chips */
+  .fchip {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    width: 100%; padding: 6px 10px; border-radius: var(--radius-sm);
+    border: 0; background: transparent; font-size: 13px; color: var(--fg); text-align: left;
+  }
+  .fchip:hover { background: var(--fg-softer); }
+  .fchip[aria-pressed="true"] { background: var(--fg-soft); font-weight: 550; }
+  .fchip .count { font-family: var(--font-mono); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .fchip .f-left { display: inline-flex; align-items: center; gap: 8px; }
+  .sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+  /* main column */
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+  .tablebar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .tablebar .stats { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .search {
+    margin-left: auto; width: 240px;
+    padding: 6px 10px; font-size: 12.5px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg); color: var(--fg); font-family: var(--font-mono);
+  }
+  .search:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+
+  /* file table */
+  .tablewrap { flex: 1; overflow: auto; min-height: 120px; background: var(--surface); }
+  .ds-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ds-table th, .ds-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .ds-table th {
+    position: sticky; top: 0; z-index: 2; background: var(--surface);
+    color: var(--muted); font-weight: 500; font-family: var(--font-mono);
+    font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
+  }
+  .ds-table tbody tr { cursor: pointer; }
+  .ds-table tbody tr:hover { background: var(--fg-softer); }
+  .ds-table tbody tr.selected { background: var(--info-soft); }
+  .ds-table .num-col { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .ds-table .fname { font-family: var(--font-mono); font-size: 12.5px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ds-table .fnew { font-family: var(--font-mono); font-size: 12px; color: var(--muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ds-table .fnew.done { color: var(--fg); }
+  .ds-table .fcode { font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; }
+  .ds-table .fprov { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+  .ds-table .rowcheck { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; }
+  .ds-table tr.skipped { opacity: 0.55; }
+  .ds-table .chev { color: var(--muted); font-family: var(--font-mono); }
+  .ds-table button.chev { background: transparent; border: 0; padding: 2px 4px; cursor: pointer; }
+  .spin {
+    display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+    border: 1.5px solid var(--info); border-top-color: transparent;
+    animation: rot 0.7s linear infinite; vertical-align: -1px;
+  }
+  @keyframes rot { to { transform: rotate(360deg); } }
+
+  /* status pills */
+  .st {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em;
+    padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+    border: 1px solid var(--border); color: var(--muted); background: var(--surface);
+  }
+  .st-ok   { color: var(--ok);   background: var(--ok-soft);   border-color: color-mix(in oklch, var(--ok) 35%, transparent); }
+  .st-err  { color: var(--err);  background: var(--err-soft);  border-color: color-mix(in oklch, var(--err) 35%, transparent); }
+  .st-warn { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in oklch, var(--warn) 40%, transparent); }
+  .st-info { color: var(--info); background: var(--info-soft); border-color: color-mix(in oklch, var(--info) 35%, transparent); }
+  .st-run  { color: var(--info); background: var(--info-soft); border-color: color-mix(in oklch, var(--info) 35%, transparent); }
+
+  /* progress panel */
+  .progress { border-top: 1px solid var(--border); background: var(--surface); padding: 12px 16px; }
+  .progress-top { display: flex; align-items: center; gap: 14px; }
+  .p-status { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 550; white-space: nowrap; }
+  .p-status .sdot { width: 8px; height: 8px; }
+  .p-bar { flex: 1; height: 8px; border-radius: 999px; background: var(--fg-soft); overflow: hidden; }
+  .p-fill { height: 100%; width: 0%; border-radius: 999px; background: var(--accent); transition: width 0.4s ease; }
+  .p-pct { font-family: var(--font-mono); font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 62px; text-align: right; }
+  .progress-meta {
+    display: flex; gap: 20px; margin-top: 8px;
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  .progress-meta b { color: var(--fg); font-weight: 500; }
+
+  /* log panel */
+  .logpanel { border-top: 1px solid var(--border); background: var(--bg); }
+  .log-head { display: flex; align-items: center; gap: 10px; padding: 7px 16px; }
+  .log-head .side-title { margin: 0; }
+  .log-head .logcount { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+  .log-head .btn { margin-left: auto; }
+  .log-head .chevbtn { color: var(--muted); background: none; border: 0; font-family: var(--font-mono); font-size: 12px; padding: 2px 6px; }
+  .log-body {
+    height: 148px; overflow-y: auto; padding: 4px 16px 12px;
+    font-family: var(--font-mono); font-size: 11.5px; line-height: 1.7;
+    -webkit-user-select: text; user-select: text; cursor: text;
+  }
+  .log-body.collapsed { display: none; }
+  .logline {
+    display: grid; grid-template-columns: 72px 56px minmax(0, 1fr); gap: 8px;
+    white-space: pre-wrap; word-break: break-word;
+    -webkit-user-select: text; user-select: text;
+  }
+  .logline span { -webkit-user-select: text; user-select: text; }
+  .logline .l-time { color: var(--muted); }
+  .l-INFO, .l-PROCESSING { color: var(--muted); }
+  .l-OK, .l-SUCCESS   { color: var(--ok); }
+  .l-WARN, .l-WARNING { color: var(--warn); }
+  .l-ERR, .l-ERROR    { color: var(--err); }
+
+  /* status bar */
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 5px 16px; border-top: 1px solid var(--border); background: var(--surface);
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  }
+  .statusbar .s-left { display: inline-flex; align-items: center; gap: 8px; }
+  .statusbar .s-right { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* overlay modal — 安全停止 */
+  .overlay {
+    position: fixed; inset: 0; z-index: 60;
+    background: color-mix(in oklch, var(--fg) 28%, transparent);
+    display: grid; place-items: center;
+  }
+  .modal {
+    width: 420px; max-width: calc(100vw - 48px);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 24px; box-shadow: 0 12px 40px color-mix(in oklch, var(--fg) 18%, transparent);
+  }
+  .modal h2 { margin: 0 0 8px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+  .modal p { margin: 0 0 18px; font-size: 13px; color: var(--muted); }
+  .indet { height: 6px; border-radius: 999px; background: var(--fg-soft); overflow: hidden; margin-bottom: 18px; }
+  .indet.done { display: none; }
+  .indet::after {
+    content: ''; display: block; height: 100%; width: 38%; border-radius: 999px; background: var(--info);
+    animation: slide 1.1s ease-in-out infinite alternate;
+  }
+  @keyframes slide { from { margin-left: 0; } to { margin-left: 62%; } }
+  .modal .m-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .m-stats { display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 18px; }
+  .m-stats > div { flex: 1; padding: 10px 4px; text-align: center; }
+  .m-stats > div + div { border-left: 1px solid var(--border); }
+  .m-stats b { display: block; font-family: var(--font-mono); font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .m-stats b.ok { color: var(--ok); }
+  .m-stats b.err { color: var(--err); }
+  .m-stats b.warn { color: var(--warn); }
+  .m-stats span { font-size: 11px; color: var(--muted); }
+
+  /* detail drawer */
+  .drawer-scrim { position: fixed; inset: 0; z-index: 40; background: color-mix(in oklch, var(--fg) 18%, transparent); }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; z-index: 50;
+    width: 400px; max-width: 92vw;
+    background: var(--surface); border-left: 1px solid var(--border);
+    box-shadow: -16px 0 48px color-mix(in oklch, var(--fg) 12%, transparent);
+    display: flex; flex-direction: column;
+  }
+  .drawer-head { display: flex; align-items: flex-start; gap: 10px; padding: 16px; border-bottom: 1px solid var(--border); }
+  .drawer-head .d-title { font-family: var(--font-mono); font-size: 13px; font-weight: 600; word-break: break-all; margin: 0 0 6px; }
+  .drawer-head .d-close { margin-left: auto; background: none; border: 0; color: var(--muted); font-size: 18px; line-height: 1; padding: 4px; }
+  .drawer-head .d-close:hover { color: var(--fg); }
+  .drawer-body { overflow-y: auto; padding: 16px; }
+  .cover {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: linear-gradient(135deg, var(--accent-soft), var(--fg-soft)), var(--surface);
+    aspect-ratio: 3 / 4; max-width: 180px; margin: 0 auto 16px;
+    display: grid; place-items: center; text-align: center;
+    color: var(--muted); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+  }
+  .cover.has-image { background: var(--surface); overflow: hidden; }
+  .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .d-fields { display: grid; grid-template-columns: 96px 1fr; row-gap: 9px; column-gap: 12px; font-size: 12.5px; }
+  .d-fields dt { color: var(--muted); margin: 0; }
+  .d-fields dd { margin: 0; font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
+  .rename-block { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 16px; background: var(--bg); }
+  .rename-block .r-row { font-family: var(--font-mono); font-size: 11.5px; word-break: break-all; }
+  .rename-block .r-label { color: var(--muted); font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 2px; }
+  .rename-block .r-arrow { color: var(--accent); margin: 6px 0; font-family: var(--font-mono); font-size: 11px; }
+
+  /* ─── creative-director 精修：焦点 / 动效 / 反馈 ─────────────── */
+  ::selection { background: var(--accent-soft); }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; border-radius: var(--radius-sm); }
+  .search:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+
+  .btn-secondary:hover:not(:disabled) { background: var(--fg-softer); }
+
+  .ds-table tbody tr:hover .chev { color: var(--accent); }
+  .ds-table td.empty {
+    padding: 44px 16px; text-align: center; color: var(--muted);
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em;
+    cursor: default;
+  }
+  .ds-table tbody tr:has(td.empty):hover { background: transparent; }
+
+  .overlay, .drawer-scrim { animation: od-fade 0.16s ease-out; }
+  .modal { animation: od-pop 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.2); }
+  .drawer { animation: od-slide 0.2s ease-out; }
+  @keyframes od-fade { from { opacity: 0; } }
+  @keyframes od-pop { from { opacity: 0; transform: translateY(10px) scale(0.98); } }
+  @keyframes od-slide { from { opacity: 0.4; transform: translateX(28px); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .overlay, .drawer-scrim, .modal, .drawer,
+    .spin, .indet::after { animation: none !important; }
+    .btn, .p-fill, .switch, .switch::after { transition: none !important; }
+  }
+
+  @media (max-width: 1080px) {
+    .layout { grid-template-columns: 1fr; }
+    .sidebar { border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; overflow-x: auto; max-height: 190px; }
+    .side-block { border-bottom: 0; border-right: 1px solid var(--border); min-width: 220px; padding: 12px 14px; }
+    .appbar { flex-wrap: wrap; }
+    .appbar-actions { margin-left: 36px; flex-wrap: wrap; }
+    .ds-table th:nth-child(5), .ds-table td:nth-child(5),
+    .ds-table th:nth-child(6), .ds-table td:nth-child(6),
+    .ds-table th:nth-child(7), .ds-table td:nth-child(7),
+    .ds-table th:nth-child(8), .ds-table td:nth-child(8) { display: none; }
+    .ds-table .fname { max-width: 420px; }
+  }
+  @media (max-width: 720px) {
+    .folderbar { flex-wrap: wrap; }
+    .scanmeta { margin-left: 0; width: 100%; }
+    .tablebar { flex-wrap: wrap; }
+    .search { width: 100%; margin-left: 0; }
+    .progress-meta { flex-wrap: wrap; gap: 8px 16px; white-space: normal; }
+    .ds-table th:nth-child(2), .ds-table td:nth-child(2) { width: 86px; }
+    .ds-table th:nth-child(4), .ds-table td:nth-child(4) { width: 112px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ─── app bar ─────────────────────────────────────────────── -->
+  <header class="appbar" data-od-id="appbar">
+    <div class="appbar-left">
+      <span class="appmark" aria-hidden="true"><img src="app-icon.png" alt=""></span>
+      <span class="appname">JAV File Organizer</span>
+      <span class="ver">v--</span>
+    </div>
+    <div class="appbar-actions">
+      <button class="btn btn-secondary" id="btnTest">测试连接</button>
+      <button class="btn btn-primary" id="btnStart">开始处理</button>
+      <button class="btn btn-secondary" id="btnStop" disabled>停止处理</button>
+      <span class="vdiv" aria-hidden="true"></span>
+      <a class="btn btn-ghost" href="report.html">运行报告</a>
+      <a class="btn btn-ghost" href="settings.html">设置</a>
+    </div>
+  </header>
+
+  <!-- ─── folder bar ──────────────────────────────────────────── -->
+  <div class="folderbar" data-od-id="folderbar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+    </svg>
+    <span class="folderpath" id="folderPath">未选择目录</span>
+    <button class="btn btn-secondary btn-sm" id="btnFolder">选择文件夹</button>
+    <span class="drypill hidden" id="dryPill">仅审计模式 · 不移动文件、不下载封面</span>
+    <span class="scanmeta" id="scanMeta">尚未扫描</span>
+  </div>
+
+  <div class="layout">
+    <!-- ─── sidebar ───────────────────────────────────────────── -->
+    <aside class="sidebar" data-od-id="sidebar">
+      <section class="side-block" data-od-id="providers">
+        <h2 class="side-title">数据源</h2>
+        <div id="providerList" role="radiogroup" aria-label="数据源"></div>
+        <div class="test-result mono" id="testResult" aria-live="polite"></div>
+      </section>
+
+      <section class="side-block" data-od-id="quick-settings">
+        <h2 class="side-title">处理设置</h2>
+        <div class="toggle" id="tglDry" role="checkbox" aria-checked="false" tabindex="0">
+          <div>
+            <div class="t-label">仅审计（Dry Run）</div>
+            <div class="t-hint">不移动文件、不下载封面</div>
+          </div>
+          <span class="switch" aria-hidden="true"></span>
+        </div>
+        <div class="toggle" id="tglSub" role="checkbox" aria-checked="false" tabindex="0">
+          <div>
+            <div class="t-label">包括子目录</div>
+            <div class="t-hint">始终跳过 Finish / JFO_Logs</div>
+          </div>
+          <span class="switch" aria-hidden="true"></span>
+        </div>
+        <a class="side-link" href="settings.html">全部设置 →</a>
+      </section>
+
+      <section class="side-block" data-od-id="filters">
+        <h2 class="side-title">筛选</h2>
+        <div id="filterList"></div>
+      </section>
+    </aside>
+
+    <!-- ─── main ──────────────────────────────────────────────── -->
+    <main class="main">
+      <div class="tablebar" data-od-id="tablebar">
+        <span class="stats" id="tableStats">已选 8 / 8 待处理</span>
+        <input class="search" id="searchInput" type="search" placeholder="筛选文件名或番号…" aria-label="筛选文件名或番号">
+      </div>
+
+      <div class="tablewrap" data-od-id="filetable">
+        <table class="ds-table" id="fileTable">
+          <thead>
+            <tr>
+              <th style="width:30px"><span class="hidden">选</span></th>
+              <th style="width:118px">状态</th>
+              <th>文件名</th>
+              <th style="width:130px">番号</th>
+              <th class="num-col" style="width:84px">大小</th>
+              <th>重命名预览</th>
+              <th style="width:96px">数据源</th>
+              <th class="num-col" style="width:70px">耗时</th>
+              <th style="width:30px"><span class="hidden">详情</span></th>
+            </tr>
+          </thead>
+          <tbody id="fileTbody"></tbody>
+        </table>
+      </div>
+
+      <section class="progress" data-od-id="progress">
+        <div class="progress-top">
+          <span class="p-status" id="pStatus"><span class="sdot" style="background: var(--ok)"></span>就绪</span>
+          <div class="p-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="pBar">
+            <div class="p-fill" id="pFill"></div>
+          </div>
+          <span class="p-pct" id="pPct">0%</span>
+        </div>
+        <div class="progress-meta">
+          <span>当前文件 <b id="mCurrent">—</b></span>
+          <span>平均 <b id="mAvg">—</b></span>
+          <span>已用时间 <b id="mElapsed">00:00</b></span>
+          <span>剩余时间 <b id="mRemain">—</b></span>
+        </div>
+      </section>
+
+      <section class="logpanel" data-od-id="logpanel">
+        <div class="log-head">
+          <h2 class="side-title">处理日志</h2>
+          <span class="logcount" id="logCount">0 行</span>
+          <button class="chevbtn" id="btnLogFold" aria-label="折叠日志">[ 折叠 ]</button>
+          <button class="btn btn-ghost btn-sm" id="btnCopyLog">复制日志</button>
+          <button class="btn btn-ghost btn-sm" id="btnClearLog">清空日志</button>
+        </div>
+        <div class="log-body" id="logBody" aria-live="polite"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ─── status bar ──────────────────────────────────────────── -->
+  <footer class="statusbar" data-od-id="statusbar">
+    <span class="s-left"><span class="sdot" id="statusDot" style="background: var(--ok)"></span><span id="statusText">正在连接应用后端…</span></span>
+    <span class="s-right">输出 → Finish/ · 审计 → JFO_Logs/ · 配置 → config.json</span>
+  </footer>
+</div>
+
+<!-- ─── 安全停止对话框 ────────────────────────────────────────── -->
+<div class="overlay hidden" id="stopOverlay" role="dialog" aria-modal="true" aria-labelledby="stopTitle">
+  <div class="modal">
+    <h2 id="stopTitle">正在安全停止中…</h2>
+    <p id="stopDesc">等待当前网络请求或文件事务到达安全边界，源文件会保持安全。</p>
+    <div class="indet" id="stopIndet"></div>
+    <div class="m-actions">
+      <button class="btn btn-primary" id="btnStopOk" disabled>确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── 处理完成摘要对话框 ────────────────────────────────────── -->
+<div class="overlay hidden" id="doneOverlay" role="dialog" aria-modal="true" aria-labelledby="doneTitle">
+  <div class="modal">
+    <h2 id="doneTitle">处理完成</h2>
+    <p id="doneDesc">全部文件已在原子事务中处理完毕，审计产物已写入 JFO_Logs/。</p>
+    <div class="m-stats">
+      <div><b class="ok" id="doneOk">0</b><span id="doneOkLabel">成功</span></div>
+      <div><b class="err" id="doneErr">0</b><span>失败</span></div>
+      <div><b class="warn" id="doneRev">0</b><span>待确认</span></div>
+      <div><b id="doneTime">00:00</b><span>总耗时</span></div>
+    </div>
+    <div class="m-actions">
+      <a class="btn btn-secondary" href="report.html">查看运行报告</a>
+      <button class="btn btn-primary" id="btnDoneOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── 文件详情抽屉 ──────────────────────────────────────────── -->
+<div class="drawer-scrim hidden" id="drawerScrim"></div>
+<aside class="drawer hidden" id="drawer" aria-label="文件详情">
+  <div class="drawer-head">
+    <div>
+      <p class="d-title" id="dName">—</p>
+      <span id="dStatus"></span>
+    </div>
+    <button class="d-close" id="btnDrawerClose" aria-label="关闭详情">×</button>
+  </div>
+  <div class="drawer-body">
+    <div class="cover" id="dCover">封面占位</div>
+    <div class="rename-block" id="dRename">
+      <div class="r-label">重命名前</div>
+      <div class="r-row" id="dBefore">—</div>
+      <div class="r-arrow">↓</div>
+      <div class="r-label">重命名后</div>
+      <div class="r-row" id="dAfter">—</div>
+    </div>
+    <dl class="d-fields" id="dFields"></dl>
+  </div>
+</aside>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = {
+  providers: [], files: [], checked: new Set(), activeProvider: 'javbus',
+  filter: 'all', query: '', dryRun: false, includeSub: false,
+  running: false, stopping: false, testing: false, runStart: 0, lastEventId: 0, seen: new Set(),
+  version: 'v--', build_id: '', build_date: '',
+  settings: { website: 'javbus', dry_run: false, include_subdirectories: false, max_filename_length: '80', max_filename_bytes: '240', preserve_actor: true, batch_count: '' },
+};
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtSize = n => { n=Number(n||0); const u=['B','KB','MB','GB','TB']; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++} return `${n.toFixed(i?1:0)} ${u[i]}`; };
+function fmtDurMs(ms){ const s=Math.max(0,Math.round(ms/1000)); return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); }
+function fmtDurSec(sec){ return fmtDurMs(Number(sec||0)*1000); }
+function bridgeReady(){
+  if(window.pywebview && window.pywebview.api) return Promise.resolve(true);
+  return new Promise(resolve=>{
+    let done=false;
+    const finish=()=>{ if(done)return; done=true; resolve(!!(window.pywebview&&window.pywebview.api)); };
+    window.addEventListener('pywebviewready', finish, {once:true});
+    setTimeout(finish, 3000);
+  });
+}
+async function api(name,...args){ const ready=await bridgeReady(); if(!ready) return {ok:false,message:'pywebview not ready'}; return window.pywebview.api[name](...args); }
+function selectedProcessableFiles(){ return state.files.filter(f=>state.checked.has(f.id)&&['planned','review','audit'].includes(normalizeStatus(f.status))).map(f=>f.name); }
+function currentSettings(){ return { website: state.activeProvider, dry_run: state.dryRun, include_subdirectories: state.includeSub, max_filename_length: state.settings.max_filename_length, max_filename_bytes: state.settings.max_filename_bytes, preserve_actor: state.settings.preserve_actor, batch_count: state.settings.batch_count, selected_files: selectedProcessableFiles() }; }
+function providerName(){ return (state.providers.find(p=>p.key===state.activeProvider)||{}).name || state.activeProvider; }
+function providerLabel(key){ return (state.providers.find(p=>p.key===key)||{}).name || key || providerName(); }
+function providerDesc(p){ if(p.key==='uncensored') return '无码源自动匹配内部站点'; if(p.requires_verification) return '需要浏览器验证或 Cookie 状态'; return '普通 HTTP 源'; }
+function log(level,msg){ const line=document.createElement('div'); line.className='logline'; line.innerHTML=`<span class="l-time">${new Date().toLocaleTimeString('zh-CN',{hour12:false})}</span><span class="l-${level}">${level}</span><span>${esc(msg)}</span>`; $('logBody').appendChild(line); $('logBody').scrollTop=$('logBody').scrollHeight; $('logCount').textContent=$('logBody').children.length+' 行'; }
+function logPlainText(){ return [...$('logBody').querySelectorAll('.logline')].map(line=>line.innerText.replace(/\n/g,' ').trim()).join('\n'); }
+async function copyLogText(){ const text=logPlainText(); if(!text){ log('WARN','当前没有可复制的日志'); return; } try{ await navigator.clipboard.writeText(text); log('OK','日志已复制到剪贴板'); }catch(e){ const range=document.createRange(); range.selectNodeContents($('logBody')); const sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(range); log('WARN','无法直接写入剪贴板，已选中日志文本，可按 Command+C 复制'); } }
+function normalizeStatus(raw){
+  const s=String(raw??'').trim().toLowerCase();
+  const aliases={
+    planned:'planned', plan:'planned', pending:'planned', queued:'planned', todo:'planned', '待处理':'planned', '计划':'planned',
+    running:'running', processing:'running', active:'running', '处理中':'running',
+    ok:'ok', success:'ok', succeeded:'ok', done:'ok', completed:'ok', '成功':'ok', '已完成':'ok',
+    err:'err', error:'err', failed:'err', failure:'err', '失败':'err', '错误':'err',
+    review:'review', needs_review:'review', confirm:'review', '待确认':'review', '需确认':'review',
+    skip:'skip', skipped:'skip', cancelled:'skip', canceled:'skip', cancel:'skip', ignored:'skip', '跳过':'skip', '已跳过':'skip', '已取消':'skip',
+    audit:'audit', planned_result:'audit', dry_run:'audit', '已计划':'audit'
+  };
+  return aliases[s] || 'planned';
+}
+function statusPill(f){ const status=normalizeStatus(f&&f.status); const map={planned:['待处理','st'],running:['处理中','st st-run'],ok:['成功','st st-ok'],err:['失败','st st-err'],review:['待确认','st st-warn'],skip:['已跳过','st'],audit:['已计划','st st-info']}; const [t,cls]=map[status]; return `<span class="${cls}" data-status="${status}">${t}</span>`; }
+function renderProviders(){ $('providerList').innerHTML=state.providers.map(p=>`<label class="provider" data-id="${esc(p.key)}" aria-checked="${p.key===state.activeProvider}"><input type="radio" name="provider" ${p.key===state.activeProvider?'checked':''}><span class="radio"></span><span class="p-body"><span class="p-name">${esc(p.name)}<span class="p-tag ${p.requires_verification?'warn':''}">${p.requires_verification?'验证':'直接'}</span></span><span class="p-desc">${esc(providerDesc(p))}</span></span></label>`).join(''); document.querySelectorAll('.provider').forEach(el=>{el.onclick=async()=>{ if(state.running)return; state.activeProvider=el.dataset.id; await api('set_active_provider',state.activeProvider); renderProviders(); state.files.forEach(f=>{if(normalizeStatus(f.status)==='planned')f.provider=providerName()}); renderTable(); };}); }
+function countFilter(id){ if(id==='all') return state.files.length; if(id==='planned') return state.files.filter(f=>['planned','running','audit'].includes(normalizeStatus(f.status))).length; return state.files.filter(f=>normalizeStatus(f.status)===id).length; }
+function renderFilters(){ const filters=[['all','全部'],['planned','待处理'],['ok','成功'],['err','失败'],['review','待确认'],['skip','跳过']]; $('filterList').innerHTML=filters.map(([id,label])=>`<button class="fchip" aria-pressed="${state.filter===id?'true':'false'}" data-id="${id}"><span class="f-left"><span class="sdot" style="background: var(${id==='ok'?'--ok':id==='err'?'--err':id==='review'?'--warn':id==='planned'?'--info':'--muted'})"></span><span>${label}</span></span><span class="count">${countFilter(id)}</span></button>`).join(''); document.querySelectorAll('.fchip').forEach(b=>b.onclick=()=>{state.filter=b.dataset.id;renderFilters();renderTable();}); }
+function rowVisible(f){ const q=state.query; const status=normalizeStatus(f.status); const byFilter=state.filter==='all'||(state.filter==='planned'?['planned','running','audit'].includes(status):status===state.filter); const byQuery=!q||[f.name,f.code,f.after,f.provider].some(x=>String(x||'').toLowerCase().includes(q)); return byFilter&&byQuery; }
+function renderTable(){ const rows=state.files.filter(rowVisible); $('fileTbody').innerHTML=rows.map(f=>{ const status=normalizeStatus(f.status); return `<tr data-id="${f.id}" class="${status==='skip'?'skipped':''}"><td><input class="rowcheck" type="checkbox" ${state.checked.has(f.id)?'checked':''}></td><td>${statusPill(f)}</td><td><div class="fname">${esc(f.name)}</div>${f.note?`<div class="fnew">${esc(f.note)}</div>`:''}</td><td class="fcode">${esc(f.code||'—')}</td><td class="num-col">${esc(f.sizeText||fmtSize(f.size))}</td><td><div class="fnew ${status==='ok'?'done':''}">${esc(f.after||'—')}</div></td><td class="fprov">${esc(f.provider||providerName())}</td><td class="num-col">${esc(f.elapsed||'—')}</td><td><button class="chev" aria-label="详情">›</button></td></tr>`; }).join(''); if(!rows.length){$('fileTbody').innerHTML='<tr><td colspan="9" class="empty">没有匹配的文件。调整筛选或重新扫描目录。</td></tr>';}
+  document.querySelectorAll('#fileTbody tr[data-id]').forEach(tr=>{const id=tr.dataset.id; const cb=tr.querySelector('input'); cb.onclick=e=>{e.stopPropagation(); cb.checked?state.checked.add(id):state.checked.delete(id); updateTableStats();}; tr.querySelector('.chev').onclick=e=>{e.stopPropagation();openDrawer(id)}; tr.ondblclick=()=>openDrawer(id);}); updateTableStats(); }
+function updateTableStats(){ const processable=state.files.filter(f=>['planned','review','audit'].includes(normalizeStatus(f.status))); $('tableStats').textContent=`已选 ${[...state.checked].filter(id=>processable.some(f=>f.id===id)).length} / ${processable.length} 待处理`; }
+function markRunning(label){ const text=String(label||'').toLowerCase(); if(!text)return; let touched=false; state.files.forEach(f=>{ if(normalizeStatus(f.status)==='running'){ f.status='planned'; touched=true; } }); const current=state.files.find(f=>{ const parts=[f.name,f.code,f.query,f.group].map(x=>String(x||'').toLowerCase()).filter(Boolean); return parts.some(x=>text.includes(x)||x.includes(text)); }); if(current&&['planned','audit','review'].includes(normalizeStatus(current.status))){ current.status='running'; touched=true; } if(touched){ renderTable(); renderFilters(); } }
+function setProgress(done,total,label,stopping=false){ const pct=total?Math.round(done/total*100):0; $('pFill').style.width=pct+'%'; $('pPct').textContent=pct+'%'; $('pBar').setAttribute('aria-valuenow',pct); $('pStatus').innerHTML=`<span class="sdot" style="background: var(${stopping?'--warn':'--info'})"></span>${stopping?'安全停止中':'处理中'}: ${done}/${total}`; $('mCurrent').textContent=label||'—'; markRunning(label); const elapsed=state.runStart?Date.now()-state.runStart:0; $('mElapsed').textContent=fmtDurMs(elapsed); if(done>0){const avg=elapsed/done; $('mAvg').textContent=(avg/1000).toFixed(1)+'s/文件'; $('mRemain').textContent=fmtDurMs(avg*Math.max(total-done,0));}else{$('mAvg').textContent='计算中';$('mRemain').textContent='计算中';} }
+function setRunning(on, stopping=false){ state.running=on; state.stopping=stopping; $('btnStart').disabled=on; $('btnTest').disabled=on||state.testing; $('btnStop').disabled=!on||stopping; $('btnFolder').disabled=on; $('statusText').textContent=stopping?'正在安全停止…':on?'处理中…':'就绪 - '+state.version; $('statusDot').style.background=stopping?'var(--warn)':on?'var(--info)':'var(--ok)'; $('stopOverlay').classList.toggle('hidden',!stopping); }
+function isRemoteUrl(path){ return /^https?:\/\//i.test(String(path||'')); }
+function coverFallback(f,text='封面加载失败'){ return `${esc(f.code||'—')}<br>${text}<br>3:4`; }
+function coverImg(src,f){ return `<img src="${esc(src)}" alt="${esc(f.code||'封面')}" onerror="this.parentElement.classList.remove('has-image');this.parentElement.innerHTML='${coverFallback(f)}';">`; }
+function coverHtml(f){ if(f.targetImage)return coverFallback(f,'封面加载中'); if(f.img)return coverImg(f.img,f); return coverFallback(f,'封面占位'); }
+async function loadCover(f,id){ if(!f.targetImage)return; const r=await api('cover_image_data',f.targetImage); if(state.drawerFileId!==id)return; if(r&&r.ok&&r.src){ $('dCover').classList.add('has-image'); $('dCover').innerHTML=coverImg(r.src,f); }else if(f.img&&isRemoteUrl(f.img)){ $('dCover').classList.add('has-image'); $('dCover').innerHTML=coverImg(f.img,f); }else{ $('dCover').classList.remove('has-image'); $('dCover').innerHTML=coverFallback(f); } }
+function openDrawer(id){ const f=state.files.find(x=>x.id===id); if(!f)return; state.drawerFileId=id; $('dName').textContent=f.name; $('dStatus').innerHTML=statusPill(f); $('dCover').classList.toggle('has-image',!!f.img&&!f.targetImage); $('dCover').innerHTML=coverHtml(f); loadCover(f,id); $('dBefore').textContent=f.name; $('dAfter').textContent=f.after||'—'; const rows=[['番号',f.code||'—'],['序列组',f.group||'—'],['数据源',f.provider||providerName()],['搜索词',f.query||f.code||'—'],['标题',f.title||'—'],['详情页',f.detail||'—'],['本地封面',f.targetImage||'—'],['封面 URL',f.img||'—'],['封面已下载',f.image_downloaded?'是':'—'],['回滚保护',f.rollback_ok?'已提交（原子事务）':'未触发'],['提取耗时',f.elapsed||'—'],['备注',f.note||f.reason||'—']]; $('dFields').innerHTML=rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join(''); $('drawer').classList.remove('hidden'); $('drawerScrim').classList.remove('hidden'); }
+function closeDrawer(){ $('drawer').classList.add('hidden'); $('drawerScrim').classList.add('hidden'); }
+function rowsFromScan(files){ return (files||[]).map((f,i)=>({ id:'f'+i, status:normalizeStatus(f.status||'planned'), name:f.name, code:f.code||guessCode(f.name), query:f.query||'', group:f.group||'', sequence:f.sequence||'', size:f.size, sizeText:fmtSize(f.size), provider:f.provider||providerName(), after:'等待处理', note:'', path:f.path })); }
+function guessCode(name){ const m=String(name||'').match(/(?:FC2(?:-PPV)?[-_ ]*\d+|[A-Za-z]{2,8}[-_ ]*\d{2,6}(?:[-_ ]\d+)?|\d{6}[-_]\d{3})/); return m?m[0].replace(/_/g,'-').toUpperCase():'—'; }
+function previewFromResult(r,status,f){ const target=(r.target_video_path||'').split('/').pop(); if(target)return target; if(status==='err')return '处理失败 - 源文件保持原样'; if(status==='skip')return '已跳过 - 源文件保持原样'; if(status==='review')return '待确认命名规则'; if(status==='audit')return '已计划 - 未落盘'; return f.after||'等待处理'; }
+function updateFromResults(results){ const byName=new Map((results||[]).map(r=>[(r.source_path||'').split('/').pop(),r])); state.files.forEach(f=>{const r=byName.get(f.name); if(!r)return; const status=normalizeStatus(r.status||f.status); f.status=status; f.provider=r.provider||f.provider; f.query=r.query||f.query; f.title=r.title||f.title; f.img=r.image_url||f.img; f.targetImage=r.target_image_path||f.targetImage; f.detail=r.detail_url||f.detail; f.reason=r.reason||''; f.note=r.reason||''; f.after=previewFromResult(r,status,f); f.elapsed=r.file_elapsed_seconds?Number(r.file_elapsed_seconds).toFixed(1)+'s':f.elapsed; f.rollback_ok=r.rollback_ok; f.image_downloaded=r.image_downloaded;}); renderTable(); renderFilters(); }
+function renderReport(result){ if(!result)return; const total=result.total_files||0,ok=result.success_count||0,err=result.failed_count||0,rev=result.needs_review_count||0; $('doneOk').textContent=ok; $('doneErr').textContent=err; $('doneRev').textContent=rev; $('doneTime').textContent=fmtDurSec(result.total_time||0); $('doneTitle').textContent=err||rev?'处理完成（有错误）':'处理完成'; $('doneDesc').textContent=err||rev?'已完成的文件保持完成；失败文件的源文件已保持原样，失败原因请查看日志或运行报告。':'全部文件已在原子事务中处理完毕，审计产物已写入 JFO_Logs/。'; }
+function applyCompletedProgress(result,dryRun=false){ result=result||{}; const total=Number(result.total_files||0),totalTime=Number(result.total_time||0),failed=Number(result.failed_count||0),review=Number(result.needs_review_count||0),cancelled=Number(result.cancelled_count||0); const avg=total>0?totalTime/total:0; $('pStatus').innerHTML=`<span class="sdot" style="background: var(${failed||review||cancelled?'--warn':'--ok'})"></span>${dryRun?'审计完成':'处理完成'}`; $('pFill').style.width='100%'; $('pPct').textContent='100%'; $('pBar').setAttribute('aria-valuenow',100); $('mCurrent').textContent='—'; $('mAvg').textContent=total>0?avg.toFixed(1)+'s/文件':'—'; $('mElapsed').textContent=fmtDurSec(totalTime); $('mRemain').textContent='00:00'; }
+function connectionAdvice(website,r){ const text=`${r.error_type||''} ${r.message||''}`.toLowerCase(); if(r.advice)return r.advice; if(website==='javbus'&&text.includes('age-verification'))return 'JavBus 返回年龄确认页。请先在浏览器打开 JavBus 完成年龄确认，或稍后重试。'; if(website==='javlibrary'||/cloudflare|challenge/.test(text))return '需要在弹出的 Chrome 窗口完成验证后，再重新测试。'; if(/verification/.test(text))return '目标站点返回验证页，请先在浏览器完成该站点验证或稍后重试。'; if(/detail fallback also failed/.test(text)&&/500|502|503|504|server error|too many 500/.test(text))return '目标站点搜索页和详情页都返回服务端错误；当前源暂时不可用，建议换源或稍后重试。'; if(/500|502|503|504|server error|too many 500/.test(text))return '目标站点返回服务端错误；程序会尝试详情页兜底，仍失败时建议稍后重试或换源。'; if(/timeout|connection|network|dns|reset|proxy/.test(text))return '请检查网络、代理或远程链路，稍后重试。'; if(/403|forbidden/.test(text))return '目标站点拒绝访问，可能需要 Cookie、Referer 或稍后重试。'; if((r.error_type||'')==='image-download-failed')return '详情页可解析，但封面下载验证失败；处理时会继续使用候选封面。'; return '请查看日志中的错误类型和返回信息。'; }
+function showConnectionRunning(provider,query){ state.testing=true; $('btnTest').disabled=true; $('testResult').className='test-result mono state-running'; $('testResult').innerHTML=`<b>连接测试中</b><div>${esc(provider)}${query?` | 测试番号 ${esc(query)}`:''}</div><div>正在验证标题提取和封面下载…</div>`; $('statusText').textContent='连接测试中…'; $('statusDot').style.background='var(--info)'; }
+function showConnectionResult(payload){ const r=payload.result||{}; const ok=!!r.ok; const provider=r.provider_name||providerLabel(payload.website); const query=r.query||payload.query||''; const detail=ok?'标题已提取 | 封面可下载':`${r.error_type||'失败'}${r.message?` | ${r.message}`:''}`; const advice=ok?'':connectionAdvice(payload.website,r); $('testResult').className=`test-result mono ${ok?'state-ok':'state-error'}`; $('testResult').innerHTML=`<b>${ok?'连接测试成功':'连接测试失败'}</b><div>${esc(provider)}${query?` | 测试番号 ${esc(query)}`:''}</div><div>${esc(detail)}</div>${advice?`<div class="test-advice">${esc(advice)}</div>`:''}`; $('statusText').textContent=ok?'连接测试成功':'连接测试失败'; $('statusDot').style.background=ok?'var(--ok)':'var(--err)'; }
+function hideTransientOverlays(){ $('doneOverlay').classList.add('hidden'); if(!state.stopping)$('stopOverlay').classList.add('hidden'); closeDrawer(); }
+function resetWorkspaceForNewFolder(folder){ hideTransientOverlays(); state.files=[]; state.checked=new Set(); state.filter='all'; state.query=''; state.runStart=0; state.stopping=false; $('searchInput').value=''; $('folderPath').textContent=folder||'未选择目录'; $('scanMeta').textContent='正在扫描…'; $('testResult').className='test-result mono'; $('testResult').innerHTML=''; $('logBody').innerHTML=''; $('logCount').textContent='0 行'; $('pFill').style.width='0%'; $('pPct').textContent='0%'; $('pBar').setAttribute('aria-valuenow',0); $('pStatus').innerHTML='<span class="sdot" style="background: var(--ok)"></span>就绪'; $('mCurrent').textContent='—'; $('mAvg').textContent='—'; $('mElapsed').textContent='00:00'; $('mRemain').textContent='—'; renderTable(); renderFilters(); }
+function receive(ev,opts={}){ if(!ev)return; const replay=!!opts.replay; if(ev.id){ if(state.seen.has(ev.id))return; state.seen.add(ev.id); state.lastEventId=Math.max(state.lastEventId,ev.id); } const p=ev.payload||{}; if(ev.type==='log') log(p.level||'INFO',p.message||''); if(ev.type==='folder') $('folderPath').textContent=p.folder||'未选择目录'; if(ev.type==='scan'){ state.files=rowsFromScan(p.files); state.checked=new Set(state.files.map(f=>f.id)); $('scanMeta').textContent=`${p.total_files||state.files.length} 个文件 · ${state.files.length} 个视频 · 已忽略 ${Number(p.skipped_hidden||0)+Number(p.skipped_small||0)} · 扫描 ${Number(p.elapsed||0).toFixed(2)}s`; renderTable(); renderFilters(); log('OK',`扫描完成：视频 ${state.files.length} · 已忽略 ${Number(p.skipped_hidden||0)+Number(p.skipped_small||0)} · 耗时 ${Number(p.elapsed||0).toFixed(2)}s`); } if(ev.type==='progress') setProgress(p.completed,p.total,p.label,p.stopping); if(ev.type==='file_result') updateFromResults([p.result||{}]); if(ev.type==='state'){ if('testing' in p){ state.testing=!!p.testing; $('btnTest').disabled=state.running||state.testing; } if('processing' in p||'stopping' in p) setRunning(!!p.processing,!!p.stopping); } if(ev.type==='complete'){ const wasStopping=state.stopping; setRunning(false,false); updateFromResults(p.result.file_results||[]); renderReport(p.result); applyCompletedProgress(p.result,p.dry_run); if(!replay){ if(wasStopping){ $('stopOverlay').classList.remove('hidden'); $('stopTitle').textContent='已安全停止'; $('stopDesc').textContent=`未处理文件 ${p.result.cancelled_count||0} 个；已完成的文件保持完成，未开始的源文件保持原样。`; $('stopIndet').classList.add('done'); $('btnStopOk').disabled=false; }else{ $('doneOverlay').classList.remove('hidden'); } } log((p.result.failed_count||0)?'WARN':'OK',`${p.dry_run?'审计':'处理'}完成：成功 ${p.result.success_count||0} · 失败 ${p.result.failed_count||0} · 待确认 ${p.result.needs_review_count||0}`); } if(ev.type==='connection') showConnectionResult(p); }
+window.JFO={receive};
+async function init(){ $('statusText').textContent='正在连接应用后端…'; const s=await api('initial_state'); if(!s.version){ log('ERR',s.message||'应用后端未就绪'); return; } state.providers=s.providers||[]; Object.assign(state.settings,s.settings||{}); state.version=s.version||'v--'; state.build_id=s.build_id||''; state.build_date=s.build_date||''; state.activeProvider=state.settings.website||'javbus'; state.dryRun=!!state.settings.dry_run; state.includeSub=!!state.settings.include_subdirectories; $('tglDry').setAttribute('aria-checked',String(state.dryRun)); $('tglSub').setAttribute('aria-checked',String(state.includeSub)); $('dryPill').classList.toggle('hidden',!state.dryRun); $('btnStart').textContent=state.dryRun?'开始审计':'开始处理'; $('folderPath').textContent=s.folder||'未选择目录'; document.querySelector('.ver').textContent=state.version; $('statusText').textContent='就绪 - '+state.version; const right=document.querySelector('.statusbar .s-right'); if(right) right.textContent=`${state.build_id} · ${state.build_date} · 输出 → Finish/ · 审计 → JFO_Logs/ · 配置 → config.json`; renderProviders(); renderFilters(); renderTable(); (s.events||[]).forEach(ev=>receive(ev,{replay:true})); hideTransientOverlays(); log('OK',`JAV 文件整理工具 ${state.version} 启动完成 | ${state.build_id} | ${state.build_date}`); }
+$('btnStart').onclick=async()=>{ const selected=selectedProcessableFiles(); if(!selected.length){ log('WARN','没有勾选可处理文件，请先选择待处理、待确认或已计划的文件'); return; } state.runStart=Date.now(); setRunning(true,false); log('INFO',`本次将处理已勾选文件 ${selected.length} 个`); const r=await api('start_processing',currentSettings()); if(!r.ok){setRunning(false,false);log('ERR',r.message||'无法开始处理');} };
+$('btnStop').onclick=async()=>{ setRunning(true,true); $('stopTitle').textContent='正在安全停止中…'; $('stopDesc').textContent='等待当前网络请求或文件事务到达安全边界，源文件会保持安全。'; $('stopIndet').classList.remove('done'); $('btnStopOk').disabled=true; await api('stop_processing'); };
+$('btnStopOk').onclick=()=>$('stopOverlay').classList.add('hidden'); $('btnDoneOk').onclick=()=>$('doneOverlay').classList.add('hidden'); $('btnTest').onclick=async()=>{ showConnectionRunning(providerName(),''); const r=await api('test_connection',currentSettings()); if(r.started){ showConnectionRunning(providerName(),r.query||''); log('INFO',`连接测试已开始：${providerName()} · ${r.query||''}`); return; } state.testing=false; $('btnTest').disabled=state.running; $('testResult').className='test-result mono state-error'; $('testResult').innerHTML=`<b>连接测试未能启动</b><div>${esc(r.message||'未知错误')}</div>`; log('ERR',r.message||'连接测试未能启动'); };
+$('btnFolder').onclick=async()=>{ const r=await api('choose_folder'); if(r.ok){ resetWorkspaceForNewFolder(r.folder); await api('scan_folder',currentSettings()); } };
+$('btnCopyLog').onclick=copyLogText;
+$('btnClearLog').onclick=()=>{ $('logBody').innerHTML=''; $('logCount').textContent='0 行'; };
+$('btnLogFold').onclick=()=>{ const body=$('logBody'); body.classList.toggle('collapsed'); $('btnLogFold').textContent=body.classList.contains('collapsed')?'[ 展开 ]':'[ 折叠 ]'; };
+$('btnDrawerClose').onclick=closeDrawer; $('drawerScrim').onclick=closeDrawer; document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer();});
+$('searchInput').oninput=e=>{state.query=e.target.value.trim().toLowerCase(); renderTable();};
+function bindToggle(id,cb){ const el=$(id); const flip=()=>{ if(state.running)return; const on=el.getAttribute('aria-checked')!=='true'; el.setAttribute('aria-checked',String(on)); cb(on); }; el.onclick=flip; el.onkeydown=e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();flip();}}; }
+bindToggle('tglDry',on=>{state.dryRun=on;$('dryPill').classList.toggle('hidden',!on);$('btnStart').textContent=on?'开始审计':'开始处理';log('INFO',on?'已开启仅审计（Dry Run）':'已关闭仅审计模式');});
+bindToggle('tglSub',async on=>{state.includeSub=on;log('INFO',on?'已开启包括子目录，将重新扫描当前目录':'已关闭包括子目录，将重新扫描当前目录'); const r=await api('scan_folder',currentSettings()); if(!r.ok)log('WARN',r.message||'当前没有可重新扫描的目录');});
+init();
+window.addEventListener('pageshow',()=>hideTransientOverlays());
+setInterval(async()=>{ if(!window.pywebview)return; try{(await window.pywebview.api.poll_events(state.lastEventId)||[]).forEach(receive);}catch(e){} },1000);
+</script>
+</body>
+</html>

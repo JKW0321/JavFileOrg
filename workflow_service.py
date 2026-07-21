@@ -28,6 +28,17 @@ class WorkflowDependencies:
     smart_truncate_filename: Callable
     stop_requested: Callable | None = None
     progress_callback: Callable | None = None
+    file_result_callback: Callable | None = None
+
+
+class ObservableFileResults(list):
+    def __init__(self, on_append: Callable):
+        super().__init__()
+        self._on_append = on_append
+
+    def append(self, item):
+        super().append(item)
+        self._on_append(item)
 
 
 class WorkflowService:
@@ -35,7 +46,8 @@ class WorkflowService:
                  clean_filename_for_search=None, sanitize_filename=None,
                  detect_series_files=None, smart_truncate_filename=None,
                  stop_requested=None, minimum_video_size_bytes: int = 16 * 1024,
-                 progress_callback=None, app_version: str = BASELINE_VERSION,
+                 progress_callback=None, file_result_callback=None,
+                 app_version: str = BASELINE_VERSION,
                  dependencies: WorkflowDependencies | None = None):
         if dependencies:
             provider_factory = provider_factory or dependencies.provider_factory
@@ -46,6 +58,7 @@ class WorkflowService:
             smart_truncate_filename = smart_truncate_filename or dependencies.smart_truncate_filename
             stop_requested = stop_requested or dependencies.stop_requested
             progress_callback = progress_callback or dependencies.progress_callback
+            file_result_callback = file_result_callback or dependencies.file_result_callback
         self.log = log
         self.provider_factory = provider_factory or (lambda name: create_provider(name, log=log))
         self.atomic_processor = atomic_processor
@@ -56,6 +69,7 @@ class WorkflowService:
         self.stop_requested = stop_requested or (lambda: False)
         self.minimum_video_size_bytes = minimum_video_size_bytes
         self.progress_callback = progress_callback or (lambda completed, total, label='': None)
+        self.file_result_callback = file_result_callback or (lambda item: None)
         self.app_version = app_version
         self._created_finish_folders = set()
         self._provider_instances = {}
@@ -78,6 +92,15 @@ class WorkflowService:
             self.progress_callback(completed, total, label)
         except Exception as e:
             self.log(f'⚠️ 进度更新失败: {e}', 'WARNING')
+
+    def _emit_file_result(self, item):
+        try:
+            self.file_result_callback(dict(item or {}))
+        except Exception as e:
+            self.log(f'⚠️ 文件状态更新失败: {e}', 'WARNING')
+
+    def _new_file_results_list(self):
+        return ObservableFileResults(self._emit_file_result)
 
     def _scan_video_files(self, folder_path, *, include_subdirectories=True):
         return scan_video_files(
@@ -616,7 +639,7 @@ class WorkflowService:
 
         routed_counts = {}
         provider_cache = {}
-        file_results = []
+        file_results = self._new_file_results_list()
 
         for filename in scan['skipped_hidden']:
             file_results.append(self._new_file_result(
@@ -661,175 +684,199 @@ class WorkflowService:
 
         video_file_paths = [os.path.join(folder_path, f) for f in video_files]
         series_groups, standalone_files = self.detect_series_files(video_file_paths)
-        series_items = list(series_groups.items())
+        series_by_path = {
+            file_path: base_code
+            for base_code, files in series_groups.items()
+            for file_path, _sequence in files
+        }
+        standalone_set = set(standalone_files)
+        ordered_units = []
+        seen_series = set()
+        for file_path in video_file_paths:
+            base_code = series_by_path.get(file_path)
+            if base_code:
+                if base_code not in seen_series:
+                    ordered_units.append(('series', base_code, series_groups[base_code]))
+                    seen_series.add(base_code)
+            elif file_path in standalone_set:
+                ordered_units.append(('standalone', None, file_path))
+
+        def append_cancelled_units(units):
+            standalone_cancelled = []
+            for kind, base_code, payload in units:
+                if kind == 'series':
+                    self._append_cancelled_series(file_results, [(base_code, payload)])
+                else:
+                    standalone_cancelled.append(payload)
+            if standalone_cancelled:
+                self._append_cancelled_standalone(file_results, standalone_cancelled)
+
+        from filename_utils import analyze_unknown_filename
         cancelled = False
         completed_units = 0
 
-        for series_index, (base_code, files) in enumerate(series_items):
+        for unit_index, (unit_kind, base_code, payload) in enumerate(ordered_units):
             if self.stop_requested():
-                self._append_cancelled_series(file_results, series_items[series_index:])
-                self._append_cancelled_standalone(file_results, standalone_files)
+                append_cancelled_units(ordered_units[unit_index:])
                 cancelled = True
                 break
-            self._emit_progress(completed_units, total_files, f'正在处理序列组 {base_code}')
-            item_started = time.time()
-            decision, provider, provider_name = self._resolve_provider(website, os.path.basename(files[0][0]), base_code)
-            if decision.get('action') == 'skip':
-                reason = decision.get('reason') or 'provider-skip'
-                self._log_not_processed(
-                    label=f'序列组 {base_code}',
-                    provider=provider_name,
-                    query=base_code,
-                    reason=reason,
-                    count=len(files),
-                )
-                for file_path, sequence in files:
-                    file_results.append(self._new_file_result(
-                        source_path=file_path,
-                        status='skipped',
+
+            if unit_kind == 'series':
+                files = payload
+                self._emit_progress(completed_units, total_files, f'正在处理序列组 {base_code}')
+                item_started = time.time()
+                decision, provider, provider_name = self._resolve_provider(website, os.path.basename(files[0][0]), base_code)
+                if decision.get('action') == 'skip':
+                    reason = decision.get('reason') or 'provider-skip'
+                    self._log_not_processed(
+                        label=f'序列组 {base_code}',
                         provider=provider_name,
                         query=base_code,
                         reason=reason,
-                        group=base_code,
-                        sequence=sequence,
-                    ))
-                completed_units += len(files)
-                self._emit_progress(completed_units, total_files, f'序列组 {base_code}')
-                continue
-            if decision.get('warning_only'):
-                self.log(f'⚠️ provider 警告: {base_code} -> {decision.get("reason")}', 'WARNING')
-            routed_counts[provider_name] = routed_counts.get(provider_name, 0) + len(files)
-            if dry_run:
-                self.log(f'🧪 DRY-RUN 序列组: {base_code} | provider={provider_name} | files={len(files)}', 'INFO')
-                for file_path, sequence in files:
-                    file_results.append(self._new_file_result(
-                        source_path=file_path,
-                        status='planned',
-                        provider=provider_name,
-                        query=base_code,
-                        reason='dry-run',
-                        group=base_code,
-                        sequence=sequence,
-                    ))
-                completed_units += len(files)
-                self._emit_progress(completed_units, total_files, f'序列组 {base_code}')
-                continue
-            result = self._provider_search(provider_cache, provider_name, provider, base_code)
-            provider_elapsed = self._provider_elapsed(result)
-            if not result.get('ok'):
-                reason = self._provider_failure_reason(result)
-                file_elapsed = round(time.time() - item_started, 3)
-                self._log_not_processed(
-                    label=f'序列组 {base_code}',
-                    provider=provider_name,
-                    query=base_code,
-                    reason=reason,
-                    title=result.get('title'),
-                    image_url=result.get('image_url'),
-                    count=len(files),
-                )
-                for file_path, sequence in files:
-                    file_results.append(self._new_file_result(
-                        source_path=file_path,
-                        status='failed',
+                        count=len(files),
+                    )
+                    for file_path, sequence in files:
+                        file_results.append(self._new_file_result(
+                            source_path=file_path,
+                            status='skipped',
+                            provider=provider_name,
+                            query=base_code,
+                            reason=reason,
+                            group=base_code,
+                            sequence=sequence,
+                        ))
+                    completed_units += len(files)
+                    self._emit_progress(completed_units, total_files, f'序列组 {base_code}')
+                    continue
+                if decision.get('warning_only'):
+                    self.log(f'⚠️ provider 警告: {base_code} -> {decision.get("reason")}', 'WARNING')
+                routed_counts[provider_name] = routed_counts.get(provider_name, 0) + len(files)
+                if dry_run:
+                    self.log(f'🧪 DRY-RUN 序列组: {base_code} | provider={provider_name} | files={len(files)}', 'INFO')
+                    for file_path, sequence in files:
+                        file_results.append(self._new_file_result(
+                            source_path=file_path,
+                            status='planned',
+                            provider=provider_name,
+                            query=base_code,
+                            reason='dry-run',
+                            group=base_code,
+                            sequence=sequence,
+                        ))
+                    completed_units += len(files)
+                    self._emit_progress(completed_units, total_files, f'序列组 {base_code}')
+                    continue
+                result = self._provider_search(provider_cache, provider_name, provider, base_code)
+                provider_elapsed = self._provider_elapsed(result)
+                if not result.get('ok'):
+                    reason = self._provider_failure_reason(result)
+                    file_elapsed = round(time.time() - item_started, 3)
+                    self._log_not_processed(
+                        label=f'序列组 {base_code}',
                         provider=provider_name,
                         query=base_code,
                         reason=reason,
-                        group=base_code,
-                        sequence=sequence,
                         title=result.get('title'),
                         image_url=result.get('image_url'),
-                        detail_url=result.get('detail_url'),
-                        referer=result.get('referer'),
-                        provider_elapsed_seconds=provider_elapsed,
-                        file_elapsed_seconds=file_elapsed,
-                    ))
-                completed_units += len(files)
-                self._emit_progress(completed_units, total_files, f'序列组 {base_code}')
-                continue
-            title = result.get('title')
-            if max_length:
-                title = self.smart_truncate_filename(title, os.path.basename(files[0][0]), max_length)
-            atomic_started = time.time()
-            finish_folder = self._safe_finish_folder(folder_path, finish_folder, dry_run)
-            image_request = self._image_request_from_result(result, provider_name)
-            ok, payload, message = self.atomic_processor.process_series_group_atomic(
-                files,
-                title,
-                image_request,
-                finish_folder,
-                max_filename_bytes=max_filename_bytes,
-            )
-            atomic_elapsed = round(time.time() - atomic_started, 3)
-            file_elapsed = round(time.time() - item_started, 3)
-            self.log(
-                f'⏱️ 序列组处理耗时: {base_code} | provider={provider_elapsed or 0:.1f}秒 | 落盘/下载={atomic_elapsed:.1f}秒 | 总计={file_elapsed:.1f}秒',
-                'INFO',
-            )
-            if ok:
-                target_paths = payload.get('video_paths', [])
-                for index, (file_path, sequence) in enumerate(files):
-                    file_results.append(self._new_file_result(
-                        source_path=file_path,
-                        status='success',
-                        provider=provider_name,
-                        query=base_code,
-                        group=base_code,
-                        sequence=sequence,
-                        title=title,
-                        image_url=result.get('image_url'),
-                        detail_url=result.get('detail_url'),
-                        referer=result.get('referer'),
-                        target_video_path=target_paths[index] if index < len(target_paths) else None,
-                        target_image_path=payload.get('image_path'),
-                        rollback_ok=payload.get('rollback_ok'),
-                        image_downloaded=payload.get('image_downloaded'),
-                        provider_elapsed_seconds=provider_elapsed,
-                        atomic_elapsed_seconds=atomic_elapsed,
-                        file_elapsed_seconds=file_elapsed,
-                    ))
-                completed_units += len(files)
-                self._emit_progress(completed_units, total_files, f'序列组 {base_code}')
-            else:
-                failure_reason = payload.get('reason') or message
-                self._log_not_processed(
-                    label=f'序列组 {base_code}',
-                    provider=provider_name,
-                    query=base_code,
-                    reason=failure_reason,
-                    title=title,
-                    image_url=result.get('image_url'),
-                    count=len(files),
+                        count=len(files),
+                    )
+                    for file_path, sequence in files:
+                        file_results.append(self._new_file_result(
+                            source_path=file_path,
+                            status='failed',
+                            provider=provider_name,
+                            query=base_code,
+                            reason=reason,
+                            group=base_code,
+                            sequence=sequence,
+                            title=result.get('title'),
+                            image_url=result.get('image_url'),
+                            detail_url=result.get('detail_url'),
+                            referer=result.get('referer'),
+                            provider_elapsed_seconds=provider_elapsed,
+                            file_elapsed_seconds=file_elapsed,
+                        ))
+                    completed_units += len(files)
+                    self._emit_progress(completed_units, total_files, f'序列组 {base_code}')
+                    continue
+                title = result.get('title')
+                if max_length:
+                    title = self.smart_truncate_filename(title, os.path.basename(files[0][0]), max_length)
+                atomic_started = time.time()
+                finish_folder = self._safe_finish_folder(folder_path, finish_folder, dry_run)
+                image_request = self._image_request_from_result(result, provider_name)
+                ok, payload, message = self.atomic_processor.process_series_group_atomic(
+                    files,
+                    title,
+                    image_request,
+                    finish_folder,
+                    max_filename_bytes=max_filename_bytes,
                 )
-                for file_path, sequence in files:
-                    file_results.append(self._new_file_result(
-                        source_path=file_path,
-                        status=payload.get('status') or 'failed',
+                atomic_elapsed = round(time.time() - atomic_started, 3)
+                file_elapsed = round(time.time() - item_started, 3)
+                self.log(
+                    f'⏱️ 序列组处理耗时: {base_code} | provider={provider_elapsed or 0:.1f}秒 | 落盘/下载={atomic_elapsed:.1f}秒 | 总计={file_elapsed:.1f}秒',
+                    'INFO',
+                )
+                if ok:
+                    target_paths = payload.get('video_paths', [])
+                    for index, (file_path, sequence) in enumerate(files):
+                        file_results.append(self._new_file_result(
+                            source_path=file_path,
+                            status='success',
+                            provider=provider_name,
+                            query=base_code,
+                            group=base_code,
+                            sequence=sequence,
+                            title=title,
+                            image_url=result.get('image_url'),
+                            detail_url=result.get('detail_url'),
+                            referer=result.get('referer'),
+                            target_video_path=target_paths[index] if index < len(target_paths) else None,
+                            target_image_path=payload.get('image_path'),
+                            rollback_ok=payload.get('rollback_ok'),
+                            image_downloaded=payload.get('image_downloaded'),
+                            provider_elapsed_seconds=provider_elapsed,
+                            atomic_elapsed_seconds=atomic_elapsed,
+                            file_elapsed_seconds=file_elapsed,
+                        ))
+                    completed_units += len(files)
+                    self._emit_progress(completed_units, total_files, f'序列组 {base_code}')
+                else:
+                    failure_reason = payload.get('reason') or message
+                    self._log_not_processed(
+                        label=f'序列组 {base_code}',
                         provider=provider_name,
                         query=base_code,
                         reason=failure_reason,
-                        group=base_code,
-                        sequence=sequence,
                         title=title,
                         image_url=result.get('image_url'),
-                        detail_url=result.get('detail_url'),
-                        referer=result.get('referer'),
-                        rollback_ok=payload.get('rollback_ok'),
-                        image_downloaded=payload.get('image_downloaded'),
-                        provider_elapsed_seconds=provider_elapsed,
-                        atomic_elapsed_seconds=atomic_elapsed,
-                        file_elapsed_seconds=file_elapsed,
-                    ))
-                completed_units += len(files)
-                self._emit_progress(completed_units, total_files, f'序列组 {base_code}')
+                        count=len(files),
+                    )
+                    for file_path, sequence in files:
+                        file_results.append(self._new_file_result(
+                            source_path=file_path,
+                            status=payload.get('status') or 'failed',
+                            provider=provider_name,
+                            query=base_code,
+                            reason=failure_reason,
+                            group=base_code,
+                            sequence=sequence,
+                            title=title,
+                            image_url=result.get('image_url'),
+                            detail_url=result.get('detail_url'),
+                            referer=result.get('referer'),
+                            rollback_ok=payload.get('rollback_ok'),
+                            image_downloaded=payload.get('image_downloaded'),
+                            provider_elapsed_seconds=provider_elapsed,
+                            atomic_elapsed_seconds=atomic_elapsed,
+                            file_elapsed_seconds=file_elapsed,
+                        ))
+                    completed_units += len(files)
+                    self._emit_progress(completed_units, total_files, f'序列组 {base_code}')
+                continue
 
-        if not cancelled:
-            from filename_utils import analyze_unknown_filename
-
-        for standalone_index, file_path in enumerate(standalone_files if not cancelled else []):
-            if self.stop_requested():
-                self._append_cancelled_standalone(file_results, standalone_files[standalone_index:])
-                break
+            file_path = payload
             filename = os.path.basename(file_path)
             self._emit_progress(completed_units, total_files, f'正在处理 {filename}')
             item_started = time.time()
@@ -986,7 +1033,6 @@ class WorkflowService:
                 ))
                 completed_units += 1
                 self._emit_progress(completed_units, total_files, filename)
-
         stats = self._derive_result_stats(file_results, total_files)
         self._cleanup_empty_finish_folder(finish_folder, dry_run, stats['success_count'])
         self._log_pre_report_summary(stats, dry_run=dry_run, logs_dir=logs_dir)
