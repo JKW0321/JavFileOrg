@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import os
 import base64
+import io
 import json
 import mimetypes
 import threading
 import time
+import unicodedata
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -107,6 +109,9 @@ class OrganizerApi:
         self._shutdown_started = False
         self.last_result = None
         self.selected_folder = ''
+        self.workspace_files = []
+        self.workspace_scan_meta = {}
+        self.last_progress = {}
         self.provider_overrides = {}
         self.settings = {
             'website': 'javbus',
@@ -304,6 +309,9 @@ class OrganizerApi:
 
     def _reset_workspace_session(self):
         self.last_result = None
+        self.workspace_files = []
+        self.workspace_scan_meta = {}
+        self.last_progress = {}
         with self.events_lock:
             self.events = []
 
@@ -319,18 +327,28 @@ class OrganizerApi:
         completed = max(int(completed or 0), 0)
         total = max(int(total or 0), 0)
         percent = int((completed / total) * 100) if total else 0
-        self._emit('progress', {
+        self.last_progress = {
             'completed': completed,
             'total': total,
             'percent': percent,
             'label': self._strip_icons(label),
             'stopping': self.engine._is_stop_requested(),
+            'updated_at': time.time(),
+        }
+        self._emit('progress', {
+            'completed': completed,
+            'total': total,
+            'percent': percent,
+            'label': self.last_progress['label'],
+            'stopping': self.last_progress['stopping'],
         })
 
     def _file_result(self, item):
+        self._update_workspace_from_results([item or {}])
         self._emit('file_result', {'result': item or {}})
 
     def _complete_processing_ui(self, result, dry_run, run_log_path):
+        self._update_workspace_from_results((result or {}).get('file_results') or [])
         self.last_result = result
         self.is_processing = False
         self._emit('complete', {
@@ -390,6 +408,13 @@ class OrganizerApi:
             'providers': providers,
             'settings': self.settings,
             'folder': self.selected_folder,
+            'workspace': {
+                'files': list(self.workspace_files),
+                'scan_meta': dict(self.workspace_scan_meta),
+                'progress': dict(self.last_progress),
+                'processing': self.is_processing,
+                'testing': self.is_testing,
+            },
             'events': list(self.events),
             'last_result': self.last_result,
         }
@@ -436,6 +461,16 @@ class OrganizerApi:
             return {'ok': False, 'message': f'未知数据源: {website}'}
         self.settings['website'] = website
         self._sync_engine_settings({})
+        provider_name = self.engine.website_configs.get(website, {}).get('name', website)
+        retryable = {
+            'planned', 'plan', 'pending', 'queued', 'todo',
+            'review', 'needs_review', 'confirm',
+            'audit', 'planned_result', 'dry_run',
+            'err', 'error', 'failed', 'failure',
+        }
+        for row in self.workspace_files:
+            if str(row.get('status') or '').strip().lower() in retryable:
+                row['provider'] = provider_name
         self._write_bridge_config()
         return {'ok': True, 'website': website, 'settings': dict(self.settings)}
 
@@ -604,6 +639,40 @@ class OrganizerApi:
         with self.events_lock:
             return [event for event in self.events if int(event.get('id') or 0) > after]
 
+    def _resolve_existing_path(self, path):
+        expanded = os.path.abspath(os.path.expanduser(str(path or '')))
+        if os.path.exists(expanded):
+            return expanded
+        for form in ('NFC', 'NFD'):
+            normalized = unicodedata.normalize(form, expanded)
+            if os.path.exists(normalized):
+                return normalized
+
+        parts = Path(expanded).parts
+        if not parts:
+            return expanded
+        current = Path(parts[0])
+        for part in parts[1:]:
+            candidate = current / part
+            if candidate.exists():
+                current = candidate
+                continue
+            if not current.is_dir():
+                return expanded
+            wanted = unicodedata.normalize('NFC', part)
+            found = None
+            try:
+                for child in current.iterdir():
+                    if unicodedata.normalize('NFC', child.name) == wanted:
+                        found = child
+                        break
+            except Exception:
+                return expanded
+            if found is None:
+                return expanded
+            current = found
+        return str(current)
+
     def cover_image_data(self, path):
         path = str(path or '').strip()
         if not path:
@@ -611,15 +680,31 @@ class OrganizerApi:
         if path.startswith('file://'):
             path = path[7:]
         try:
-            path = os.path.abspath(os.path.expanduser(path))
+            path = self._resolve_existing_path(path)
             if not os.path.isfile(path):
-                return {'ok': False, 'message': 'file-not-found'}
-            if os.path.getsize(path) > 8 * 1024 * 1024:
+                return {'ok': False, 'message': 'file-not-found', 'path': path}
+            if os.path.getsize(path) > 50 * 1024 * 1024:
                 return {'ok': False, 'message': 'image-too-large'}
-            mime = mimetypes.guess_type(path)[0] or 'image/jpeg'
-            with open(path, 'rb') as handle:
-                encoded = base64.b64encode(handle.read()).decode('ascii')
-            return {'ok': True, 'src': f'data:{mime};base64,{encoded}'}
+            try:
+                from PIL import Image, ImageOps
+                with Image.open(path) as image:
+                    image = ImageOps.exif_transpose(image)
+                    image.thumbnail((1200, 1600))
+                    if image.mode in ('RGBA', 'LA'):
+                        background = Image.new('RGB', image.size, (255, 255, 255))
+                        background.paste(image, mask=image.getchannel('A'))
+                        image = background
+                    elif image.mode != 'RGB':
+                        image = image.convert('RGB')
+                    buffer = io.BytesIO()
+                    image.save(buffer, format='JPEG', quality=88, optimize=True)
+                    encoded = base64.b64encode(buffer.getvalue()).decode('ascii')
+                return {'ok': True, 'src': f'data:image/jpeg;base64,{encoded}', 'path': path}
+            except Exception:
+                mime = mimetypes.guess_type(path)[0] or 'image/jpeg'
+                with open(path, 'rb') as handle:
+                    encoded = base64.b64encode(handle.read()).decode('ascii')
+                return {'ok': True, 'src': f'data:{mime};base64,{encoded}', 'path': path}
         except Exception as exc:
             return {'ok': False, 'message': str(exc)}
 
@@ -660,6 +745,57 @@ class OrganizerApi:
             'sequence': sequence or '',
         }
 
+    def _workspace_preview_from_result(self, result, status, current_after='等待处理'):
+        target = os.path.basename(str((result or {}).get('target_video_path') or ''))
+        if target:
+            return target
+        if status in ('success', 'ok', 'succeeded', 'done', 'completed'):
+            target_image = os.path.basename(str((result or {}).get('target_image_path') or ''))
+            return target_image or current_after
+        if status in ('failed', 'failure', 'error', 'err'):
+            return '处理失败 - 源文件保持原样'
+        if status in ('skipped', 'skip', 'cancelled', 'canceled'):
+            return '已跳过 - 源文件保持原样'
+        if status in ('needs_review', 'review'):
+            return '待确认命名规则'
+        if status in ('planned_result', 'audit', 'dry_run'):
+            return '已计划 - 未落盘'
+        return current_after or '等待处理'
+
+    def _workspace_result_key(self, result):
+        result = result or {}
+        return (
+            result.get('source_name')
+            or os.path.basename(str(result.get('source_path') or ''))
+            or ''
+        )
+
+    def _update_workspace_from_results(self, results):
+        if not self.workspace_files:
+            return
+        rows_by_name = {row.get('name'): row for row in self.workspace_files}
+        for result in results or []:
+            if not result:
+                continue
+            row = rows_by_name.get(self._workspace_result_key(result))
+            if not row:
+                continue
+            status = result.get('status') or row.get('status') or 'planned'
+            row['status'] = status
+            row['provider'] = result.get('provider') or row.get('provider')
+            row['query'] = result.get('query') or row.get('query')
+            row['title'] = result.get('title') or row.get('title')
+            row['img'] = result.get('image_url') or row.get('img')
+            row['targetImage'] = result.get('target_image_path') or row.get('targetImage')
+            row['detail'] = result.get('detail_url') or row.get('detail')
+            row['reason'] = result.get('reason') or ''
+            row['note'] = result.get('reason') or ''
+            row['after'] = self._workspace_preview_from_result(result, str(status).lower(), row.get('after'))
+            if result.get('file_elapsed_seconds') is not None:
+                row['elapsed'] = f"{float(result.get('file_elapsed_seconds')):.1f}s"
+            row['rollback_ok'] = result.get('rollback_ok')
+            row['image_downloaded'] = result.get('image_downloaded')
+
     def scan_folder(self, settings=None):
         self._sync_engine_settings(settings or {})
         folder = self.selected_folder
@@ -674,11 +810,14 @@ class OrganizerApi:
         for name in scan.get('accepted') or []:
             preview = self._filename_preview(name)
             files.append({
+                'id': f'f{len(files)}',
                 'name': name,
                 'path': os.path.join(folder, name),
                 'size': file_sizes.get(name, 0),
                 'status': 'planned',
                 'provider': self.engine.website_configs.get(self.settings.get('website'), {}).get('name', self.settings.get('website')),
+                'after': '等待处理',
+                'note': '',
                 **preview,
             })
         payload = {
@@ -691,6 +830,16 @@ class OrganizerApi:
             'skipped_small': len(scan.get('skipped_small') or []),
             'include_subdirectories': self.engine._include_subdirectories(),
         }
+        self.workspace_files = [dict(item) for item in files]
+        self.workspace_scan_meta = {
+            'total_files': payload['total_files'],
+            'visible_files': len(files),
+            'skipped_hidden': payload['skipped_hidden'],
+            'skipped_small': payload['skipped_small'],
+            'elapsed': elapsed,
+            'include_subdirectories': payload['include_subdirectories'],
+        }
+        self.last_progress = {}
         self._emit('scan', payload)
         return payload
 

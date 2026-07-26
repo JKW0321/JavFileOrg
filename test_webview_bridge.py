@@ -1,5 +1,6 @@
 import json
 import time
+import unicodedata
 from pathlib import Path
 
 from app_metadata import BASELINE_BUILD_ID, BASELINE_VERSION
@@ -175,11 +176,28 @@ def test_webview_emits_file_result_events_for_realtime_table_updates(tmp_path):
 
 
 def test_webview_cover_image_data_returns_local_data_url(tmp_path):
+    from PIL import Image
+
     api = _api_with_temp_config(tmp_path)
     image = tmp_path / 'cover.jpg'
-    image.write_bytes(b'\xff\xd8\xff\xd9')
+    Image.new('RGB', (4, 6), (40, 90, 150)).save(image)
 
     result = api.cover_image_data(str(image))
+
+    assert result['ok'] is True
+    assert result['src'].startswith('data:image/jpeg;base64,')
+
+
+def test_webview_cover_image_data_resolves_unicode_normalized_path(tmp_path):
+    from PIL import Image
+
+    api = _api_with_temp_config(tmp_path)
+    nfd_name = unicodedata.normalize('NFD', 'エロ過ぎ.jpg')
+    nfc_name = unicodedata.normalize('NFC', 'エロ過ぎ.jpg')
+    image = tmp_path / nfd_name
+    Image.new('RGB', (4, 6), (120, 50, 60)).save(image)
+
+    result = api.cover_image_data(str(tmp_path / nfc_name))
 
     assert result['ok'] is True
     assert result['src'].startswith('data:image/jpeg;base64,')
@@ -190,6 +208,9 @@ def test_webview_choose_new_folder_resets_workspace_event_history(tmp_path):
     folder = tmp_path / 'next'
     folder.mkdir()
     api.last_result = {'success_count': 1}
+    api.workspace_files = [{'name': 'old.mp4'}]
+    api.workspace_scan_meta = {'total_files': 1}
+    api.last_progress = {'total': 1}
     api._emit('complete', {'result': {'file_results': []}})
 
     class FakeWindow:
@@ -201,6 +222,9 @@ def test_webview_choose_new_folder_resets_workspace_event_history(tmp_path):
 
     assert result['ok'] is True
     assert api.last_result is None
+    assert api.workspace_files == []
+    assert api.workspace_scan_meta == {}
+    assert api.last_progress == {}
     events = api.poll_events(0)
     assert [event['type'] for event in events] == ['folder']
     assert events[0]['payload']['folder'] == str(folder)
@@ -240,6 +264,66 @@ def test_webview_scan_uses_backend_filename_rules_for_preview_codes(tmp_path):
     assert by_name['MIRD-277_3.mp4']['query'] == 'mird-277'
     assert by_name['MIRD-277_3.mp4']['group'] == 'MIRD-277'
     assert by_name['MIRD-277_3.mp4']['sequence'] == '3'
+
+
+def test_webview_initial_state_restores_workspace_snapshot_after_event_truncation(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.set_folder(str(tmp_path))
+
+    def fake_scan(folder):
+        return {
+            'accepted': ['ABF-217.mp4', 'ABF-244.mp4'],
+            'file_sizes': {'ABF-217.mp4': 1024, 'ABF-244.mp4': 2048},
+            'total_files': 2,
+            'skipped_hidden': [],
+            'skipped_small': [],
+            'manifest_entries': [],
+        }
+
+    api.engine._scan_video_files = fake_scan
+    api.scan_folder({'website': 'javbus'})
+    api._file_result({
+        'source_path': str(tmp_path / 'ABF-217.mp4'),
+        'source_name': 'ABF-217.mp4',
+        'status': 'success',
+        'provider': 'javbus',
+        'query': 'abf-217',
+        'title': 'ABF-217 title',
+        'target_video_path': str(tmp_path / 'Finish' / 'ABF-217 title.mp4'),
+        'target_image_path': str(tmp_path / 'Finish' / 'ABF-217 title.jpg'),
+        'file_elapsed_seconds': 3.4,
+        'image_downloaded': True,
+    })
+
+    with api.events_lock:
+        api.events = []
+    state = api.initial_state()
+    rows = {item['name']: item for item in state['workspace']['files']}
+
+    assert state['events'] == []
+    assert state['workspace']['scan_meta']['total_files'] == 2
+    assert rows['ABF-217.mp4']['status'] == 'success'
+    assert rows['ABF-217.mp4']['after'] == 'ABF-217 title.mp4'
+    assert rows['ABF-217.mp4']['targetImage'].endswith('ABF-217 title.jpg')
+    assert rows['ABF-217.mp4']['elapsed'] == '3.4s'
+    assert rows['ABF-244.mp4']['status'] == 'planned'
+
+
+def test_webview_provider_switch_keeps_failed_rows_retryable_in_workspace_snapshot(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.workspace_files = [
+        {'name': 'failed.mp4', 'status': 'failed', 'provider': 'JavBus'},
+        {'name': 'planned.mp4', 'status': 'planned', 'provider': 'JavBus'},
+        {'name': 'done.mp4', 'status': 'success', 'provider': 'JavBus'},
+    ]
+
+    result = api.set_active_provider('javhoo')
+
+    assert result['ok'] is True
+    javhoo_name = api.engine.website_configs['javhoo']['name']
+    assert api.workspace_files[0]['provider'] == javhoo_name
+    assert api.workspace_files[1]['provider'] == javhoo_name
+    assert api.workspace_files[2]['provider'] == 'JavBus'
 
 
 def test_webview_start_processing_passes_selected_files_to_worker(tmp_path):
@@ -382,6 +466,9 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'cover_image_data' in index
     assert 'function coverHtml(f)' in index
     assert 'function loadCover(f,id)' in index
+    assert 'function coverErrorText' in index
+    assert '本地封面不存在' in index
+    assert '远程封面加载失败' in index
     assert 'function previewFromResult' in index
     assert 'function applyCompletedProgress' in index
     assert 'applyCompletedProgress(p.result,p.dry_run)' in index
@@ -389,10 +476,20 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'f.targetImage=r.target_image_path||f.targetImage' in index
     assert "['本地封面',f.targetImage||'—']" in index
     assert 'function selectedProcessableFiles' in index
+    assert 'function isProcessableStatus' in index
+    assert "['planned','review','audit','err']" in index
     assert 'selected_files: selectedProcessableFiles()' in index
+    assert '失败、待确认' in index
     assert '没有勾选可处理文件' in index
     assert '本次将处理已勾选文件' in index
     assert 'function resetWorkspaceForNewFolder' in index
+    assert 'function restoreWorkspaceSnapshot' in index
+    assert 'restoreWorkspaceSnapshot(s.workspace||{})' in index
+    assert 'function scrollToFile' in index
+    assert 'scrollIntoView({block,behavior' in index
+    assert 'renderTable({scrollTo:current&&current.id' in index
+    assert 'renderTable({scrollTo:touched[touched.length-1]' in index
+    assert 'if(!(replay&&state.files.length))' in index
     assert "receive(ev,{replay:true})" in index
     assert 'if(!replay)' in index
     assert "window.addEventListener('pageshow',()=>hideTransientOverlays())" in index
@@ -412,6 +509,9 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'cover_image_data' in workspace
     assert 'function coverHtml(f)' in workspace
     assert 'function loadCover(f,id)' in workspace
+    assert 'function coverErrorText' in workspace
+    assert '本地封面不存在' in workspace
+    assert '远程封面加载失败' in workspace
     assert 'function previewFromResult' in workspace
     assert 'function applyCompletedProgress' in workspace
     assert 'applyCompletedProgress(p.result,p.dry_run)' in workspace
@@ -419,10 +519,20 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'f.targetImage=r.target_image_path||f.targetImage' in workspace
     assert "['本地封面',f.targetImage||'—']" in workspace
     assert 'function selectedProcessableFiles' in workspace
+    assert 'function isProcessableStatus' in workspace
+    assert "['planned','review','audit','err']" in workspace
     assert 'selected_files: selectedProcessableFiles()' in workspace
+    assert '失败、待确认' in workspace
     assert '没有勾选可处理文件' in workspace
     assert '本次将处理已勾选文件' in workspace
     assert 'function resetWorkspaceForNewFolder' in workspace
+    assert 'function restoreWorkspaceSnapshot' in workspace
+    assert 'restoreWorkspaceSnapshot(s.workspace||{})' in workspace
+    assert 'function scrollToFile' in workspace
+    assert 'scrollIntoView({block,behavior' in workspace
+    assert 'renderTable({scrollTo:current&&current.id' in workspace
+    assert 'renderTable({scrollTo:touched[touched.length-1]' in workspace
+    assert 'if(!(replay&&state.files.length))' in workspace
     assert "receive(ev,{replay:true})" in workspace
     assert 'if(!replay)' in workspace
     assert "window.addEventListener('pageshow',()=>hideTransientOverlays())" in workspace
