@@ -341,12 +341,19 @@ class InspectionService:
         self.log(f'✅ 已规范重复保留文件名: {keep.name} -> {new_keep.name}', 'SUCCESS')
         return new_keep, item
 
-    def _prune_duplicate_video_pairs(self, *, normal_videos, image_by_stem, folder_path: str, moved_paths: set):
+    def _prune_duplicate_video_pairs(self, *, normal_videos, image_by_stem, folder_path: str, moved_paths: set, progress_state=None):
+        progress_state = progress_state or {'completed': 0, 'total': 1}
         grouped = {}
         metadata = {}
         for video in normal_videos:
             if self._is_stop_requested():
                 return normal_videos, [], set(), True
+            progress_state['completed'] = int(progress_state.get('completed') or 0) + 1
+            self._emit_progress(
+                progress_state['completed'],
+                max(int(progress_state.get('total') or 1), 1),
+                f'巡检重复 {video.name}',
+            )
             query = self.clean_filename_for_search(video.name)
             identity = self._duplicate_identity(video, query)
             if not identity:
@@ -416,6 +423,11 @@ class InspectionService:
                     self._emit_file_result(item)
                     handled.add(str(video))
                     continue
+                self._emit_progress(
+                    progress_state['completed'],
+                    max(int(progress_state.get('total') or 1), 1),
+                    f'修复重复 {video.name}',
+                )
                 moved = self._move_video_pair_to_wip(
                     video=video,
                     images=paired_images,
@@ -643,7 +655,7 @@ class InspectionService:
             image_by_stem.setdefault(self._stem_key(image.stem), []).append(image)
 
         file_results = []
-        total_units = (len(videos) * 2) + len(images)
+        total_units = (len(videos) * 3) + len(images)
         completed = 0
         cancelled = self._is_stop_requested()
         self.log(f'🩺 巡检模式: 扫描 {len(videos)} 个视频，{len(images)} 张图片', 'INFO')
@@ -663,6 +675,7 @@ class InspectionService:
             if size < self.minimum_video_size_bytes:
                 targets = [video] + self._images_for_stem(image_by_stem, video.stem)
                 moved = []
+                self._emit_progress(completed, max(total_units, 1), f'修复小视频 {video.name}')
                 for target in targets:
                     moved_path = self._move_to_wip(target, folder_path, 'small-video-or-pair')
                     if moved_path:
@@ -688,12 +701,15 @@ class InspectionService:
         duplicate_handled_videos = set()
         if not cancelled:
             duplicate_started = time.time()
+            duplicate_progress = {'completed': completed, 'total': max(total_units, 1)}
             normal_videos, duplicate_results, duplicate_handled_videos, cancelled = self._prune_duplicate_video_pairs(
                 normal_videos=normal_videos,
                 image_by_stem=image_by_stem,
                 folder_path=folder_path,
                 moved_paths=moved_paths,
+                progress_state=duplicate_progress,
             )
+            completed = int(duplicate_progress.get('completed') or completed)
             file_results.extend(duplicate_results)
             self._log_stage_elapsed('重复视频副本检查', duplicate_started)
 
@@ -711,6 +727,7 @@ class InspectionService:
                     completed += 1
                     if str(image) in moved_paths:
                         continue
+                    self._emit_progress(completed, max(total_units, 1), f'修复图片 {image.name}')
                     moved = self._move_to_wip(image, folder_path, 'orphan-image')
                     item = {
                         'source_path': str(image),
@@ -735,6 +752,7 @@ class InspectionService:
                     completed += 1
                     if image == keep or str(image) in moved_paths:
                         continue
+                    self._emit_progress(completed, max(total_units, 1), f'修复图片 {image.name}')
                     moved = self._move_to_wip(image, folder_path, 'duplicate-image')
                     item = {
                         'source_path': str(image),
@@ -750,7 +768,10 @@ class InspectionService:
                     self._emit_file_result(item)
                     self._emit_progress(completed, max(total_units, 1), image.name)
             else:
-                completed += len(group)
+                for image in group:
+                    completed += 1
+                    if completed % 50 == 0:
+                        self._emit_progress(completed, max(total_units, 1), f'巡检图片 {image.name}')
         self._log_stage_elapsed('孤儿图片与重复图片检查', image_group_started)
 
         cover_check_started = time.time()
@@ -807,6 +828,7 @@ class InspectionService:
                 continue
 
             if query and self._looks_unprocessed(video, query):
+                self._emit_progress(completed, max(total_units, 1), f'修复视频 {video.name}')
                 provider, provider_name = self._resolve_provider_for_video(primary_provider_name, video, query)
                 ok, item = self._process_unprocessed_video(
                     video_path=video,
@@ -822,6 +844,7 @@ class InspectionService:
                             self._move_to_wip(old_image, folder_path, 'old-cover-after-video-rename')
             elif query:
                 image_path = video.with_suffix('.jpg')
+                self._emit_progress(completed, max(total_units, 1), f'修复封面 {video.name}')
                 provider, provider_name = self._resolve_provider_for_video(primary_provider_name, video, query)
                 ok, item = self._download_cover_for_video(
                     video_path=video,

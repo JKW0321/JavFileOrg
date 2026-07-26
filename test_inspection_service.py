@@ -184,6 +184,39 @@ def test_inspection_healthy_pair_does_not_create_provider(tmp_path):
     assert result['file_results'][0]['reason'] == 'inspection-ok-no-action'
 
 
+def test_inspection_emits_duplicate_stage_progress(tmp_path):
+    progress = []
+    for code in ('ABF-217', 'ABF-218'):
+        video = tmp_path / f'{code} Fixed Title.mp4'
+        cover = tmp_path / f'{code} Fixed Title.jpg'
+        _video(video)
+        _valid_image(cover)
+
+    service = _service(tmp_path)
+    service.progress_callback = lambda completed, total, label='': progress.append((completed, total, label))
+    result = service.run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['normal_count'] == 2
+    assert any(label.startswith('巡检重复 ') for _completed, _total, label in progress)
+    assert any(total >= 8 for _completed, total, _label in progress)
+
+
+def test_inspection_emits_repair_stage_progress_for_file_changes(tmp_path):
+    progress = []
+    small = tmp_path / 'BAD-001.mp4'
+    small_cover = tmp_path / 'BAD-001.jpg'
+
+    _video(small, size=4 * 1024)
+    _valid_image(small_cover)
+
+    service = _service(tmp_path)
+    service.progress_callback = lambda completed, total, label='': progress.append((completed, total, label))
+    result = service.run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['needs_review_count'] == 1
+    assert any(label.startswith('修复小视频 ') for _completed, _total, label in progress)
+
+
 def test_inspection_does_not_validate_non_duplicate_covers_in_duplicate_prefilter(tmp_path):
     for code in ('ABF-217', 'ABF-218', 'ABF-219'):
         video = tmp_path / f'{code} Fixed Title.mp4'

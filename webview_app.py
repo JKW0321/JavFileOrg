@@ -1020,7 +1020,7 @@ class OrganizerApi:
                 log=self._log,
                 provider_factory=self.engine._build_provider_factory(),
                 atomic_processor=self.engine.atomic_processor,
-                clean_filename_for_search=self.engine.clean_filename_for_search,
+                clean_filename_for_search=clean_filename_for_search,
                 sanitize_filename=self.engine.sanitize_filename,
                 smart_truncate_filename=self.engine.smart_truncate_filename,
                 stop_requested=self.engine._is_stop_requested,

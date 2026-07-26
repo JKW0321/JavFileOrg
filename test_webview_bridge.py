@@ -607,6 +607,13 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'raw===\'\'?6:parseInt(raw,10)' in index
     assert 'updateStartButton' in index
     assert 'prepareInspectionWorkspace' in index
+    assert 'scanFresh: false' in index
+    assert 'state.scanFresh=!replay' in index
+    assert 'state.scanFresh=true' in index
+    assert 'resetRowsForInspection' in index
+    assert '正在准备巡检：复用当前目录扫描' in index
+    assert '复用已完成的目录扫描，跳过重复扫描' in index
+    assert '巡检目录已就绪' in index
     assert "api('scan_folder',settings,false)" in index
     assert '巡检目录刷新完成' in index
     assert '正常，无需处理' in index
@@ -643,7 +650,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "doneErrLabel').textContent='已修复'" in index
     assert "doneRevLabel').textContent='问题'" in index
     assert '巡检完成：正常' in index
-    assert "state.inspectionMode&&!String(label||'').startsWith('巡检封面 ')" in index
+    assert "if(state.inspectionMode&&!/^(?:巡检|修复)(?:封面|重复|图片|小视频|视频)?\\s/.test(raw))return" in index
     assert "checking:['巡检中','st st-run']" in index
     assert "checked:['已巡检','st st-info']" in index
     assert "normal:['正常','st st-ok']" in index
@@ -674,7 +681,11 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'function setPreparing' in index
     assert '正在准备巡检：扫描当前目录' in index
     assert '正在准备处理：扫描当前目录' in index
-    assert '正在启动巡检任务' in index
+    assert '正在提交巡检任务' in index
+    assert '正在提交处理任务' in index
+    assert 'state.runStart=state.runStart||Date.now()' in index
+    assert 'state.preparing)&&!state.runStart' in index
+    assert "state.preparing){ $('mAvg').textContent='—'; $('mRemain').textContent='准备中'; }" in index
     assert 'state.running||state.preparing' in index
     assert 'function syncRunStart' in index
     assert 'workspace.run_started_at' in index
@@ -757,6 +768,13 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'raw===\'\'?6:parseInt(raw,10)' in workspace
     assert 'updateStartButton' in workspace
     assert 'prepareInspectionWorkspace' in workspace
+    assert 'scanFresh: false' in workspace
+    assert 'state.scanFresh=!replay' in workspace
+    assert 'state.scanFresh=true' in workspace
+    assert 'resetRowsForInspection' in workspace
+    assert '正在准备巡检：复用当前目录扫描' in workspace
+    assert '复用已完成的目录扫描，跳过重复扫描' in workspace
+    assert '巡检目录已就绪' in workspace
     assert "api('scan_folder',settings,false)" in workspace
     assert '巡检目录刷新完成' in workspace
     assert '正常，无需处理' in workspace
@@ -787,7 +805,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "doneErrLabel').textContent='已修复'" in workspace
     assert "doneRevLabel').textContent='问题'" in workspace
     assert '巡检完成：正常' in workspace
-    assert "state.inspectionMode&&!String(label||'').startsWith('巡检封面 ')" in workspace
+    assert "if(state.inspectionMode&&!/^(?:巡检|修复)(?:封面|重复|图片|小视频|视频)?\\s/.test(raw))return" in workspace
     assert "checking:['巡检中','st st-run']" in workspace
     assert "checked:['已巡检','st st-info']" in workspace
     assert "normal:['正常','st st-ok']" in workspace
@@ -815,7 +833,11 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'function setPreparing' in workspace
     assert '正在准备巡检：扫描当前目录' in workspace
     assert '正在准备处理：扫描当前目录' in workspace
-    assert '正在启动巡检任务' in workspace
+    assert '正在提交巡检任务' in workspace
+    assert '正在提交处理任务' in workspace
+    assert 'state.runStart=state.runStart||Date.now()' in workspace
+    assert 'state.preparing)&&!state.runStart' in workspace
+    assert "state.preparing){ $('mAvg').textContent='—'; $('mRemain').textContent='准备中'; }" in workspace
     assert 'state.running||state.preparing' in workspace
     assert 'function syncRunStart' in workspace
     assert 'workspace.run_started_at' in workspace
@@ -923,3 +945,10 @@ def test_webview_window_opens_at_full_workspace_size():
     assert 'width=1320' in source
     assert 'height=840' in source
     assert 'min_size=(1120, 700)' in source
+
+
+def test_inspection_uses_quiet_filename_parser_in_webview_bridge():
+    source = (Path(__file__).resolve().parent / 'webview_app.py').read_text(encoding='utf-8')
+
+    assert 'clean_filename_for_search=clean_filename_for_search' in source
+    assert 'clean_filename_for_search=self.engine.clean_filename_for_search' not in source
