@@ -33,6 +33,7 @@ hiddenimports = [
     'download_service',
     'filename_rule_library',
     'filename_utils',
+    'inspection_service',
     'jfo_icon_resources',
     'manifest_utils',
     'provider_router',

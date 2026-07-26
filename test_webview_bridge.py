@@ -27,6 +27,18 @@ def test_webview_initial_state_exposes_real_version_and_providers(tmp_path):
     assert state['settings']['include_subdirectories'] is False
 
 
+def test_webview_log_mirrors_runtime_entries_to_run_log(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    captured = []
+    api.engine._write_run_log = lambda entry: captured.append(entry)
+
+    api._log('图片下载成功: cover.jpg', 'SUCCESS')
+
+    assert captured
+    assert 'SUCCESS' in captured[0]
+    assert '图片下载成功: cover.jpg' in captured[0]
+
+
 def test_webview_settings_state_contains_version_processing_and_provider_fields(tmp_path):
     api = _api_with_temp_config(tmp_path)
 
@@ -36,6 +48,7 @@ def test_webview_settings_state_contains_version_processing_and_provider_fields(
     assert state['version'] == BASELINE_VERSION
     assert state['settings']['max_filename_length'] == '80'
     assert state['settings']['max_filename_bytes'] == '240'
+    assert state['settings']['inspection_similarity_threshold'] == '6'
     assert javbus['search_url']
     assert javbus['text_selector']
     assert javbus['image_selector']
@@ -74,6 +87,7 @@ def test_webview_save_processing_settings_validates_and_persists(tmp_path):
     saved = api.save_processing_settings({
         'max_filename_length': '120',
         'max_filename_bytes': '230',
+        'inspection_similarity_threshold': '4',
         'batch_count': '10',
         'preserve_actor': False,
         'include_subdirectories': True,
@@ -83,6 +97,7 @@ def test_webview_save_processing_settings_validates_and_persists(tmp_path):
     assert saved['ok'] is True
     assert api.engine.max_filename_length_var.get() == '120'
     assert api.engine.max_filename_bytes_var.get() == '230'
+    assert saved['settings']['inspection_similarity_threshold'] == '4'
     assert api.engine.batch_count_var.get() == '10'
     assert api.engine.preserve_actor_var.get() is False
     assert api.engine.include_subdirectories_var.get() is True
@@ -91,6 +106,7 @@ def test_webview_save_processing_settings_validates_and_persists(tmp_path):
     payload = json.loads((tmp_path / 'config.json').read_text(encoding='utf-8'))
     assert payload['max_filename_length'] == '120'
     assert payload['max_filename_bytes'] == '230'
+    assert payload['inspection_similarity_threshold'] == '4'
     assert payload['batch_count'] == '10'
     assert payload['dry_run'] is True
 
@@ -180,6 +196,53 @@ def test_webview_report_state_lists_only_current_session_runs(tmp_path):
     assert report['result']['website'] == 'javbus'
     assert report['file_results'][0]['source_name'] == 'ABF-217.mp4'
     assert report['artifacts'][0]['kind'] == '运行日志'
+
+
+def test_webview_report_state_exposes_inspection_counts(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.set_folder(str(tmp_path))
+    logs = tmp_path / 'JFO_Logs'
+    logs.mkdir()
+    log_path = logs / 'JFO_RUN_20260726_185741_inspection_javbus.log'
+    result_path = logs / 'inspection_file_results_20260726_185908.json'
+    summary_path = logs / 'inspection_run_summary_20260726_185908.json'
+    log_path.write_text('巡检完成：正常 1', encoding='utf-8')
+    result_path.write_text(json.dumps({
+        'results': [{
+            'status': 'skipped',
+            'reason': 'inspection-ok-no-action',
+            'source_name': 'ABF-217.mp4',
+            'query': 'ABF-217',
+        }]
+    }), encoding='utf-8')
+    summary_path.write_text(json.dumps({
+        'generated_at': '2026-07-26T18:59:08',
+        'website': 'javbus',
+        'folder': str(tmp_path),
+        'mode': 'inspection',
+        'dry_run': False,
+        'counts': {
+            'total_files': 1,
+            'success_count': 0,
+            'failed_count': 0,
+            'needs_review_count': 0,
+            'normal_count': 1,
+        },
+        'timings': {'total_elapsed_seconds': 75},
+        'artifacts': {
+            'log_path': str(log_path),
+            'file_results_path': str(result_path),
+        },
+    }), encoding='utf-8')
+
+    api._remember_session_run({'summary_path': str(summary_path)})
+    report = api.report_state(str(summary_path))
+
+    assert report['runs'][0]['mode'] == 'inspection'
+    assert report['runs'][0]['normal_count'] == 1
+    assert report['result']['mode'] == 'inspection'
+    assert report['result']['normal_count'] == 1
+    assert report['file_results'][0]['reason'] == 'inspection-ok-no-action'
 
 
 def test_webview_connection_test_runs_in_background_and_emits_result(tmp_path):
@@ -532,21 +595,95 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert '目标站点搜索页和详情页都返回服务端错误' in index
     assert 'state-running' in index
     assert 'btnCopyLog' in index
+    assert 'tglInspection' in index
+    assert '巡检模式' in index
+    assert index.index('id="tglInspection"') < index.index('id="tglDry"')
+    assert 'inpSimilarity' in index
+    assert '封面相似阈值' in index
+    assert "inspection_similarity_threshold: inspectionSimilarityThreshold()" in index
+    assert 'updateInspectionControls' in index
+    assert 'normalizeSimilarityInput' in index
+    assert 'Math.max(0,Math.min(64,n))' in index
+    assert 'raw===\'\'?6:parseInt(raw,10)' in index
+    assert 'updateStartButton' in index
+    assert 'prepareInspectionWorkspace' in index
+    assert "api('scan_folder',settings,false)" in index
+    assert '巡检目录刷新完成' in index
+    assert '正常，无需处理' in index
+    assert "api('start_inspection',currentSettings())" in index
+    assert '开始巡检当前目录' in index
+    assert '巡检完成' in index
+    assert '巡检已停止' in index
+    assert '为加快停止，本次未重新扫描处理后清单' in index
+    assert '已记录结果' in index
+    assert "result.mode==='inspection'" in index
+    assert 'function resultKeys' in index
+    assert 'function findRowForResult' in index
+    assert 'function applyResultToRow' in index
+    assert 'payloadName(f)' in index
     assert 'user-select: text' in index
     assert 'logPlainText' in index
-    assert 'code:f.code||guessCode(f.name)' in index
+    assert 'code:f.code||guessCode(name)' in index
     assert 'query:f.query||' in index
     assert 'class="fchip"' in index
     assert 'class="rowcheck"' in index
     assert 'class="chev"' in index
     assert 'st st-ok' in index
     assert 'function normalizeStatus' in index
+    assert 'function effectiveStatus' in index
+    assert "return 'normal'" in index
+    assert "return 'checking'" in index
+    assert "return 'fixed'" in index
+    assert "function statusLabel" in index
+    assert "inspection?'待巡检':'待处理'" in index
+    assert 'doneErrLabel' in index
+    assert 'doneRevLabel' in index
+    assert 'function inspectionNormalCount' in index
+    assert "doneOkLabel').textContent='正常'" in index
+    assert "doneErrLabel').textContent='已修复'" in index
+    assert "doneRevLabel').textContent='问题'" in index
+    assert '巡检完成：正常' in index
+    assert "state.inspectionMode&&!String(label||'').startsWith('巡检封面 ')" in index
+    assert "checking:['巡检中','st st-run']" in index
+    assert "checked:['已巡检','st st-info']" in index
+    assert "normal:['正常','st st-ok']" in index
+    assert "fixed:['已修复','st st-ok']" in index
+    assert "['normal','正常']" in index
+    assert "['checking','巡检中'],['normal','正常'],['ok','已修复']" in index
+    assert "['checked','已巡检']" not in index
+    assert "]:[['all','全部'],['planned','待处理'],['ok','成功']" in index
+    assert "if(status==='checked'&&state.inspectionMode)return 'planned'" in index
+    assert "f.status=state.inspectionMode?'skipped':'planned'" not in index
+    assert 'function updateRowElement' in index
+    assert 'inspectionProgressFallback' not in index
+    assert "if(!state.running)setRunning(true,!!stopping)" in index
+    assert '检测到后台任务仍在运行' in index
+    assert "state.inspectionMode?'checked':'planned'" not in index
+    assert "const verb=state.inspectionMode?'巡检中':'处理中'" in index
+    assert 'class="progress-file"' in index
+    assert '.progress-file b' in index
+    assert "const activeText=state.inspectionMode?'巡检中…':'处理中…'" in index
     assert "'计划':'planned'" in index
     assert "success:'ok'" in index
     assert "needs_review:'review'" in index
     assert "cancelled:'skip'" in index
     assert 'data-status="${status}"' in index
     assert 'markRunning(label)' in index
+    assert 'lastProgress: null' in index
+    assert 'preparing: false' in index
+    assert 'function setPreparing' in index
+    assert '正在准备巡检：扫描当前目录' in index
+    assert '正在准备处理：扫描当前目录' in index
+    assert '正在启动巡检任务' in index
+    assert 'state.running||state.preparing' in index
+    assert 'function syncRunStart' in index
+    assert 'workspace.run_started_at' in index
+    assert 'progress.run_started_at||workspace.run_started_at' in index
+    assert 'p.run_started_at' in index
+    assert "setProgress(p.completed,p.total,p.label,p.stopping,p.run_started_at)" in index
+    assert 'function refreshProgressClock' in index
+    assert 'state.lastProgress={done,total,label,stopping}' in index
+    assert 'setInterval(refreshProgressClock,1000)' in index
     assert "ev.type==='file_result'" in index
     assert 'updateFromResults([p.result||{}])' in index
     assert 'cover_image_data' in index
@@ -560,6 +697,8 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'applyCompletedProgress(p.result,p.dry_run)' in index
     assert '处理失败 - 源文件保持原样' in index
     assert 'f.targetImage=r.target_image_path||f.targetImage' in index
+    assert "if('size' in r){f.size=r.size; f.sizeText=fmtSize(r.size);}" in index
+    assert index.index("log('OK',`JAV 文件整理工具") < index.index('(s.events||[]).forEach')
     assert "['本地封面',f.targetImage||'—']" in index
     assert 'function selectedProcessableFiles' in index
     assert 'function isProcessableStatus' in index
@@ -570,6 +709,11 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert '本次将处理已勾选文件' in index
     assert 'function resetWorkspaceForNewFolder' in index
     assert 'function resetRunSurface' in index
+    assert 'opts={}' in index
+    assert 'keepRows' in index
+    assert '原列表暂时保留' in index
+    assert "resetRunSurface($('folderPath').textContent,{keepRows:hadRows})" in index
+    assert 'state.seen=new Set(); state.lastEventId=0' not in index
     assert 'function prepareWorkspaceForRun' in index
     assert "api('prepare_run_workspace',settings)" in index
     assert '新处理动作：正在刷新当前目录' in index
@@ -579,14 +723,18 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'function scrollToFile' in index
     assert 'function jumpToLogForFile' in index
     assert 'logTermsForFile(f)' in index
+    assert 'preferredLogWords(status)' in index
+    assert 'ensureFallbackLogLine(f,status)' in index
+    assert "state.inspectionMode?'巡检':'处理'" in index
+    assert '结果定位' in index
     assert "tr.onclick=()=>jumpToLogForFile(id)" in index
     assert '.logline.hit' in index
     assert "tr.closest('.tablewrap')" in index
     assert "mode:'follow'" in index
     assert "!f._finalized" in index
     assert "f._finalized=true" in index
-    assert 'renderTable({scrollTo:current&&current.id' in index
-    assert 'renderTable({scrollTo:touched[touched.length-1]' in index
+    assert 'updateRowElement' in index
+    assert "renderTable({scrollTo:touched[touched.length-1]" in index
     assert 'if(!(replay&&state.files.length))' in index
     assert "receive(ev,{replay:true})" in index
     assert 'if(!replay)' in index
@@ -597,12 +745,86 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'class="pill ' not in index
     assert 'class="rowbtn"' not in index
     assert 'class="fchip"' in workspace
+    assert 'tglInspection' in workspace
+    assert '巡检模式' in workspace
+    assert workspace.index('id="tglInspection"') < workspace.index('id="tglDry"')
+    assert 'inpSimilarity' in workspace
+    assert '封面相似阈值' in workspace
+    assert "inspection_similarity_threshold: inspectionSimilarityThreshold()" in workspace
+    assert 'updateInspectionControls' in workspace
+    assert 'normalizeSimilarityInput' in workspace
+    assert 'Math.max(0,Math.min(64,n))' in workspace
+    assert 'raw===\'\'?6:parseInt(raw,10)' in workspace
+    assert 'updateStartButton' in workspace
+    assert 'prepareInspectionWorkspace' in workspace
+    assert "api('scan_folder',settings,false)" in workspace
+    assert '巡检目录刷新完成' in workspace
+    assert '正常，无需处理' in workspace
+    assert "api('start_inspection',currentSettings())" in workspace
+    assert '开始巡检当前目录' in workspace
+    assert '巡检完成' in workspace
+    assert '巡检已停止' in workspace
+    assert '为加快停止，本次未重新扫描处理后清单' in workspace
+    assert '已记录结果' in workspace
+    assert "result.mode==='inspection'" in workspace
+    assert 'function resultKeys' in workspace
+    assert 'function findRowForResult' in workspace
+    assert 'function applyResultToRow' in workspace
+    assert 'payloadName(f)' in workspace
     assert 'class="rowcheck"' in workspace
     assert 'class="chev"' in workspace
     assert 'function normalizeStatus' in workspace
+    assert 'function effectiveStatus' in workspace
+    assert "return 'normal'" in workspace
+    assert "return 'checking'" in workspace
+    assert "return 'fixed'" in workspace
+    assert "function statusLabel" in workspace
+    assert "inspection?'待巡检':'待处理'" in workspace
+    assert 'doneErrLabel' in workspace
+    assert 'doneRevLabel' in workspace
+    assert 'function inspectionNormalCount' in workspace
+    assert "doneOkLabel').textContent='正常'" in workspace
+    assert "doneErrLabel').textContent='已修复'" in workspace
+    assert "doneRevLabel').textContent='问题'" in workspace
+    assert '巡检完成：正常' in workspace
+    assert "state.inspectionMode&&!String(label||'').startsWith('巡检封面 ')" in workspace
+    assert "checking:['巡检中','st st-run']" in workspace
+    assert "checked:['已巡检','st st-info']" in workspace
+    assert "normal:['正常','st st-ok']" in workspace
+    assert "fixed:['已修复','st st-ok']" in workspace
+    assert "['normal','正常']" in workspace
+    assert "['checking','巡检中'],['normal','正常'],['ok','已修复']" in workspace
+    assert "['checked','已巡检']" not in workspace
+    assert "]:[['all','全部'],['planned','待处理'],['ok','成功']" in workspace
+    assert "if(status==='checked'&&state.inspectionMode)return 'planned'" in workspace
+    assert "f.status=state.inspectionMode?'skipped':'planned'" not in workspace
+    assert 'function updateRowElement' in workspace
+    assert 'inspectionProgressFallback' not in workspace
+    assert "if(!state.running)setRunning(true,!!stopping)" in workspace
+    assert '检测到后台任务仍在运行' in workspace
+    assert "state.inspectionMode?'checked':'planned'" not in workspace
+    assert "const verb=state.inspectionMode?'巡检中':'处理中'" in workspace
+    assert 'class="progress-file"' in workspace
+    assert '.progress-file b' in workspace
+    assert "const activeText=state.inspectionMode?'巡检中…':'处理中…'" in workspace
     assert "'计划':'planned'" in workspace
     assert 'data-status="${status}"' in workspace
     assert 'markRunning(label)' in workspace
+    assert 'lastProgress: null' in workspace
+    assert 'preparing: false' in workspace
+    assert 'function setPreparing' in workspace
+    assert '正在准备巡检：扫描当前目录' in workspace
+    assert '正在准备处理：扫描当前目录' in workspace
+    assert '正在启动巡检任务' in workspace
+    assert 'state.running||state.preparing' in workspace
+    assert 'function syncRunStart' in workspace
+    assert 'workspace.run_started_at' in workspace
+    assert 'progress.run_started_at||workspace.run_started_at' in workspace
+    assert 'p.run_started_at' in workspace
+    assert "setProgress(p.completed,p.total,p.label,p.stopping,p.run_started_at)" in workspace
+    assert 'function refreshProgressClock' in workspace
+    assert 'state.lastProgress={done,total,label,stopping}' in workspace
+    assert 'setInterval(refreshProgressClock,1000)' in workspace
     assert "ev.type==='file_result'" in workspace
     assert 'updateFromResults([p.result||{}])' in workspace
     assert 'cover_image_data' in workspace
@@ -616,6 +838,8 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'applyCompletedProgress(p.result,p.dry_run)' in workspace
     assert '处理失败 - 源文件保持原样' in workspace
     assert 'f.targetImage=r.target_image_path||f.targetImage' in workspace
+    assert "if('size' in r){f.size=r.size; f.sizeText=fmtSize(r.size);}" in workspace
+    assert workspace.index("log('OK',`JAV 文件整理工具") < workspace.index('(s.events||[]).forEach')
     assert "['本地封面',f.targetImage||'—']" in workspace
     assert 'function selectedProcessableFiles' in workspace
     assert 'function isProcessableStatus' in workspace
@@ -626,6 +850,11 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert '本次将处理已勾选文件' in workspace
     assert 'function resetWorkspaceForNewFolder' in workspace
     assert 'function resetRunSurface' in workspace
+    assert 'opts={}' in workspace
+    assert 'keepRows' in workspace
+    assert '原列表暂时保留' in workspace
+    assert "resetRunSurface($('folderPath').textContent,{keepRows:hadRows})" in workspace
+    assert 'state.seen=new Set(); state.lastEventId=0' not in workspace
     assert 'function prepareWorkspaceForRun' in workspace
     assert "api('prepare_run_workspace',settings)" in workspace
     assert '新处理动作：正在刷新当前目录' in workspace
@@ -635,14 +864,18 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'function scrollToFile' in workspace
     assert 'function jumpToLogForFile' in workspace
     assert 'logTermsForFile(f)' in workspace
+    assert 'preferredLogWords(status)' in workspace
+    assert 'ensureFallbackLogLine(f,status)' in workspace
+    assert "state.inspectionMode?'巡检':'处理'" in workspace
+    assert '结果定位' in workspace
     assert "tr.onclick=()=>jumpToLogForFile(id)" in workspace
     assert '.logline.hit' in workspace
     assert "tr.closest('.tablewrap')" in workspace
     assert "mode:'follow'" in workspace
     assert "!f._finalized" in workspace
     assert "f._finalized=true" in workspace
-    assert 'renderTable({scrollTo:current&&current.id' in workspace
-    assert 'renderTable({scrollTo:touched[touched.length-1]' in workspace
+    assert 'updateRowElement' in workspace
+    assert "renderTable({scrollTo:touched[touched.length-1]" in workspace
     assert 'if(!(replay&&state.files.length))' in workspace
     assert "receive(ev,{replay:true})" in workspace
     assert 'if(!replay)' in workspace
@@ -671,6 +904,15 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'state.active_run_path' in report
     assert 'data-path="${esc(run.summary_path' in report
     assert "load(btn.dataset.path||'')" in report
+    assert 'function isInspectionRun' in report
+    assert 'function effectiveStatus' in report
+    assert "reason==='inspection-ok-no-action'" in report
+    assert "'封面与视频配对正常，无需处理'" in report
+    assert "'巡检'" in report
+    assert "'正常率'" in report
+    assert "'已修复'" in report
+    assert "normal_count" in report
+    assert "mode==='inspection'" in report
     assert '快捷键' not in report
     assert 'const RUNS = [' not in report
 

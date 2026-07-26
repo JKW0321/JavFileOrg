@@ -107,6 +107,7 @@ class OrganizerApi:
         self.is_processing = False
         self.is_testing = False
         self._shutdown_started = False
+        self.run_started_at = None
         self.last_result = None
         self.selected_folder = ''
         self.workspace_files = []
@@ -120,6 +121,7 @@ class OrganizerApi:
             'include_subdirectories': False,
             'max_filename_length': '80',
             'max_filename_bytes': '240',
+            'inspection_similarity_threshold': '6',
             'preserve_actor': True,
             'batch_count': '',
         }
@@ -228,6 +230,7 @@ class OrganizerApi:
             'include_subdirectories': False,
             'max_filename_length': str(payload.get('max_filename_length', self.settings['max_filename_length']) or ''),
             'max_filename_bytes': str(payload.get('max_filename_bytes', self.settings['max_filename_bytes']) or ''),
+            'inspection_similarity_threshold': str(payload.get('inspection_similarity_threshold', self.settings['inspection_similarity_threshold']) or '6'),
             'preserve_actor': bool(payload.get('preserve_actor', self.settings['preserve_actor'])),
             'batch_count': str(payload.get('batch_count', self.settings['batch_count']) or ''),
         })
@@ -257,6 +260,7 @@ class OrganizerApi:
             'image_selector': self.engine.image_selector_var.get(),
             'max_filename_length': self.settings.get('max_filename_length') or '',
             'max_filename_bytes': self.settings.get('max_filename_bytes') or '',
+            'inspection_similarity_threshold': self.settings.get('inspection_similarity_threshold') or '6',
             'preserve_actor': bool(self.settings.get('preserve_actor', True)),
             'batch_count': self.settings.get('batch_count') or '',
             'dry_run': bool(self.settings.get('dry_run')),
@@ -313,15 +317,24 @@ class OrganizerApi:
         self.workspace_files = []
         self.workspace_scan_meta = {}
         self.last_progress = {}
+        self.run_started_at = None
         with self.events_lock:
             self.events = []
 
     def _log(self, message, level='INFO'):
         timestamp = time.strftime('%H:%M:%S')
+        text = self._strip_icons(message)
+        engine = getattr(self, 'engine', None)
+        writer = getattr(engine, '_write_run_log', None) if engine is not None else None
+        if callable(writer):
+            try:
+                writer(f'[{timestamp}] {str(level).upper():<10} {text}\n')
+            except Exception:
+                pass
         self._emit('log', {
             'time': timestamp,
             'level': level,
-            'message': self._strip_icons(message),
+            'message': text,
         })
 
     def _progress(self, completed, total, label=''):
@@ -334,6 +347,7 @@ class OrganizerApi:
             'percent': percent,
             'label': self._strip_icons(label),
             'stopping': self.engine._is_stop_requested(),
+            'run_started_at': self.run_started_at,
             'updated_at': time.time(),
         }
         self._emit('progress', {
@@ -342,6 +356,7 @@ class OrganizerApi:
             'percent': percent,
             'label': self.last_progress['label'],
             'stopping': self.last_progress['stopping'],
+            'run_started_at': self.run_started_at,
         })
 
     def _file_result(self, item):
@@ -370,6 +385,7 @@ class OrganizerApi:
         self.last_result = result
         self._remember_session_run(result)
         self.is_processing = False
+        self.run_started_at = None
         self._emit('complete', {
             'result': result,
             'dry_run': dry_run,
@@ -433,6 +449,7 @@ class OrganizerApi:
                 'progress': dict(self.last_progress),
                 'processing': self.is_processing,
                 'testing': self.is_testing,
+                'run_started_at': self.run_started_at,
             },
             'events': list(self.events),
             'last_result': self.last_result,
@@ -526,11 +543,15 @@ class OrganizerApi:
             value = str(payload.get(field) or '').strip()
             if value and (not value.isdigit() or int(value) <= 0):
                 errors[field] = '请输入正整数，或留空'
+        threshold_value = str(payload.get('inspection_similarity_threshold') or '').strip()
+        if threshold_value and (not threshold_value.isdigit() or int(threshold_value) > 64):
+            errors['inspection_similarity_threshold'] = '请输入 0-64 之间的整数'
         if errors:
             return {'ok': False, 'errors': errors, 'message': '存在无效数值，请修正后再保存'}
         self.settings.update({
             'max_filename_length': str(payload.get('max_filename_length') or '').strip(),
             'max_filename_bytes': str(payload.get('max_filename_bytes') or '').strip(),
+            'inspection_similarity_threshold': str(payload.get('inspection_similarity_threshold') or '6').strip(),
             'batch_count': str(payload.get('batch_count') or '').strip(),
             'preserve_actor': bool(payload.get('preserve_actor', True)),
             'include_subdirectories': bool(payload.get('include_subdirectories', False)),
@@ -544,6 +565,7 @@ class OrganizerApi:
         self.settings.update({
             'max_filename_length': '80',
             'max_filename_bytes': '240',
+            'inspection_similarity_threshold': '6',
             'batch_count': '',
             'preserve_actor': True,
             'include_subdirectories': False,
@@ -596,12 +618,14 @@ class OrganizerApi:
                 'summary_path': str(path),
                 'generated_at': summary.get('generated_at') or '',
                 'website': summary.get('website') or '',
+                'mode': summary.get('mode') or '',
                 'dry_run': bool(summary.get('dry_run')),
                 'total_files': counts.get('total_files') or 0,
                 'success_count': counts.get('success_count') or 0,
                 'failed_count': counts.get('failed_count') or 0,
                 'needs_review_count': counts.get('needs_review_count') or 0,
                 'cancelled_count': counts.get('cancelled_count') or 0,
+                'normal_count': counts.get('normal_count') or 0,
             })
         return runs
 
@@ -631,11 +655,13 @@ class OrganizerApi:
                 'generated_at': summary.get('generated_at'),
                 'website': summary.get('website'),
                 'folder': summary.get('folder'),
+                'mode': summary.get('mode'),
                 'dry_run': summary.get('dry_run'),
                 'total_files': counts.get('total_files') or 0,
                 'success_count': counts.get('success_count') or 0,
                 'failed_count': counts.get('failed_count') or 0,
                 'needs_review_count': counts.get('needs_review_count') or 0,
+                'normal_count': counts.get('normal_count') or 0,
                 'cancelled_count': counts.get('cancelled_count') or 0,
                 'skipped_hidden': counts.get('skipped_hidden') or 0,
                 'skipped_small': counts.get('skipped_small') or 0,
@@ -943,8 +969,103 @@ class OrganizerApi:
             selected_files=list(settings.get('selected_files') or []) if isinstance(settings, dict) else None,
         )
         self.is_processing = True
-        self._emit('state', {'processing': True, 'stopping': False, 'request': asdict(request)})
+        self.run_started_at = time.time()
+        self._emit('state', {
+            'processing': True,
+            'stopping': False,
+            'run_started_at': self.run_started_at,
+            'request': asdict(request),
+        })
         self.run_thread = threading.Thread(target=lambda: self.engine._process_files_worker(request), daemon=True)
+        self.run_thread.start()
+        return {'ok': True}
+
+    def _run_inspection_worker(self, *, folder, website):
+        ui_completion_scheduled = False
+        run_log_path = None
+        try:
+            from inspection_service import InspectionService
+
+            self.engine._reset_stop_signal()
+            self._log('🩺 开始巡检模式...', 'INFO')
+            run_log_path = self.engine._start_run_log(folder, f'inspection_{website}')
+            self._log(f'📝 巡检日志文件: {run_log_path}', 'INFO')
+            logs_dir = os.path.dirname(run_log_path)
+
+            max_length = None
+            max_length_text = str(self.settings.get('max_filename_length') or '').strip()
+            if max_length_text:
+                try:
+                    max_length = int(max_length_text)
+                except ValueError:
+                    self._log('⚠️ 文件名长度设置无效，巡检将使用完整标题', 'WARNING')
+
+            max_filename_bytes = None
+            max_filename_bytes_text = str(self.settings.get('max_filename_bytes') or '').strip()
+            if max_filename_bytes_text:
+                try:
+                    max_filename_bytes = int(max_filename_bytes_text)
+                except ValueError:
+                    self._log('⚠️ 文件系统字节上限设置无效，巡检将不做额外字节截断', 'WARNING')
+
+            duplicate_similarity_threshold = 6
+            threshold_text = str(self.settings.get('inspection_similarity_threshold') or '6').strip()
+            if threshold_text:
+                try:
+                    duplicate_similarity_threshold = max(0, min(64, int(threshold_text)))
+                except ValueError:
+                    self._log('⚠️ 巡检相似度阈值设置无效，将使用默认值 6', 'WARNING')
+
+            service = InspectionService(
+                log=self._log,
+                provider_factory=self.engine._build_provider_factory(),
+                atomic_processor=self.engine.atomic_processor,
+                clean_filename_for_search=self.engine.clean_filename_for_search,
+                sanitize_filename=self.engine.sanitize_filename,
+                smart_truncate_filename=self.engine.smart_truncate_filename,
+                stop_requested=self.engine._is_stop_requested,
+                progress_callback=self._progress,
+                file_result_callback=self._file_result,
+                minimum_video_size_bytes=getattr(self.engine, 'minimum_video_size_bytes', 16 * 1024),
+                duplicate_image_similarity_threshold=duplicate_similarity_threshold,
+                app_version=BASELINE_VERSION,
+            )
+            result = service.run(
+                folder_path=folder,
+                website=website,
+                max_length=max_length,
+                max_filename_bytes=max_filename_bytes,
+                log_path=run_log_path,
+                logs_dir=logs_dir,
+            )
+            self._complete_processing_ui(result, False, run_log_path)
+            ui_completion_scheduled = True
+        except Exception as exc:
+            self._log(f'❌ 巡检过程中出现错误: {exc}', 'ERROR')
+        finally:
+            if not ui_completion_scheduled:
+                self._finish_processing_ui()
+
+    def start_inspection(self, settings=None):
+        if self.is_processing:
+            return {'ok': False, 'message': '任务正在处理中'}
+        website, _config = self._sync_engine_settings(settings or {})
+        folder = self.selected_folder
+        if not folder or not os.path.exists(folder):
+            return {'ok': False, 'message': '请选择有效的巡检目录'}
+        self._ensure_anti_crawl(require_selenium=(website == 'javlibrary'))
+        self.is_processing = True
+        self.run_started_at = time.time()
+        self._emit('state', {
+            'processing': True,
+            'stopping': False,
+            'run_started_at': self.run_started_at,
+            'request': {'mode': 'inspection', 'folder_path': folder, 'website': website},
+        })
+        self.run_thread = threading.Thread(
+            target=lambda: self._run_inspection_worker(folder=folder, website=website),
+            daemon=True,
+        )
         self.run_thread.start()
         return {'ok': True}
 
@@ -958,6 +1079,7 @@ class OrganizerApi:
         self._emit('state', {
             'processing': True,
             'stopping': True,
+            'run_started_at': self.run_started_at,
             'active_transaction': active_transaction,
         })
         self._log(
