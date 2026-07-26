@@ -62,6 +62,7 @@ class UncensoredProvider(BaseProvider):
         ('s-cute', re.compile(r'\bS[-_]?CUTE[-_\s]*\d+\b', re.IGNORECASE)),
         ('mesubuta', re.compile(r'\bMESUBUTA[-_\s]*\d{6}[-_\s]*\d{3}\b', re.IGNORECASE)),
         ('madou', re.compile(r'\b(?:MM|MD|MDHG|MDL|MDSR)[-_\s]*\d+\b|麻豆|MADOU', re.IGNORECASE)),
+        ('dpvr', re.compile(r'\bDPVR[-_\s]*\d+\b', re.IGNORECASE)),
         ('number-name-series', re.compile(r'^\d{2,4}[-_\s]+[A-Z][A-Z]+', re.IGNORECASE)),
     )
 
@@ -70,12 +71,13 @@ class UncensoredProvider(BaseProvider):
         's-cute': 'S-Cute recognized, but the official old site ended service and no stable cover source is configured yet',
         'mesubuta': 'Mesubuta recognized, but the known official domain is unavailable and no stable cover source is configured yet',
         'madou': 'Madou recognized, but no verified public cover/detail source is configured yet',
+        'dpvr': 'DPVR recognized, but no verified public cover/detail source is configured yet',
         'number-name-series': 'filename pattern recognized, but the source family is ambiguous and needs manual review',
     }
 
     MGSTAGE_PREFIXES = (
         '300MIUM', '393OTIM', '420HPT', '420STH', '546EROFV', '583ERKR',
-        '328CNSTV', '328HMDNV', '476MLA', '253KAKU',
+        '328CNSTV', '328HMDNV', '476MLA', '253KAKU', '292MY',
     )
 
     def _request(self, url):

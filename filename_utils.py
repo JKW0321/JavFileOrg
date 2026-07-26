@@ -279,11 +279,12 @@ def _extract_code_from_prepared_name(name: str):
 
 
 def _candidate(rule_id, filename, normalized_code, *, confidence, usable_for_search,
-               reason, sequence=None, pattern_shape=None):
+               reason, sequence=None, pattern_shape=None, search_query=None):
     return {
         'rule_id': rule_id,
         'source_name': os.path.basename(filename) if filename else filename,
         'normalized_code': normalized_code,
+        'search_query': search_query,
         'sequence': sequence,
         'confidence': confidence,
         'usable_for_search': usable_for_search,
@@ -294,7 +295,7 @@ def _candidate(rule_id, filename, normalized_code, *, confidence, usable_for_sea
 
 MGSTAGE_PREFIXES = (
     '300MIUM', '393OTIM', '420HPT', '420STH', '546EROFV', '583ERKR',
-    '328CNSTV', '328HMDNV', '476MLA', '253KAKU',
+    '328CNSTV', '328HMDNV', '476MLA', '253KAKU', '292MY',
 )
 
 
@@ -380,6 +381,23 @@ def analyze_unknown_filename(filename: str):
             usable_for_search=True,
             reason='matched Heydouga 4030 numeric code',
             pattern_shape='HEYDOUGA/HEY[-_ ]4030[-_ ]<digits>[-_ ]<optional sequence>',
+        )
+
+    dpvr = re.search(
+        r'\bDPVR[-_\s]*(\d{2,6})(?:[-_\s]+(\d{1,3}))?(?:[-_\s]+(?:8K|4K|2160P|1080P|720P|UHD|FHD|HD))?\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if dpvr:
+        return _candidate(
+            'dpvr',
+            filename,
+            f"DPVR-{dpvr.group(1).zfill(5)}",
+            sequence=dpvr.group(2),
+            confidence=0.9,
+            usable_for_search=True,
+            reason='matched DPVR code and optional sequence/quality suffix',
+            pattern_shape='DPVR[-_ ]<digits>[-_ ]<optional sequence>[-_ ]<optional quality>',
         )
 
     japanhdv = re.search(
@@ -532,6 +550,7 @@ def analyze_unknown_filename(filename: str):
             usable_for_search=True,
             reason='matched CaribbeanCom suffix code',
             pattern_shape='<date/id digits>[-_ ]<part digits>[-_ ]CARIB',
+            search_query=f"{carib_suffix.group(1)}-{carib_suffix.group(2)}-CARIB",
         )
 
     onepondo_suffix = re.search(
@@ -669,7 +688,7 @@ def clean_filename_for_search(filename: str) -> str:
 
     candidate = analyze_unknown_filename(filename)
     if candidate and candidate.get('usable_for_search'):
-        return candidate.get('normalized_code').lower()
+        return (candidate.get('search_query') or candidate.get('normalized_code')).lower()
 
     # v1.4.4: 优先识别序列文件，避免 -1/-2/-a 等被错误地编入搜索词
     base, _seq = extract_series_info(filename)

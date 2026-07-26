@@ -126,6 +126,62 @@ def test_webview_report_state_uses_last_real_result(tmp_path):
     assert report['artifacts'][0]['size']
 
 
+def test_webview_report_state_lists_only_current_session_runs(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.set_folder(str(tmp_path))
+    logs = tmp_path / 'JFO_Logs'
+    logs.mkdir()
+
+    run_payloads = [
+        ('20260726_101010', 'javbus', 'ABF-217.mp4', 'success'),
+        ('20260726_111111', 'javhoo', 'JBD-102.mp4', 'failed'),
+    ]
+    summary_paths = []
+    for stamp, website, source_name, status in run_payloads:
+        log_path = logs / f'JFO_RUN_{stamp}_{website}.log'
+        result_path = logs / f'file_results_{stamp}.json'
+        summary_path = logs / f'run_summary_{stamp}.json'
+        log_path.write_text(source_name, encoding='utf-8')
+        result_path.write_text(json.dumps({
+            'results': [{
+                'status': status,
+                'source_name': source_name,
+                'query': source_name.split('.')[0],
+            }]
+        }), encoding='utf-8')
+        summary_path.write_text(json.dumps({
+            'generated_at': f'2026-07-26T{stamp[-6:-4]}:{stamp[-4:-2]}:{stamp[-2:]}',
+            'website': website,
+            'folder': str(tmp_path),
+            'dry_run': False,
+            'counts': {
+                'total_files': 1,
+                'success_count': 1 if status == 'success' else 0,
+                'failed_count': 1 if status == 'failed' else 0,
+            },
+            'artifacts': {
+                'log_path': str(log_path),
+                'file_results_path': str(result_path),
+            },
+        }), encoding='utf-8')
+        summary_paths.append(summary_path)
+
+    historical = api.report_state(str(summary_paths[0]))
+
+    assert historical['runs'] == []
+    assert historical['result'] is None
+
+    api._remember_session_run({'summary_path': str(summary_paths[1])})
+    api._remember_session_run({'summary_path': str(summary_paths[0])})
+    report = api.report_state(str(summary_paths[0]))
+
+    assert len(report['runs']) == 2
+    assert report['active_run_path'] == str(summary_paths[0])
+    assert report['result']['website'] == 'javbus'
+    assert report['file_results'][0]['source_name'] == 'ABF-217.mp4'
+    assert report['artifacts'][0]['kind'] == '运行日志'
+
+
 def test_webview_connection_test_runs_in_background_and_emits_result(tmp_path):
     api = _api_with_temp_config(tmp_path)
 
@@ -309,6 +365,36 @@ def test_webview_initial_state_restores_workspace_snapshot_after_event_truncatio
     assert rows['ABF-244.mp4']['status'] == 'planned'
 
 
+def test_webview_prepare_run_workspace_clears_previous_run_and_rescans(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.set_folder(str(tmp_path))
+    api.last_result = {'success_count': 1}
+    api.workspace_files = [{'name': 'old.mp4', 'status': 'success'}]
+    api.workspace_scan_meta = {'total_files': 1}
+    api.last_progress = {'total': 1}
+    api._emit('complete', {'result': {'file_results': []}})
+
+    def fake_scan(folder):
+        return {
+            'accepted': ['retry.mp4'],
+            'file_sizes': {'retry.mp4': 1024},
+            'total_files': 1,
+            'skipped_hidden': [],
+            'skipped_small': [],
+            'manifest_entries': [],
+        }
+
+    api.engine._scan_video_files = fake_scan
+    result = api.prepare_run_workspace({'website': 'javhoo'})
+
+    assert result['ok'] is True
+    assert result['files'][0]['name'] == 'retry.mp4'
+    assert api.last_result is None
+    assert api.last_progress == {}
+    assert api.workspace_files[0]['name'] == 'retry.mp4'
+    assert api.poll_events(0) == []
+
+
 def test_webview_provider_switch_keeps_failed_rows_retryable_in_workspace_snapshot(tmp_path):
     api = _api_with_temp_config(tmp_path)
     api.workspace_files = [
@@ -483,17 +569,30 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert '没有勾选可处理文件' in index
     assert '本次将处理已勾选文件' in index
     assert 'function resetWorkspaceForNewFolder' in index
+    assert 'function resetRunSurface' in index
+    assert 'function prepareWorkspaceForRun' in index
+    assert "api('prepare_run_workspace',settings)" in index
+    assert '新处理动作：正在刷新当前目录' in index
+    assert '刷新后没有勾选可处理文件' in index
     assert 'function restoreWorkspaceSnapshot' in index
     assert 'restoreWorkspaceSnapshot(s.workspace||{})' in index
     assert 'function scrollToFile' in index
-    assert 'scrollIntoView({block,behavior' in index
+    assert 'function jumpToLogForFile' in index
+    assert 'logTermsForFile(f)' in index
+    assert "tr.onclick=()=>jumpToLogForFile(id)" in index
+    assert '.logline.hit' in index
+    assert "tr.closest('.tablewrap')" in index
+    assert "mode:'follow'" in index
+    assert "!f._finalized" in index
+    assert "f._finalized=true" in index
     assert 'renderTable({scrollTo:current&&current.id' in index
     assert 'renderTable({scrollTo:touched[touched.length-1]' in index
     assert 'if(!(replay&&state.files.length))' in index
     assert "receive(ev,{replay:true})" in index
     assert 'if(!replay)' in index
     assert "window.addEventListener('pageshow',()=>hideTransientOverlays())" in index
-    assert "status:normalizeStatus(f.status||'planned')" in index
+    assert "const status=normalizeStatus(f.status||'planned')" in index
+    assert "_finalized:['ok','err','skip','review','audit'].includes(status)" in index
     assert 'class="filter ' not in index
     assert 'class="pill ' not in index
     assert 'class="rowbtn"' not in index
@@ -526,16 +625,30 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert '没有勾选可处理文件' in workspace
     assert '本次将处理已勾选文件' in workspace
     assert 'function resetWorkspaceForNewFolder' in workspace
+    assert 'function resetRunSurface' in workspace
+    assert 'function prepareWorkspaceForRun' in workspace
+    assert "api('prepare_run_workspace',settings)" in workspace
+    assert '新处理动作：正在刷新当前目录' in workspace
+    assert '刷新后没有勾选可处理文件' in workspace
     assert 'function restoreWorkspaceSnapshot' in workspace
     assert 'restoreWorkspaceSnapshot(s.workspace||{})' in workspace
     assert 'function scrollToFile' in workspace
-    assert 'scrollIntoView({block,behavior' in workspace
+    assert 'function jumpToLogForFile' in workspace
+    assert 'logTermsForFile(f)' in workspace
+    assert "tr.onclick=()=>jumpToLogForFile(id)" in workspace
+    assert '.logline.hit' in workspace
+    assert "tr.closest('.tablewrap')" in workspace
+    assert "mode:'follow'" in workspace
+    assert "!f._finalized" in workspace
+    assert "f._finalized=true" in workspace
     assert 'renderTable({scrollTo:current&&current.id' in workspace
     assert 'renderTable({scrollTo:touched[touched.length-1]' in workspace
     assert 'if(!(replay&&state.files.length))' in workspace
     assert "receive(ev,{replay:true})" in workspace
     assert 'if(!replay)' in workspace
     assert "window.addEventListener('pageshow',()=>hideTransientOverlays())" in workspace
+    assert "const status=normalizeStatus(f.status||'planned')" in workspace
+    assert "_finalized:['ok','err','skip','review','audit'].includes(status)" in workspace
     assert 'class="filter ' not in workspace
     assert 'class="pill ' not in workspace
     assert 'class="rowbtn"' not in workspace
@@ -554,6 +667,10 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert '169 通过' not in settings
     assert '快捷键' not in settings
     assert 'report_state' in report
+    assert 'state.runs' in report
+    assert 'state.active_run_path' in report
+    assert 'data-path="${esc(run.summary_path' in report
+    assert "load(btn.dataset.path||'')" in report
     assert '快捷键' not in report
     assert 'const RUNS = [' not in report
 

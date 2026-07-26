@@ -208,8 +208,17 @@ class TestAdaptiveFilenameRules:
 
         assert candidate['rule_id'] == 'carib_suffix'
         assert candidate['normalized_code'] == 'CARIB-032226-001'
+        assert candidate['search_query'] == '032226-001-CARIB'
         assert candidate['usable_for_search'] is True
-        assert clean_filename_for_search("032226-001-CARIB.mp4") == "carib-032226-001"
+        assert clean_filename_for_search("032226-001-CARIB.mp4") == "032226-001-carib"
+
+    def test_caribbeancom_suffix_from_user_log_keeps_source_suffix_query(self):
+        candidate = analyze_unknown_filename("122725-001-CARIB.mp4")
+
+        assert candidate['rule_id'] == 'carib_suffix'
+        assert candidate['normalized_code'] == 'CARIB-122725-001'
+        assert candidate['search_query'] == '122725-001-CARIB'
+        assert clean_filename_for_search("122725-001-CARIB.mp4") == "122725-001-carib"
 
     def test_1pondo_suffix_candidate_is_auto_usable(self):
         candidate = analyze_unknown_filename("032126_001-1PON.mp4")
@@ -290,6 +299,24 @@ class TestAdaptiveFilenameRules:
         assert candidate['normalized_code'] == '328HMDNV-935'
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("4k2.me@328HMDNV-935.mp4") == "328hmdnv-935"
+
+    def test_292my_mgstage_candidate_is_auto_usable(self):
+        candidate = analyze_unknown_filename("4k2.me@292MY-1061.mp4")
+
+        assert candidate['rule_id'] == 'mgstage_uncensored'
+        assert candidate['normalized_code'] == '292MY-1061'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("4k2.me@292MY-1061.mp4") == "292my-1061"
+
+    def test_dpvr_sequence_quality_suffix_uses_base_code(self):
+        candidate = analyze_unknown_filename("4k2.me@dpvr00047_1_8k.mp4")
+
+        assert candidate['rule_id'] == 'dpvr'
+        assert candidate['normalized_code'] == 'DPVR-00047'
+        assert candidate['sequence'] == '1'
+        assert candidate['usable_for_search'] is True
+        assert extract_series_info("4k2.me@dpvr00047_1_8k.mp4") == ("DPVR-00047", "1")
+        assert clean_filename_for_search("4k2.me@dpvr00047_1_8k.mp4") == "dpvr-00047"
 
     def test_japanhdv_candidate_is_auto_usable(self):
         candidate = analyze_unknown_filename("japanhdv.17.09.24.maya.sawamura.mp4")

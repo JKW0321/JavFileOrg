@@ -163,6 +163,19 @@ def test_uncensored_provider_accepts_carib_suffix_query():
     assert result.image_url == 'https://www.caribbeancom.com/moviepages/032226-001/images/l_l.jpg'
 
 
+def test_uncensored_provider_accepts_carib_suffix_query_from_filename_cleaner():
+    html = '<html><head><title>Title</title></head><body><img src="images/str.jpg" /></body></html>'
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    result = provider.search('122725-001-carib')
+
+    assert result.ok is True
+    assert result.raw_meta['family'] == 'caribbeancom'
+    assert result.raw_meta['code'] == '122725-001'
+    assert session.calls == [('https://www.caribbeancom.com/moviepages/122725-001/index.html', (5, 10))]
+
+
 def test_uncensored_provider_parses_1pondo_page():
     html = '''
     <html><head><title>1Pondo Title - 1pondo.tv</title></head>
@@ -595,6 +608,19 @@ def test_uncensored_provider_parses_mgstage_like_page():
     assert result.title == '300MIUM-1366 MGStage Sample Title'
     assert result.detail_url == 'https://www.mgstage.com/product/product_detail/300MIUM-1366/'
     assert result.image_url == 'https://image.mgstage.com/images/300mium/1366/pb_e_300mium-1366.jpg'
+
+
+def test_uncensored_provider_routes_292my_to_mgstage():
+    html = '<html><head><title>292MY Title - MGStage</title></head><body></body></html>'
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    result = provider.search('292my-1061')
+
+    assert result.ok is True
+    assert result.raw_meta['family'] == 'mgstage'
+    assert result.raw_meta['code'] == '292MY-1061'
+    assert result.detail_url == 'https://www.mgstage.com/product/product_detail/292MY-1061/'
     assert result.raw_meta['family'] == 'mgstage'
 
 
@@ -719,6 +745,7 @@ def test_uncensored_provider_recognizes_new_unsupported_families():
         'mdhg-0020': 'madou',
         'mdsr-0007': 'madou',
         'mdl-0010': 'madou',
+        'dpvr-00047': 'dpvr',
     }
 
     for query, family in cases.items():

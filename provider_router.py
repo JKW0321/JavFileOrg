@@ -8,7 +8,7 @@ JAV_GENERAL_PROVIDERS = {'javbus', 'javhoo', 'javlibrary'}
 NON_JAV_GENERAL_MARKERS = {
     'carib', '1pon', 'nyoshin', '10musume', 'pacopacomama', 'muramura',
     '300mium', '393otim', '420hpt', '420sth', '546erofv', '583erkr', '328cnstv',
-    '328hmdnv', '476mla', '253kaku',
+    '328hmdnv', '476mla', '253kaku', '292my', 'dpvr',
 }
 
 

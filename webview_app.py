@@ -112,6 +112,7 @@ class OrganizerApi:
         self.workspace_files = []
         self.workspace_scan_meta = {}
         self.last_progress = {}
+        self.session_runs = []
         self.provider_overrides = {}
         self.settings = {
             'website': 'javbus',
@@ -347,9 +348,27 @@ class OrganizerApi:
         self._update_workspace_from_results([item or {}])
         self._emit('file_result', {'result': item or {}})
 
+    def _remember_session_run(self, result):
+        if not isinstance(result, dict):
+            return
+        summary_path = result.get('summary_path')
+        if not summary_path:
+            return
+        self.session_runs = [
+            item for item in self.session_runs
+            if item.get('summary_path') != summary_path
+        ]
+        self.session_runs.insert(0, {
+            'summary_path': summary_path,
+            'result': result,
+            'created_at': time.time(),
+        })
+        self.session_runs = self.session_runs[:30]
+
     def _complete_processing_ui(self, result, dry_run, run_log_path):
         self._update_workspace_from_results((result or {}).get('file_results') or [])
         self.last_result = result
+        self._remember_session_run(result)
         self.is_processing = False
         self._emit('complete', {
             'result': result,
@@ -542,62 +561,71 @@ class OrganizerApi:
             return None
         return None
 
-    def _latest_run_summary(self):
-        folder = self.selected_folder
-        if not folder:
-            return None
-        logs_dir = Path(folder) / 'JFO_Logs'
-        if not logs_dir.exists():
-            return None
-        summaries = sorted(logs_dir.glob('run_summary_*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not summaries:
-            return None
-        summary = self._read_json_if_exists(str(summaries[0]))
+    def _load_run_summary(self, path):
+        summary = self._read_json_if_exists(str(path))
         if not isinstance(summary, dict):
             return None
-        summary['_summary_path'] = str(summaries[0])
+        summary['_summary_path'] = str(path)
         return summary
 
-    def report_state(self):
-        result = self.last_result if isinstance(self.last_result, dict) else None
-        summary = None
+    def _selected_run_summary(self, summary_path):
+        if not summary_path:
+            return None
+        try:
+            requested = Path(str(summary_path)).resolve()
+            allowed = {
+                Path(str(item.get('summary_path') or '')).resolve()
+                for item in self.session_runs
+                if item.get('summary_path')
+            }
+        except Exception:
+            return None
+        if requested not in allowed:
+            return None
+        return self._load_run_summary(requested)
+
+    def _run_tabs_payload(self):
+        runs = []
+        for item in self.session_runs[:30]:
+            path = item.get('summary_path')
+            summary = self._load_run_summary(path)
+            if not summary:
+                continue
+            counts = summary.get('counts') or {}
+            runs.append({
+                'summary_path': str(path),
+                'generated_at': summary.get('generated_at') or '',
+                'website': summary.get('website') or '',
+                'dry_run': bool(summary.get('dry_run')),
+                'total_files': counts.get('total_files') or 0,
+                'success_count': counts.get('success_count') or 0,
+                'failed_count': counts.get('failed_count') or 0,
+                'needs_review_count': counts.get('needs_review_count') or 0,
+                'cancelled_count': counts.get('cancelled_count') or 0,
+            })
+        return runs
+
+    def _report_payload_from_summary(self, summary):
         file_results = []
         artifacts = []
-
-        if result:
-            summary_path = result.get('summary_path')
-            summary = self._read_json_if_exists(summary_path) if summary_path else None
-            file_results = result.get('file_results') or []
-            artifact_pairs = [
-                ('运行日志', result.get('log_path')),
-                ('扫描前清单', result.get('before_manifest_path')),
-                ('扫描后清单', result.get('after_manifest_path')),
-                ('逐文件结果', result.get('file_results_path')),
-                ('命名规则候选', result.get('filename_rule_candidates_path')),
-                ('运行摘要', result.get('summary_path')),
-            ]
-            artifacts = [{'kind': k, 'path': v or '', 'size': self._file_size_text(v)} for k, v in artifact_pairs if v]
-        else:
-            summary = self._latest_run_summary()
-            if summary:
-                artifacts_payload = summary.get('artifacts') or {}
-                file_results_path = artifacts_payload.get('file_results_path')
-                file_results_payload = self._read_json_if_exists(file_results_path)
-                if isinstance(file_results_payload, dict):
-                    file_results = file_results_payload.get('results') or []
-                for key, label in (
-                    ('log_path', '运行日志'),
-                    ('before_manifest_path', '扫描前清单'),
-                    ('after_manifest_path', '扫描后清单'),
-                    ('file_results_path', '逐文件结果'),
-                    ('filename_rule_candidates_path', '命名规则候选'),
-                    ('_summary_path', '运行摘要'),
-                ):
-                    path = artifacts_payload.get(key) if key != '_summary_path' else summary.get('_summary_path')
-                    if path:
-                        artifacts.append({'kind': label, 'path': path, 'size': self._file_size_text(path)})
-
-        if not result and summary:
+        result = None
+        if summary:
+            artifacts_payload = summary.get('artifacts') or {}
+            file_results_path = artifacts_payload.get('file_results_path')
+            file_results_payload = self._read_json_if_exists(file_results_path)
+            if isinstance(file_results_payload, dict):
+                file_results = file_results_payload.get('results') or []
+            for key, label in (
+                ('log_path', '运行日志'),
+                ('before_manifest_path', '扫描前清单'),
+                ('after_manifest_path', '扫描后清单'),
+                ('file_results_path', '逐文件结果'),
+                ('filename_rule_candidates_path', '命名规则候选'),
+                ('_summary_path', '运行摘要'),
+            ):
+                path = artifacts_payload.get(key) if key != '_summary_path' else summary.get('_summary_path')
+                if path:
+                    artifacts.append({'kind': label, 'path': path, 'size': self._file_size_text(path)})
             counts = summary.get('counts') or {}
             result = {
                 'generated_at': summary.get('generated_at'),
@@ -615,6 +643,41 @@ class OrganizerApi:
                 'image_failed_count': counts.get('image_failed_count') or 0,
                 'total_time': ((summary.get('timings') or {}).get('total_elapsed_seconds') or 0),
             }
+        return result, summary, file_results, artifacts
+
+    def _report_payload_from_result(self, result):
+        summary_path = result.get('summary_path')
+        summary = self._read_json_if_exists(summary_path) if summary_path else None
+        if isinstance(summary, dict) and summary_path:
+            summary['_summary_path'] = summary_path
+        file_results = result.get('file_results') or []
+        artifact_pairs = [
+            ('运行日志', result.get('log_path')),
+            ('扫描前清单', result.get('before_manifest_path')),
+            ('扫描后清单', result.get('after_manifest_path')),
+            ('逐文件结果', result.get('file_results_path')),
+            ('命名规则候选', result.get('filename_rule_candidates_path')),
+            ('运行摘要', result.get('summary_path')),
+        ]
+        artifacts = [{'kind': k, 'path': v or '', 'size': self._file_size_text(v)} for k, v in artifact_pairs if v]
+        return result, summary, file_results, artifacts
+
+    def report_state(self, summary_path=None):
+        runs = self._run_tabs_payload()
+        selected_summary = self._selected_run_summary(summary_path)
+        if selected_summary:
+            result, summary, file_results, artifacts = self._report_payload_from_summary(selected_summary)
+            active_summary_path = selected_summary.get('_summary_path') or ''
+        else:
+            result = self.last_result if isinstance(self.last_result, dict) else None
+            if result:
+                result, summary, file_results, artifacts = self._report_payload_from_result(result)
+                active_summary_path = result.get('summary_path') or ''
+            else:
+                latest_session_path = (self.session_runs[0] or {}).get('summary_path') if self.session_runs else None
+                summary = self._load_run_summary(latest_session_path) if latest_session_path else None
+                result, summary, file_results, artifacts = self._report_payload_from_summary(summary)
+                active_summary_path = (summary or {}).get('_summary_path') or ''
 
         return {
             'version': BASELINE_VERSION,
@@ -624,6 +687,8 @@ class OrganizerApi:
             'summary': summary,
             'file_results': file_results,
             'artifacts': artifacts,
+            'runs': runs,
+            'active_run_path': active_summary_path,
             'selected_folder': self.selected_folder,
         }
 
@@ -796,7 +861,7 @@ class OrganizerApi:
             row['rollback_ok'] = result.get('rollback_ok')
             row['image_downloaded'] = result.get('image_downloaded')
 
-    def scan_folder(self, settings=None):
+    def scan_folder(self, settings=None, emit=True):
         self._sync_engine_settings(settings or {})
         folder = self.selected_folder
         if not folder or not os.path.exists(folder):
@@ -840,8 +905,18 @@ class OrganizerApi:
             'include_subdirectories': payload['include_subdirectories'],
         }
         self.last_progress = {}
-        self._emit('scan', payload)
+        if emit:
+            self._emit('scan', payload)
         return payload
+
+    def prepare_run_workspace(self, settings=None):
+        if self.is_processing:
+            return {'ok': False, 'message': '任务正在处理中'}
+        folder = self.selected_folder
+        if not folder or not os.path.exists(folder):
+            return {'ok': False, 'message': '请选择有效的源目录'}
+        self._reset_workspace_session()
+        return self.scan_folder(settings or {}, emit=False)
 
     def start_processing(self, settings=None):
         if self.is_processing:
