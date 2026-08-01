@@ -20,9 +20,10 @@ def test_webview_initial_state_exposes_real_version_and_providers(tmp_path):
 
     assert state['version'] == BASELINE_VERSION
     assert state['build_id'] == BASELINE_BUILD_ID
-    assert {'javhoo', 'javbus', 'javlibrary', 'bestjavporn', 'uncensored'} <= {
+    assert {'auto_all', 'auto_censored', 'auto_uncensored', 'javhoo', 'javbus', 'javlibrary', 'bestjavporn'} <= {
         item['key'] for item in state['providers']
     }
+    assert 'uncensored' not in {item['key'] for item in state['providers']}
     assert state['settings']['website'] == 'javbus'
     assert state['settings']['include_subdirectories'] is False
 
@@ -52,6 +53,7 @@ def test_webview_settings_state_contains_version_processing_and_provider_fields(
     assert javbus['search_url']
     assert javbus['text_selector']
     assert javbus['image_selector']
+    assert 'uncensored' not in {item['key'] for item in state['providers']}
     assert state['paths']['config'].endswith('config.json')
 
 
@@ -498,6 +500,72 @@ def test_webview_start_processing_passes_selected_files_to_worker(tmp_path):
     assert captured[0].selected_files == ['SONE-753.mp4', 'ABF-139-1.mp4']
 
 
+def test_selected_file_scan_validates_only_selected_paths(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    chosen = tmp_path / 'chosen.mp4'
+    ignored = tmp_path / 'ignored.mp4'
+    chosen.write_bytes(b'a' * 32768)
+    ignored.write_bytes(b'b' * 32768)
+
+    scan = api.engine._scan_selected_video_files(str(tmp_path), ['chosen.mp4'])
+
+    assert scan['accepted'] == ['chosen.mp4']
+    assert scan['file_sizes'] == {'chosen.mp4': 32768}
+    assert 'ignored.mp4' not in scan['accepted']
+
+
+def test_folder_refresh_deletes_only_safe_macos_metadata_files(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.set_folder(str(tmp_path))
+    (tmp_path / 'movie.mp4').write_bytes(b'v' * 32768)
+    (tmp_path / '.DS_Store').write_bytes(b'metadata')
+    (tmp_path / '._movie.mp4').write_bytes(b'apple-double')
+    (tmp_path / '.important').write_text('keep me', encoding='utf-8')
+
+    result = api.scan_folder({'website': 'auto_all'}, emit=False)
+
+    assert result['ok'] is True
+    assert set(result['deleted_metadata']) == {'.DS_Store', '._movie.mp4'}
+    assert not (tmp_path / '.DS_Store').exists()
+    assert not (tmp_path / '._movie.mp4').exists()
+    assert (tmp_path / '.important').read_text(encoding='utf-8') == 'keep me'
+    assert result['skipped_hidden'] == 1
+
+
+def test_webview_exposes_auto_strategies_before_detailed_sources(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+
+    providers = api.initial_state()['providers']
+
+    assert [item['key'] for item in providers[:3]] == [
+        'auto_all', 'auto_censored', 'auto_uncensored'
+    ]
+    assert all(item['is_strategy'] for item in providers[:3])
+    assert 'uncensored' not in {item['key'] for item in providers}
+
+
+def test_webview_migrates_legacy_uncensored_selection_to_auto_uncensored(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.engine._load_saved_config = lambda: {'website': 'uncensored'}
+
+    api._load_bridge_config()
+
+    assert api.settings['website'] == 'auto_uncensored'
+
+
+def test_webview_inspection_status_updates_workspace_and_emits_event(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.workspace_files = [{'name': 'ABF-217.mp4', 'status': 'planned'}]
+
+    api._inspection_file_status('ABF-217.mp4', 'prechecked', 'small-video')
+
+    assert api.workspace_files[0]['status'] == 'prechecked'
+    assert api.workspace_files[0]['inspection_stage'] == 'small-video'
+    event = api.poll_events(0)[-1]
+    assert event['type'] == 'inspection_status'
+    assert event['payload']['source_name'] == 'ABF-217.mp4'
+
+
 def test_webview_connection_failure_includes_clear_advice(tmp_path):
     api = _api_with_temp_config(tmp_path)
 
@@ -611,8 +679,8 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'state.scanFresh=!replay' in index
     assert 'state.scanFresh=true' in index
     assert 'resetRowsForInspection' in index
-    assert '正在准备巡检：复用当前目录扫描' in index
-    assert '复用已完成的目录扫描，跳过重复扫描' in index
+    assert '正在准备巡检：复用当前界面列表' in index
+    assert '巡检任务仍会核对一次视频和图片' in index
     assert '巡检目录已就绪' in index
     assert "api('scan_folder',settings,false)" in index
     assert '巡检目录刷新完成' in index
@@ -627,6 +695,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'function resultKeys' in index
     assert 'function findRowForResult' in index
     assert 'function applyResultToRow' in index
+    assert "f.name=target" not in index
     assert 'payloadName(f)' in index
     assert 'user-select: text' in index
     assert 'logPlainText' in index
@@ -650,16 +719,19 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "doneErrLabel').textContent='已修复'" in index
     assert "doneRevLabel').textContent='问题'" in index
     assert '巡检完成：正常' in index
-    assert "if(state.inspectionMode&&!/^(?:巡检|修复)(?:封面|重复|图片|小视频|视频)?\\s/.test(raw))return" in index
+    assert 'function markRunning(label){ if(state.inspectionMode)return' in index
+    assert "prechecking:['预检中','st st-run']" in index
+    assert "prechecked:['已预检','st st-info']" in index
     assert "checking:['巡检中','st st-run']" in index
     assert "checked:['已巡检','st st-info']" in index
     assert "normal:['正常','st st-ok']" in index
     assert "fixed:['已修复','st st-ok']" in index
     assert "['normal','正常']" in index
-    assert "['checking','巡检中'],['normal','正常'],['ok','已修复']" in index
+    assert "['precheck','已预检'],['checking','巡检中'],['normal','正常'],['ok','已修复']" in index
     assert "['checked','已巡检']" not in index
     assert "]:[['all','全部'],['planned','待处理'],['ok','成功']" in index
-    assert "if(status==='checked'&&state.inspectionMode)return 'planned'" in index
+    assert "if(status==='checked'&&state.inspectionMode)return 'prechecked'" in index
+    assert "if(ev.type==='inspection_status') updateInspectionStatus(p)" in index
     assert "f.status=state.inspectionMode?'skipped':'planned'" not in index
     assert 'function updateRowElement' in index
     assert 'inspectionProgressFallback' not in index
@@ -680,7 +752,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'preparing: false' in index
     assert 'function setPreparing' in index
     assert '正在准备巡检：扫描当前目录' in index
-    assert '正在准备处理：扫描当前目录' in index
+    assert '正在准备处理：使用已选文件' in index
     assert '正在提交巡检任务' in index
     assert '正在提交处理任务' in index
     assert 'state.runStart=state.runStart||Date.now()' in index
@@ -713,7 +785,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "['本地封面',f.targetImage||'—']" in index
     assert 'function selectedProcessableFiles' in index
     assert 'function isProcessableStatus' in index
-    assert "['planned','review','audit','err']" in index
+    assert "['planned','prechecking','prechecked','review','audit','err']" in index
     assert 'selected_files: selectedProcessableFiles()' in index
     assert '失败、待确认' in index
     assert '没有勾选可处理文件' in index
@@ -726,9 +798,12 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "resetRunSurface($('folderPath').textContent,{keepRows:hadRows})" in index
     assert 'state.seen=new Set(); state.lastEventId=0' not in index
     assert 'function prepareWorkspaceForRun' in index
-    assert "api('prepare_run_workspace',settings)" in index
-    assert '新处理动作：正在刷新当前目录' in index
-    assert '刷新后没有勾选可处理文件' in index
+    assert "api('prepare_run_workspace',settings)" not in index
+    assert '普通处理直接使用界面已选文件，不重新遍历目录' in index
+    assert '没有勾选可处理文件' in index
+    assert 'batchSelectedCount' in index
+    assert 'state.batchSelectedCount=selected.length' in index
+    assert "const selected=state.batchSelectedCount===null?currentSelected:state.batchSelectedCount" in index
     assert 'function restoreWorkspaceSnapshot' in index
     assert 'restoreWorkspaceSnapshot(s.workspace||{})' in index
     assert 'function scrollToFile' in index
@@ -772,8 +847,8 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'state.scanFresh=!replay' in workspace
     assert 'state.scanFresh=true' in workspace
     assert 'resetRowsForInspection' in workspace
-    assert '正在准备巡检：复用当前目录扫描' in workspace
-    assert '复用已完成的目录扫描，跳过重复扫描' in workspace
+    assert '正在准备巡检：复用当前界面列表' in workspace
+    assert '巡检任务仍会核对一次视频和图片' in workspace
     assert '巡检目录已就绪' in workspace
     assert "api('scan_folder',settings,false)" in workspace
     assert '巡检目录刷新完成' in workspace
@@ -788,6 +863,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'function resultKeys' in workspace
     assert 'function findRowForResult' in workspace
     assert 'function applyResultToRow' in workspace
+    assert "f.name=target" not in workspace
     assert 'payloadName(f)' in workspace
     assert 'class="rowcheck"' in workspace
     assert 'class="chev"' in workspace
@@ -805,16 +881,19 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "doneErrLabel').textContent='已修复'" in workspace
     assert "doneRevLabel').textContent='问题'" in workspace
     assert '巡检完成：正常' in workspace
-    assert "if(state.inspectionMode&&!/^(?:巡检|修复)(?:封面|重复|图片|小视频|视频)?\\s/.test(raw))return" in workspace
+    assert 'function markRunning(label){ if(state.inspectionMode)return' in workspace
+    assert "prechecking:['预检中','st st-run']" in workspace
+    assert "prechecked:['已预检','st st-info']" in workspace
     assert "checking:['巡检中','st st-run']" in workspace
     assert "checked:['已巡检','st st-info']" in workspace
     assert "normal:['正常','st st-ok']" in workspace
     assert "fixed:['已修复','st st-ok']" in workspace
     assert "['normal','正常']" in workspace
-    assert "['checking','巡检中'],['normal','正常'],['ok','已修复']" in workspace
+    assert "['precheck','已预检'],['checking','巡检中'],['normal','正常'],['ok','已修复']" in workspace
     assert "['checked','已巡检']" not in workspace
     assert "]:[['all','全部'],['planned','待处理'],['ok','成功']" in workspace
-    assert "if(status==='checked'&&state.inspectionMode)return 'planned'" in workspace
+    assert "if(status==='checked'&&state.inspectionMode)return 'prechecked'" in workspace
+    assert "if(ev.type==='inspection_status') updateInspectionStatus(p)" in workspace
     assert "f.status=state.inspectionMode?'skipped':'planned'" not in workspace
     assert 'function updateRowElement' in workspace
     assert 'inspectionProgressFallback' not in workspace
@@ -832,7 +911,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'preparing: false' in workspace
     assert 'function setPreparing' in workspace
     assert '正在准备巡检：扫描当前目录' in workspace
-    assert '正在准备处理：扫描当前目录' in workspace
+    assert '正在准备处理：使用已选文件' in workspace
     assert '正在提交巡检任务' in workspace
     assert '正在提交处理任务' in workspace
     assert 'state.runStart=state.runStart||Date.now()' in workspace
@@ -865,7 +944,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "['本地封面',f.targetImage||'—']" in workspace
     assert 'function selectedProcessableFiles' in workspace
     assert 'function isProcessableStatus' in workspace
-    assert "['planned','review','audit','err']" in workspace
+    assert "['planned','prechecking','prechecked','review','audit','err']" in workspace
     assert 'selected_files: selectedProcessableFiles()' in workspace
     assert '失败、待确认' in workspace
     assert '没有勾选可处理文件' in workspace
@@ -878,9 +957,12 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "resetRunSurface($('folderPath').textContent,{keepRows:hadRows})" in workspace
     assert 'state.seen=new Set(); state.lastEventId=0' not in workspace
     assert 'function prepareWorkspaceForRun' in workspace
-    assert "api('prepare_run_workspace',settings)" in workspace
-    assert '新处理动作：正在刷新当前目录' in workspace
-    assert '刷新后没有勾选可处理文件' in workspace
+    assert "api('prepare_run_workspace',settings)" not in workspace
+    assert '普通处理直接使用界面已选文件，不重新遍历目录' in workspace
+    assert '没有勾选可处理文件' in workspace
+    assert 'batchSelectedCount' in workspace
+    assert 'state.batchSelectedCount=selected.length' in workspace
+    assert "const selected=state.batchSelectedCount===null?currentSelected:state.batchSelectedCount" in workspace
     assert 'function restoreWorkspaceSnapshot' in workspace
     assert 'restoreWorkspaceSnapshot(s.workspace||{})' in workspace
     assert 'function scrollToFile' in workspace

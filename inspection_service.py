@@ -15,6 +15,7 @@ from typing import Callable
 from PIL import Image
 
 from app_metadata import BASELINE_VERSION
+from filename_utils import split_sequence_suffix
 from manifest_utils import scan_folder_manifest, write_json_report
 from provider_router import route_provider
 from workflow_service import VIDEO_EXTENSIONS
@@ -39,6 +40,7 @@ class InspectionService:
         stop_requested: Callable | None = None,
         progress_callback: Callable | None = None,
         file_result_callback: Callable | None = None,
+        file_status_callback: Callable | None = None,
         minimum_video_size_bytes: int = 16 * 1024,
         duplicate_image_similarity_threshold: int = 6,
         app_version: str = BASELINE_VERSION,
@@ -52,6 +54,9 @@ class InspectionService:
         self.stop_requested = stop_requested or (lambda: False)
         self.progress_callback = progress_callback or (lambda completed, total, label='': None)
         self.file_result_callback = file_result_callback or (lambda item: None)
+        self.file_status_callback = file_status_callback or (
+            lambda source_name, status, stage='': None
+        )
         self.minimum_video_size_bytes = minimum_video_size_bytes
         self.duplicate_image_similarity_threshold = max(0, int(duplicate_image_similarity_threshold))
         self.app_version = app_version
@@ -84,11 +89,62 @@ class InspectionService:
     def _images_for_stem(self, image_by_stem: dict, stem: str):
         return image_by_stem.get(self._stem_key(stem), [])
 
+    def _shared_cover_stems_for_sequences(self, videos, images=()):
+        """Map organized sequence videos to their unnumbered shared cover stem."""
+        grouped = {}
+        for video in videos:
+            shared_stem, sequence = split_sequence_suffix(video.stem)
+            if not shared_stem or sequence is None:
+                continue
+            key = self._stem_key(shared_stem)
+            entry = grouped.setdefault(
+                key,
+                {'shared_stem': shared_stem, 'videos': [], 'sequences': set()},
+            )
+            entry['videos'].append(video)
+            entry['sequences'].add(sequence)
+
+        result = {}
+        for entry in grouped.values():
+            if len(entry['videos']) < 2 or len(entry['sequences']) < 2:
+                continue
+            for video in entry['videos']:
+                result[video] = entry['shared_stem']
+
+        # Existing shared covers provide safe context for compact forms such as
+        # Titlea/Titleb/Titlec, which should not be stripped from a lone file.
+        for image in images:
+            if not image.exists():
+                continue
+            matched_videos = []
+            sequences = set()
+            for video in videos:
+                _base, sequence = split_sequence_suffix(
+                    video.stem,
+                    base_hint=image.stem,
+                )
+                if sequence is None:
+                    continue
+                matched_videos.append(video)
+                sequences.add(sequence)
+            if len(matched_videos) < 2 or len(sequences) < 2:
+                continue
+            for video in matched_videos:
+                result[video] = image.stem
+        return result
+
     def _emit_progress(self, completed, total, label=''):
         try:
             self.progress_callback(completed, total, label)
         except Exception as exc:
             self.log(f'⚠️ 巡检进度更新失败: {exc}', 'WARNING')
+
+    def _emit_file_status(self, video_path: Path, status: str, stage: str = ''):
+        """Publish transient inspection state without adding a final result."""
+        try:
+            self.file_status_callback(video_path.name, status, stage)
+        except Exception as exc:
+            self.log(f'⚠️ 巡检阶段状态更新失败: {exc}', 'WARNING')
 
     def _emit_file_result(self, item, *, log_result=True):
         if log_result:
@@ -105,15 +161,15 @@ class InspectionService:
 
     def _resolve_provider_for_video(self, preferred_provider: str, video_path: Path, query: str):
         decision = route_provider(preferred_provider, video_path.name, query)
-        provider_name = preferred_provider
+        provider_name = decision.get('provider') or preferred_provider
         reason = decision.get('reason') or ''
-        if preferred_provider != 'uncensored' and decision.get('warning_only') and reason.startswith('marker:'):
-            provider_name = 'uncensored'
+        if provider_name != preferred_provider:
             self.log(
-                f'🧭 巡检自动切换数据源: {video_path.name} | {preferred_provider} -> uncensored | {reason}',
+                f'🧭 巡检自动切换数据源: {video_path.name} | {preferred_provider} -> '
+                f'{provider_name} | {reason}',
                 'INFO',
             )
-        return self._get_provider(provider_name), provider_name
+        return self._get_provider(provider_name), provider_name, decision
 
     def _log_file_result(self, item):
         status = item.get('status') or 'failed'
@@ -341,8 +397,18 @@ class InspectionService:
         self.log(f'✅ 已规范重复保留文件名: {keep.name} -> {new_keep.name}', 'SUCCESS')
         return new_keep, item
 
-    def _prune_duplicate_video_pairs(self, *, normal_videos, image_by_stem, folder_path: str, moved_paths: set, progress_state=None):
+    def _prune_duplicate_video_pairs(
+        self,
+        *,
+        normal_videos,
+        image_by_stem,
+        folder_path: str,
+        moved_paths: set,
+        sequence_videos=None,
+        progress_state=None,
+    ):
         progress_state = progress_state or {'completed': 0, 'total': 1}
+        sequence_videos = set(sequence_videos or ())
         grouped = {}
         metadata = {}
         for video in normal_videos:
@@ -354,6 +420,8 @@ class InspectionService:
                 max(int(progress_state.get('total') or 1), 1),
                 f'巡检重复 {video.name}',
             )
+            if video in sequence_videos:
+                continue
             query = self.clean_filename_for_search(video.name)
             identity = self._duplicate_identity(video, query)
             if not identity:
@@ -471,6 +539,91 @@ class InspectionService:
                 remaining.append(Path(target))
         return remaining, results, handled, False
 
+    def _prune_redundant_sequence_covers(
+        self,
+        *,
+        shared_cover_stem_by_video,
+        image_by_stem,
+        folder_path: str,
+        moved_paths: set,
+        progress_state=None,
+    ):
+        """Move per-part covers that duplicate a valid shared sequence cover."""
+        progress_state = progress_state or {'completed': 0, 'total': 1}
+        grouped_videos = {}
+        for video, shared_stem in shared_cover_stem_by_video.items():
+            grouped_videos.setdefault(self._stem_key(shared_stem), []).append(video)
+
+        results = []
+        handled_images = set()
+        for shared_key, videos in grouped_videos.items():
+            if self._is_stop_requested():
+                return results, True
+            shared_cover = self._best_valid_image(
+                image_by_stem.get(shared_key, [])
+            )
+            if not shared_cover:
+                continue
+
+            for video in videos:
+                if self._is_stop_requested():
+                    return results, True
+                for image in self._images_for_stem(image_by_stem, video.stem):
+                    if (
+                        not image.exists()
+                        or image == shared_cover
+                        or str(image) in handled_images
+                    ):
+                        continue
+
+                    is_valid = self._is_image_valid(image)
+                    distance = (
+                        self._image_hash_distance(shared_cover, image)
+                        if is_valid
+                        else None
+                    )
+                    if is_valid and (
+                        distance is None
+                        or distance > self.duplicate_image_similarity_threshold
+                    ):
+                        continue
+
+                    progress_state['completed'] = int(
+                        progress_state.get('completed') or 0
+                    ) + 1
+                    self._emit_progress(
+                        progress_state['completed'],
+                        max(int(progress_state.get('total') or 1), 1),
+                        f'整理序列冗余封面 {image.name}',
+                    )
+                    moved = self._move_to_wip(
+                        image,
+                        folder_path,
+                        'redundant-sequence-cover',
+                    )
+                    if not moved:
+                        continue
+
+                    handled_images.add(str(image))
+                    moved_paths.add(str(image))
+                    item = {
+                        'source_path': str(image),
+                        'source_name': image.name,
+                        'size': self._file_size(Path(moved)),
+                        'status': 'needs_review',
+                        'provider': '-',
+                        'query': self.clean_filename_for_search(video.name) or '-',
+                        'reason': 'inspection-redundant-sequence-cover-moved-to-wip',
+                        'after': f'已保留共享封面 {shared_cover.name}；冗余分集封面移入 01.wip',
+                        'target_video_path': str(video),
+                        'target_image_path': moved,
+                        'rollback_ok': True,
+                    }
+                    results.append(item)
+                    self._emit_file_result(item)
+
+        return results, False
+
     def _image_request_from_result(self, result, provider_name):
         raw_meta = result.get('raw_meta') or {}
         if not isinstance(raw_meta, dict):
@@ -499,9 +652,37 @@ class InspectionService:
         self.log(f'⏱️ 巡检 Provider搜索耗时: provider={provider_name} | query={query} | {elapsed:.1f}秒', 'INFO')
         return result, elapsed
 
+    def _search_provider_with_fallback(self, provider, provider_name, decision, query, *, require_image=False):
+        result, total_elapsed = self._search_provider(provider, provider_name, query)
+        active_name = provider_name
+
+        def usable(candidate):
+            if not candidate.get('ok'):
+                return False
+            if require_image:
+                return bool(candidate.get('image_url') or candidate.get('fallback_images'))
+            return bool(candidate.get('title'))
+
+        for fallback_name in list((decision or {}).get('candidates') or [provider_name])[1:]:
+            if usable(result) or self._is_stop_requested():
+                break
+            self.log(
+                f'🧭 巡检自动来源回退: {query} | {active_name} 未成功，尝试 {fallback_name}',
+                'INFO',
+            )
+            active_name = fallback_name
+            result, elapsed = self._search_provider(
+                self._get_provider(active_name), active_name, query
+            )
+            total_elapsed += elapsed
+        return result, round(total_elapsed, 3), active_name
+
     def _download_cover_for_video(self, *, video_path: Path, image_path: Path, provider, provider_name,
-                                  query: str, max_filename_bytes=None, invalid_image_path: Path | None = None):
-        result, provider_elapsed = self._search_provider(provider, provider_name, query)
+                                  query: str, max_filename_bytes=None, invalid_image_path: Path | None = None,
+                                  provider_decision=None):
+        result, provider_elapsed, provider_name = self._search_provider_with_fallback(
+            provider, provider_name, provider_decision, query, require_image=True
+        )
         if not result.get('ok') or not (result.get('image_url') or result.get('fallback_images')):
             reason = f"provider:{result.get('error_type') or 'invalid-result'}:{result.get('message') or 'missing image'}"
             return False, {
@@ -583,9 +764,11 @@ class InspectionService:
         return not upper_stem.startswith(normalized_query)
 
     def _process_unprocessed_video(self, *, video_path: Path, provider, provider_name, query: str,
-                                   max_length=None, max_filename_bytes=None):
+                                   max_length=None, max_filename_bytes=None, provider_decision=None):
         source_size = self._file_size(video_path)
-        result, provider_elapsed = self._search_provider(provider, provider_name, query)
+        result, provider_elapsed, provider_name = self._search_provider_with_fallback(
+            provider, provider_name, provider_decision, query
+        )
         if not result.get('ok') or not result.get('title'):
             reason = f"provider:{result.get('error_type') or 'invalid-result'}:{result.get('message') or 'missing title'}"
             return False, {
@@ -667,6 +850,7 @@ class InspectionService:
             if self._is_stop_requested():
                 cancelled = True
                 break
+            self._emit_file_status(video, 'prechecking', 'small-video')
             self._emit_progress(completed, max(total_units, 1), f'巡检 {video.name}')
             try:
                 size = video.stat().st_size
@@ -695,11 +879,13 @@ class InspectionService:
                 self._emit_file_result(item)
             else:
                 normal_videos.append(video)
+                self._emit_file_status(video, 'prechecked', 'small-video')
             completed += 1
         self._log_stage_elapsed('异常小视频检查', small_video_started)
 
         duplicate_handled_videos = set()
         if not cancelled:
+            sequence_videos = self._shared_cover_stems_for_sequences(normal_videos, images)
             duplicate_started = time.time()
             duplicate_progress = {'completed': completed, 'total': max(total_units, 1)}
             normal_videos, duplicate_results, duplicate_handled_videos, cancelled = self._prune_duplicate_video_pairs(
@@ -707,6 +893,7 @@ class InspectionService:
                 image_by_stem=image_by_stem,
                 folder_path=folder_path,
                 moved_paths=moved_paths,
+                sequence_videos=sequence_videos,
                 progress_state=duplicate_progress,
             )
             completed = int(duplicate_progress.get('completed') or completed)
@@ -714,12 +901,32 @@ class InspectionService:
             self._log_stage_elapsed('重复视频副本检查', duplicate_started)
 
         normal_video_stems = {self._stem_key(video.stem) for video in normal_videos}
+        shared_cover_stem_by_video = self._shared_cover_stems_for_sequences(normal_videos, images)
+        shared_cover_stems = {
+            self._stem_key(stem)
+            for stem in shared_cover_stem_by_video.values()
+        }
+        redundant_cover_started = time.time()
+        redundant_progress = {'completed': completed, 'total': max(total_units, 1)}
+        redundant_results, redundant_cancelled = self._prune_redundant_sequence_covers(
+            shared_cover_stem_by_video=shared_cover_stem_by_video,
+            image_by_stem=image_by_stem,
+            folder_path=folder_path,
+            moved_paths=moved_paths,
+            progress_state=redundant_progress,
+        )
+        completed = int(redundant_progress.get('completed') or completed)
+        file_results.extend(redundant_results)
+        if redundant_cancelled:
+            cancelled = True
+        self._log_stage_elapsed('序列冗余封面检查', redundant_cover_started)
+
         image_group_started = time.time()
         for stem, group in image_by_stem.items():
             if cancelled or self._is_stop_requested():
                 cancelled = True
                 break
-            if stem not in normal_video_stems:
+            if stem not in normal_video_stems and stem not in shared_cover_stems:
                 for image in group:
                     if self._is_stop_requested():
                         cancelled = True
@@ -785,9 +992,15 @@ class InspectionService:
             if self._is_stop_requested():
                 cancelled = True
                 break
+            self._emit_file_status(video, 'checking', 'cover-health')
             self._emit_progress(completed, max(total_units, 1), f'巡检封面 {video.name}')
             query = self.clean_filename_for_search(video.name)
             paired_images = [img for img in self._images_for_stem(image_by_stem, video.stem) if img.exists()]
+            shared_cover_stem = shared_cover_stem_by_video.get(video)
+            if shared_cover_stem:
+                for image in self._images_for_stem(image_by_stem, shared_cover_stem):
+                    if image.exists() and image not in paired_images:
+                        paired_images.append(image)
             valid_images = [img for img in paired_images if self._is_image_valid(img)]
             invalid_images = [img for img in paired_images if img not in valid_images]
             checked_cover_pairs += 1
@@ -798,10 +1011,13 @@ class InspectionService:
                     'INFO',
                 )
             if valid_images and not self._looks_unprocessed(video, query):
-                normalized_video, normalize_item = self._rename_duplicate_keep_pair(
-                    keep=video,
-                    image_by_stem=image_by_stem,
-                )
+                normalized_video = video
+                normalize_item = None
+                if not shared_cover_stem:
+                    normalized_video, normalize_item = self._rename_duplicate_keep_pair(
+                        keep=video,
+                        image_by_stem=image_by_stem,
+                    )
                 if normalize_item:
                     file_results.append(normalize_item)
                     self._emit_file_result(normalize_item)
@@ -829,7 +1045,7 @@ class InspectionService:
 
             if query and self._looks_unprocessed(video, query):
                 self._emit_progress(completed, max(total_units, 1), f'修复视频 {video.name}')
-                provider, provider_name = self._resolve_provider_for_video(primary_provider_name, video, query)
+                provider, provider_name, provider_decision = self._resolve_provider_for_video(primary_provider_name, video, query)
                 ok, item = self._process_unprocessed_video(
                     video_path=video,
                     provider=provider,
@@ -837,15 +1053,20 @@ class InspectionService:
                     query=query,
                     max_length=max_length,
                     max_filename_bytes=max_filename_bytes,
+                    provider_decision=provider_decision,
                 )
                 if ok:
                     for old_image in paired_images:
                         if old_image.exists():
                             self._move_to_wip(old_image, folder_path, 'old-cover-after-video-rename')
             elif query:
-                image_path = video.with_suffix('.jpg')
+                image_path = (
+                    video.with_name(f'{shared_cover_stem}.jpg')
+                    if shared_cover_stem
+                    else video.with_suffix('.jpg')
+                )
                 self._emit_progress(completed, max(total_units, 1), f'修复封面 {video.name}')
-                provider, provider_name = self._resolve_provider_for_video(primary_provider_name, video, query)
+                provider, provider_name, provider_decision = self._resolve_provider_for_video(primary_provider_name, video, query)
                 ok, item = self._download_cover_for_video(
                     video_path=video,
                     image_path=image_path,
@@ -854,7 +1075,15 @@ class InspectionService:
                     query=query,
                     max_filename_bytes=max_filename_bytes,
                     invalid_image_path=invalid_images[0] if invalid_images else None,
+                    provider_decision=provider_decision,
                 )
+                if ok and shared_cover_stem:
+                    shared_images = image_by_stem.setdefault(
+                        self._stem_key(shared_cover_stem),
+                        [],
+                    )
+                    if image_path not in shared_images:
+                        shared_images.append(image_path)
             else:
                 ok = False
                 item = {
@@ -933,6 +1162,12 @@ class InspectionService:
         else:
             file_results_path = after_manifest_path = summary_path = None
 
+        routed_counts = {}
+        for result_item in file_results:
+            effective_provider = result_item.get('provider')
+            if effective_provider and effective_provider != '-':
+                routed_counts[effective_provider] = routed_counts.get(effective_provider, 0) + 1
+
         return {
             'mode': 'inspection',
             'success_count': counts.get('success', 0),
@@ -947,7 +1182,7 @@ class InspectionService:
             'image_success_count': sum(1 for item in file_results if item.get('image_downloaded')),
             'image_failed_count': counts.get('failed', 0),
             'file_result_counts': counts,
-            'routed_counts': {website: len(file_results)},
+            'routed_counts': routed_counts,
             'before_manifest_path': None,
             'after_manifest_path': after_manifest_path,
             'file_results_path': file_results_path,

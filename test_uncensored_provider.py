@@ -621,7 +621,18 @@ def test_uncensored_provider_routes_292my_to_mgstage():
     assert result.raw_meta['family'] == 'mgstage'
     assert result.raw_meta['code'] == '292MY-1061'
     assert result.detail_url == 'https://www.mgstage.com/product/product_detail/292MY-1061/'
+
+
+def test_uncensored_provider_routes_413instv_to_mgstage():
+    html = '<html><head><title>413INSTV Sample Title - MGStage</title></head><body></body></html>'
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *_args: None, session=session)
+
+    result = provider.search('413INSTV-721')
+
+    assert result.ok is True
     assert result.raw_meta['family'] == 'mgstage'
+    assert result.detail_url == 'https://www.mgstage.com/product/product_detail/413INSTV-721/'
 
 
 def test_uncensored_provider_reports_http_403_as_access_denied():

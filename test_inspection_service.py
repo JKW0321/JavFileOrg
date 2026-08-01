@@ -1,6 +1,7 @@
 from pathlib import Path
 import unicodedata
 
+import pytest
 from PIL import Image
 
 from atomic_processor_v11 import AtomicProcessor
@@ -118,12 +119,45 @@ def test_inspection_routes_uncensored_marker_to_uncensored_provider_for_cover_re
         smart_truncate_filename=lambda title, _filename, _max_length: title[:_max_length],
     )
 
-    result = service.run(folder_path=str(tmp_path), website='javbus')
+    result = service.run(folder_path=str(tmp_path), website='auto_all')
 
     assert result['success_count'] == 1
     assert calls == [('uncensored', 'carib-011126-001')]
     assert result['file_results'][0]['provider'] == 'uncensored'
-    assert any('javbus -> uncensored' in message for _level, message in events)
+    assert any('auto_all -> uncensored' in message for _level, message in events)
+
+
+def test_inspection_keeps_specified_uncensored_source_for_general_code(tmp_path):
+    original = tmp_path / 'STARS-239_Uncen.mp4'
+    calls = []
+    _video(original)
+
+    class NamedProvider(FakeProvider):
+        def __init__(self, name):
+            self.name = name
+
+        def search(self, query):
+            calls.append((self.name, query))
+            return super().search(query)
+
+    def download(_image_source, save_path):
+        _valid_image(save_path)
+        return True
+
+    service = InspectionService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda name: NamedProvider(name),
+        atomic_processor=AtomicProcessor(download, sanitize_filename),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=sanitize_filename,
+        smart_truncate_filename=lambda title, _filename, _max_length: title[:_max_length],
+    )
+
+    result = service.run(folder_path=str(tmp_path), website='uncensored')
+
+    assert calls == [('uncensored', 'stars-239')]
+    assert result['success_count'] == 1
+    assert result['file_results'][0]['provider'] == 'uncensored'
 
 
 def test_inspection_processes_unprocessed_video_in_place(tmp_path):
@@ -182,6 +216,30 @@ def test_inspection_healthy_pair_does_not_create_provider(tmp_path):
     assert result['file_result_counts']['skipped'] == 1
     assert result['normal_count'] == 1
     assert result['file_results'][0]['reason'] == 'inspection-ok-no-action'
+
+
+def test_inspection_emits_explicit_file_lifecycle_states(tmp_path):
+    video = tmp_path / 'ABF-217 Fixed Title.mp4'
+    cover = tmp_path / 'ABF-217 Fixed Title.jpg'
+    lifecycle = []
+    _video(video)
+    _valid_image(cover)
+
+    service = _service(tmp_path)
+    service.file_status_callback = (
+        lambda source_name, status, stage='': lifecycle.append(
+            (source_name, status, stage)
+        )
+    )
+
+    result = service.run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['normal_count'] == 1
+    assert lifecycle == [
+        (video.name, 'prechecking', 'small-video'),
+        (video.name, 'prechecked', 'small-video'),
+        (video.name, 'checking', 'cover-health'),
+    ]
 
 
 def test_inspection_emits_duplicate_stage_progress(tmp_path):
@@ -342,6 +400,238 @@ def test_inspection_keeps_sequence_parts_with_dash_suffix(tmp_path):
     assert second.exists()
     assert second_cover.exists()
     assert not (tmp_path / '01.wip').exists()
+
+
+@pytest.mark.parametrize("suffixes", [
+    ("-1", "-2", "-3"),
+    ("_1", "_2", "_3"),
+    ("a", "b", "c"),
+    ("(1)", "(2)", "(3)"),
+    ("（1）", "（2）", "（3）"),
+    ("【1】", "【2】", "【3】"),
+    (" CD1", " CD2", " CD3"),
+    (" 第1集", " 第2集", " 第3集"),
+])
+def test_inspection_preserves_one_shared_cover_for_organized_sequence_group(
+    tmp_path,
+    suffixes,
+):
+    videos = [
+        tmp_path / f'ABF-139 Fixed Title{suffix}.mp4'
+        for suffix in suffixes
+    ]
+    shared_cover = tmp_path / 'ABF-139 Fixed Title.jpg'
+
+    for video in videos:
+        _video(video)
+    _valid_image(shared_cover)
+
+    atomic = AtomicProcessor(lambda *_args: True, sanitize_filename)
+    service = InspectionService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: (_ for _ in ()).throw(
+            AssertionError('healthy sequence group must not download per-part covers')
+        ),
+        atomic_processor=atomic,
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=sanitize_filename,
+        smart_truncate_filename=lambda title, _filename, _max_length: title[:_max_length],
+    )
+
+    result = service.run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['file_result_counts']['skipped'] == 3
+    assert all(video.exists() for video in videos)
+    assert shared_cover.exists()
+    assert not (tmp_path / '01.wip').exists()
+    assert sorted(path.name for path in tmp_path.glob('*.jpg')) == [shared_cover.name]
+    assert {
+        item['target_image_path']
+        for item in result['file_results']
+    } == {str(shared_cover)}
+
+
+@pytest.mark.parametrize("suffixes", [
+    ("_1", "_2", "_3"),
+    (" (1)", " (2)", " (3)"),
+])
+def test_inspection_does_not_treat_sequence_suffixes_as_duplicate_copies(
+    tmp_path,
+    suffixes,
+):
+    videos = [
+        tmp_path / f'ABF-139 Fixed Title{suffix}.mp4'
+        for suffix in suffixes
+    ]
+    shared_cover = tmp_path / 'ABF-139 Fixed Title.jpg'
+
+    for video in videos:
+        _video(video)
+        _valid_image(video.with_suffix('.jpg'))
+    _valid_image(shared_cover)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    assert all(video.exists() for video in videos)
+    assert shared_cover.exists()
+    assert not any(
+        'duplicate-video-pair-moved-to-wip' in item.get('reason', '')
+        for item in result['file_results']
+    )
+
+
+@pytest.mark.parametrize("suffixes", [
+    ("-1", "-2", "-3"),
+    ("a", "b", "c"),
+    ("（1）", "（2）", "（3）"),
+])
+def test_inspection_moves_redundant_per_part_covers_when_shared_cover_exists(
+    tmp_path,
+    suffixes,
+):
+    videos = [
+        tmp_path / f'ABF-139 Fixed Title{suffix}.mp4'
+        for suffix in suffixes
+    ]
+    per_part_covers = [video.with_suffix('.jpg') for video in videos]
+    shared_cover = tmp_path / 'ABF-139 Fixed Title.jpg'
+
+    for video in videos:
+        _video(video)
+    _valid_image(shared_cover)
+    for cover in per_part_covers:
+        _valid_image(cover)
+
+    atomic = AtomicProcessor(lambda *_args: True, sanitize_filename)
+    service = InspectionService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: (_ for _ in ()).throw(
+            AssertionError('healthy shared cover must not trigger provider access')
+        ),
+        atomic_processor=atomic,
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=sanitize_filename,
+        smart_truncate_filename=lambda title, _filename, _max_length: title[:_max_length],
+    )
+
+    result = service.run(folder_path=str(tmp_path), website='javbus')
+
+    assert shared_cover.exists()
+    assert all(video.exists() for video in videos)
+    assert all(not cover.exists() for cover in per_part_covers)
+    assert all((tmp_path / '01.wip' / cover.name).exists() for cover in per_part_covers)
+    assert sum(
+        item.get('reason') == 'inspection-redundant-sequence-cover-moved-to-wip'
+        for item in result['file_results']
+    ) == 3
+
+
+def test_inspection_keeps_per_part_covers_that_differ_from_shared_cover(tmp_path):
+    videos = [
+        tmp_path / f'ABF-139 Fixed Title-{sequence}.mp4'
+        for sequence in (1, 2)
+    ]
+    per_part_covers = [video.with_suffix('.jpg') for video in videos]
+    shared_cover = tmp_path / 'ABF-139 Fixed Title.jpg'
+
+    for video in videos:
+        _video(video)
+    _pattern_image(shared_cover, invert=False)
+    for cover in per_part_covers:
+        _pattern_image(cover, invert=True)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    assert shared_cover.exists()
+    assert all(video.exists() for video in videos)
+    assert all(cover.exists() for cover in per_part_covers)
+    assert not any(
+        item.get('reason') == 'inspection-redundant-sequence-cover-moved-to-wip'
+        for item in result['file_results']
+    )
+
+
+def test_inspection_repairs_one_shared_cover_for_sequence_group(tmp_path):
+    videos = [
+        tmp_path / f'ABF-139 Fixed Title-{sequence}.mp4'
+        for sequence in (1, 2, 3)
+    ]
+    shared_cover = tmp_path / 'ABF-139 Fixed Title.jpg'
+    provider_calls = []
+
+    for video in videos:
+        _video(video)
+
+    class CountingProvider(FakeProvider):
+        def search(self, query):
+            provider_calls.append(query)
+            return super().search(query)
+
+    def download(_image_source, save_path):
+        _valid_image(save_path)
+        return True
+
+    service = InspectionService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: CountingProvider(),
+        atomic_processor=AtomicProcessor(download, sanitize_filename),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=sanitize_filename,
+        smart_truncate_filename=lambda title, _filename, _max_length: title[:_max_length],
+    )
+
+    result = service.run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['file_result_counts']['success'] == 1
+    assert result['file_result_counts']['skipped'] == 2
+    assert provider_calls == ['abf-139']
+    assert shared_cover.exists()
+    assert sorted(path.name for path in tmp_path.glob('*.jpg')) == [shared_cover.name]
+    assert {
+        item['target_image_path']
+        for item in result['file_results']
+    } == {str(shared_cover)}
+
+
+def test_inspection_repairs_uncensored_sequence_group_with_one_shared_cover(tmp_path):
+    videos = [
+        tmp_path / f'CARIB-011126-001 Fixed Title-{sequence}.mp4'
+        for sequence in (1, 2, 3)
+    ]
+    shared_cover = tmp_path / 'CARIB-011126-001 Fixed Title.jpg'
+    calls = []
+
+    for video in videos:
+        _video(video)
+
+    class NamedProvider(FakeProvider):
+        def __init__(self, name):
+            self.name = name
+
+        def search(self, query):
+            calls.append((self.name, query))
+            return super().search(query)
+
+    def download(_image_source, save_path):
+        _valid_image(save_path)
+        return True
+
+    service = InspectionService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda name: NamedProvider(name),
+        atomic_processor=AtomicProcessor(download, sanitize_filename),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=sanitize_filename,
+        smart_truncate_filename=lambda title, _filename, _max_length: title[:_max_length],
+    )
+
+    result = service.run(folder_path=str(tmp_path), website='auto_all')
+
+    assert calls == [('uncensored', 'carib-011126-001')]
+    assert shared_cover.exists()
+    assert sorted(path.name for path in tmp_path.glob('*.jpg')) == [shared_cover.name]
+    assert sum(item['status'] == 'success' for item in result['file_results']) == 1
+    assert sum(item['status'] == 'skipped' for item in result['file_results']) == 2
 
 
 def test_inspection_does_not_move_duplicate_video_when_covers_are_not_similar(tmp_path):

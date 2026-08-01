@@ -154,6 +154,157 @@ def test_workflow_dry_run_keeps_source_files():
         assert summary['counts']['file_result_counts'] == {'planned': 2}
 
 
+def test_workflow_full_auto_routes_known_uncensored_file():
+    created = []
+
+    def provider_factory(name):
+        created.append(name)
+        return DummyProvider()
+
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=provider_factory,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    decision, _provider, provider_name = svc._resolve_provider(
+        'auto_all', '420HPT-049.mp4', '420hpt-049'
+    )
+
+    assert decision['candidates'] == ['uncensored']
+    assert provider_name == 'uncensored'
+    assert created == ['uncensored']
+
+
+def test_workflow_specified_uncensored_source_is_not_changed():
+    created = []
+
+    def provider_factory(name):
+        created.append(name)
+        return DummyProvider()
+
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=provider_factory,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    decision, _provider, provider_name = svc._resolve_provider(
+        'uncensored', 'STARS-239_Uncen.mp4', 'stars-239'
+    )
+
+    assert decision['reason'] == 'specified-provider'
+    assert provider_name == 'uncensored'
+    assert created == ['uncensored']
+
+
+def test_workflow_auto_censored_falls_back_from_javbus_to_javhoo():
+    providers = {'javbus': FailingProvider(), 'javhoo': DummyProvider('JAVHOO')}
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda name: providers[name],
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    decision, provider, provider_name = svc._resolve_provider(
+        'auto_censored', 'ABF-139.mp4', 'abf-139'
+    )
+    result, effective_name = svc._provider_search_with_fallback(
+        {}, decision, provider_name, provider, 'abf-139'
+    )
+
+    assert result['ok'] is True
+    assert effective_name == 'javhoo'
+    assert providers['javbus'].calls == ['abf-139']
+    assert providers['javhoo'].calls == ['abf-139']
+
+
+def test_workflow_auto_routes_uncensored_video_group_as_one_provider_batch(tmp_path):
+    first = tmp_path / 'FC2-PPV-2386297-1.mp4'
+    second = tmp_path / 'FC2-PPV-2386297-2.mp4'
+    _video_size = b'v' * 32768
+    first.write_bytes(_video_size)
+    second.write_bytes(_video_size)
+    providers = {}
+
+    def provider_factory(name):
+        providers.setdefault(name, DummyProvider())
+        return providers[name]
+
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=provider_factory,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=_detect_series_from_filename_utils,
+        smart_truncate_filename=lambda title, original, max_length: title,
+        minimum_video_size_bytes=16384,
+    )
+
+    result = svc.run(
+        folder_path=str(tmp_path),
+        finish_folder=str(tmp_path / 'Finish'),
+        website='auto_all',
+        dry_run=True,
+        logs_dir=str(tmp_path / 'JFO_Logs'),
+    )
+
+    assert result['planned_count'] == 2
+    assert result['routed_counts'] == {'uncensored': 2}
+    assert {item['provider'] for item in result['file_results']} == {'uncensored'}
+
+
+def test_workflow_generalized_video_group_uses_one_search_and_one_cover(tmp_path):
+    import jav_file_organizer as jfo_mod
+
+    videos = [
+        tmp_path / f'ABF-139 Fixed Title ({sequence}).mp4'
+        for sequence in (1, 2, 3)
+    ]
+    for video in videos:
+        video.write_bytes(b'v' * 32768)
+
+    organizer = jfo_mod.JavFileOrganizer.__new__(jfo_mod.JavFileOrganizer)
+    organizer.log = lambda *a, **k: None
+    provider = DummyProvider()
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda _name: provider,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=organizer.detect_series_files,
+        smart_truncate_filename=lambda title, original, max_length: title,
+        minimum_video_size_bytes=16384,
+    )
+
+    result = svc.run(
+        folder_path=str(tmp_path),
+        finish_folder=str(tmp_path / 'Finish'),
+        website='javbus',
+        dry_run=False,
+        logs_dir=str(tmp_path / 'JFO_Logs'),
+    )
+
+    assert result['success_count'] == 3
+    assert provider.calls == ['ABF-139']
+    assert len(list((tmp_path / 'Finish').glob('*.mp4'))) == 3
+    assert len(list((tmp_path / 'Finish').glob('*.jpg'))) == 1
+
+
 def test_workflow_emits_file_result_callback_as_each_file_finishes():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

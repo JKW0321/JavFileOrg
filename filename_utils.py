@@ -20,6 +20,7 @@ v1.4.4: 从 jav_file_organizer.py 拆出的纯函数工具集。
 
 import os
 import re
+import unicodedata
 
 __all__ = [
     'strip_site_markers',
@@ -28,6 +29,7 @@ __all__ = [
     'sanitize_filename',
     'extract_series_info',
     'analyze_unknown_filename',
+    'split_sequence_suffix',
 ]
 
 
@@ -134,6 +136,115 @@ def strip_site_markers(name: str) -> str:
 # 序列文件识别（v1.4.4 修复：从 jav_file_organizer.py 抽出，支持完整标题）
 # ---------------------------------------------------------------------------
 
+_TRAILING_SEQUENCE_ATOM = r'(?:\d{1,3}|[a-z]|[ivxlcdm]{1,6})'
+_TRAILING_SEQUENCE_PATTERNS = [
+    re.compile(
+        rf'^(?P<base>.+?)[\s._-]*[\(\[【](?P<sequence>{_TRAILING_SEQUENCE_ATOM})[\)\]】]$',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf'^(?P<base>.+?)[\s._-]*第\s*(?P<sequence>{_TRAILING_SEQUENCE_ATOM})'
+        r'\s*(?:集|話|话|部|章|篇|回|卷)$',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf'^(?P<base>.+?)[\s._-]*(?:part|pt|cd|disc|disk|episode|ep|volume|vol)'
+        rf'[\s._-]*(?P<sequence>{_TRAILING_SEQUENCE_ATOM})$',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf'^(?P<base>.+?)[\s._-]+(?P<sequence>{_TRAILING_SEQUENCE_ATOM})$',
+        re.IGNORECASE,
+    ),
+]
+
+
+def _normalize_sequence_atom(value: str):
+    atom = unicodedata.normalize('NFKC', str(value or '')).strip().casefold()
+    if atom.isdigit():
+        return str(int(atom))
+    if re.fullmatch(r'[a-z]|[ivxlcdm]{1,6}', atom, re.IGNORECASE):
+        return atom
+    return None
+
+
+def _sequence_atom_from_suffix(suffix: str, *, allow_compact: bool):
+    normalized = unicodedata.normalize('NFKC', str(suffix or '')).strip()
+    if not normalized:
+        return None
+
+    wrapped = re.fullmatch(
+        rf'[\(\[【]\s*(?P<sequence>{_TRAILING_SEQUENCE_ATOM})\s*[\)\]】]',
+        normalized,
+        re.IGNORECASE,
+    )
+    if wrapped:
+        return _normalize_sequence_atom(wrapped.group('sequence'))
+
+    chinese = re.fullmatch(
+        rf'第\s*(?P<sequence>{_TRAILING_SEQUENCE_ATOM})\s*(?:集|話|话|部|章|篇|回|卷)',
+        normalized,
+        re.IGNORECASE,
+    )
+    if chinese:
+        return _normalize_sequence_atom(chinese.group('sequence'))
+
+    labelled = re.fullmatch(
+        rf'(?:part|pt|cd|disc|disk|episode|ep|volume|vol)'
+        rf'[\s._-]*(?P<sequence>{_TRAILING_SEQUENCE_ATOM})',
+        normalized,
+        re.IGNORECASE,
+    )
+    if labelled:
+        return _normalize_sequence_atom(labelled.group('sequence'))
+
+    separated = re.fullmatch(
+        rf'[\s._-]+(?P<sequence>{_TRAILING_SEQUENCE_ATOM})',
+        str(suffix or ''),
+        re.IGNORECASE,
+    )
+    if separated:
+        return _normalize_sequence_atom(separated.group('sequence'))
+
+    if allow_compact:
+        return _normalize_sequence_atom(normalized)
+    return None
+
+
+def split_sequence_suffix(stem: str, *, base_hint: str | None = None):
+    """Split a trailing sequence marker from an organized filename stem.
+
+    The rule recognizes sequence families rather than fixed values: numeric or
+    alphabetic markers, bracketed markers, CD/Part/Episode labels, and Chinese
+    ``第N集``-style labels. A shared-cover stem can be supplied as context for
+    compact forms such as ``Titlea`` where stripping a lone letter without
+    group context would be unsafe.
+    """
+    normalized_stem = unicodedata.normalize('NFKC', str(stem or '')).strip()
+    if not normalized_stem:
+        return None, None
+
+    if base_hint:
+        normalized_hint = unicodedata.normalize('NFKC', str(base_hint)).rstrip()
+        if normalized_stem.casefold().startswith(normalized_hint.casefold()):
+            suffix = normalized_stem[len(normalized_hint):]
+            sequence = _sequence_atom_from_suffix(suffix, allow_compact=True)
+            if sequence is not None:
+                return str(base_hint).rstrip(), sequence
+        return None, None
+
+    for pattern in _TRAILING_SEQUENCE_PATTERNS:
+        match = pattern.fullmatch(normalized_stem)
+        if not match:
+            continue
+        base = match.group('base').rstrip(' ._-')
+        sequence = _normalize_sequence_atom(match.group('sequence'))
+        if base and sequence is not None:
+            return base, sequence
+
+    return None, None
+
+
 # 序列模式：
 #   模式 0: ABC-123-1, ABC-123_2 (有连字符主体 + 数字尾段)
 #   模式 1: ABC-123a, ABC-123b (有连字符 + 字母尾段)
@@ -234,8 +345,11 @@ def extract_series_info(filename):
 # 番号提取（从 jav_file_organizer.py 抽出）
 # ---------------------------------------------------------------------------
 
-# 常见版本后缀清理 (-C, -c, -U, -u, -uc, -UC, -ch, -CH, -AI, -ai)
-_SUFFIX_PATTERN = re.compile(r'[-_]?(ch|CH|[cCuU]|uc|UC|ai|AI)$')
+# 常见版本后缀清理 (-C, -U, -UC, -CH, -AI, _Uncen, _Uncensored)
+_SUFFIX_PATTERN = re.compile(
+    r'[-_]?(?:uncensored|uncen|ch|uc|ai|c|u)$',
+    re.IGNORECASE,
+)
 
 # 番号提取的正则模式（按优先级）
 _CODE_PATTERNS = [
@@ -295,7 +409,7 @@ def _candidate(rule_id, filename, normalized_code, *, confidence, usable_for_sea
 
 MGSTAGE_PREFIXES = (
     '300MIUM', '393OTIM', '420HPT', '420STH', '546EROFV', '583ERKR',
-    '328CNSTV', '328HMDNV', '476MLA', '253KAKU', '292MY',
+    '328CNSTV', '328HMDNV', '476MLA', '253KAKU', '292MY', '413INSTV',
 )
 
 
@@ -347,6 +461,18 @@ def analyze_unknown_filename(filename: str):
             usable_for_search=True,
             reason='matched TOKYO-HOT code',
             pattern_shape='TOKYO[-_ ]HOT[-_ ]<letter+digits>[-_ ]<optional sequence>',
+        )
+
+    bare_tokyo_hot = re.fullmatch(r'([Nn]\d{4,6})', compact.strip())
+    if bare_tokyo_hot:
+        return _candidate(
+            'tokyo_hot',
+            filename,
+            f"TOKYO-HOT-{bare_tokyo_hot.group(1).upper()}",
+            confidence=0.92,
+            usable_for_search=True,
+            reason='matched bare Tokyo-Hot n-code',
+            pattern_shape='N<4-6 digits>',
         )
 
     heyzo = re.search(

@@ -32,6 +32,7 @@ from filename_utils import (
     sanitize_filename,
     extract_series_info,
     analyze_unknown_filename,
+    split_sequence_suffix,
 )
 
 
@@ -276,6 +277,14 @@ class TestAdaptiveFilenameRules:
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("Tokyo-Hot-n0839.mp4") == "tokyo-hot-n0839"
 
+    def test_bare_tokyo_hot_code_from_user_log_is_auto_usable(self):
+        candidate = analyze_unknown_filename("n0904.mkv")
+
+        assert candidate['rule_id'] == 'tokyo_hot'
+        assert candidate['normalized_code'] == 'TOKYO-HOT-N0904'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("n0904.mkv") == "tokyo-hot-n0904"
+
     def test_nyoshin_tokyo_hot_alias_is_auto_usable(self):
         candidate = analyze_unknown_filename("nyoshin_n2039.wmv")
 
@@ -307,6 +316,17 @@ class TestAdaptiveFilenameRules:
         assert candidate['normalized_code'] == '292MY-1061'
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("4k2.me@292MY-1061.mp4") == "292my-1061"
+
+    def test_413instv_mgstage_candidate_from_user_log_is_auto_usable(self):
+        candidate = analyze_unknown_filename("413INSTV-721.mp4")
+
+        assert candidate['rule_id'] == 'mgstage_uncensored'
+        assert candidate['normalized_code'] == '413INSTV-721'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search("413INSTV-721.mp4") == "413instv-721"
+
+    def test_uncen_release_suffix_is_removed_from_general_code(self):
+        assert clean_filename_for_search("STARS-239_Uncen.mp4") == "stars-239"
 
     def test_dpvr_sequence_quality_suffix_uses_base_code(self):
         candidate = analyze_unknown_filename("4k2.me@dpvr00047_1_8k.mp4")
@@ -460,6 +480,54 @@ class TestSanitizeFilename:
 
 
 # =========================================================================
+# split_sequence_suffix — 已整理文件的通用序列后缀
+# =========================================================================
+
+class TestSplitSequenceSuffix:
+    @pytest.mark.parametrize("stem,expected_base,expected_sequence", [
+        ("ABF-139 Fixed Title-1", "ABF-139 Fixed Title", "1"),
+        ("ABF-139 Fixed Title_02", "ABF-139 Fixed Title", "2"),
+        ("ABF-139 Fixed Title (3)", "ABF-139 Fixed Title", "3"),
+        ("ABF-139 Fixed Title（３）", "ABF-139 Fixed Title", "3"),
+        ("ABF-139 Fixed Title【4】", "ABF-139 Fixed Title", "4"),
+        ("ABF-139 Fixed Title-a", "ABF-139 Fixed Title", "a"),
+        ("ABF-139 Fixed Title CD2", "ABF-139 Fixed Title", "2"),
+        ("ABF-139 Fixed Title 第3集", "ABF-139 Fixed Title", "3"),
+    ])
+    def test_splits_supported_sequence_suffix_families(
+        self,
+        stem,
+        expected_base,
+        expected_sequence,
+    ):
+        assert split_sequence_suffix(stem) == (expected_base, expected_sequence)
+
+    @pytest.mark.parametrize("stem,base_hint,expected_sequence", [
+        ("ABF-139 Fixed Titlea", "ABF-139 Fixed Title", "a"),
+        ("ABF-139 Fixed Titleb", "ABF-139 Fixed Title", "b"),
+        ("ABF-139 Fixed Title（３）", "ABF-139 Fixed Title", "3"),
+    ])
+    def test_uses_shared_cover_stem_as_context_for_compact_suffixes(
+        self,
+        stem,
+        base_hint,
+        expected_sequence,
+    ):
+        assert split_sequence_suffix(stem, base_hint=base_hint) == (
+            base_hint,
+            expected_sequence,
+        )
+
+    @pytest.mark.parametrize("stem", [
+        "ABF-139 Fixed Title",
+        "ABF-139 Fixed Title 1080p",
+        "ABF-139 Another Movie",
+    ])
+    def test_does_not_strip_non_sequence_titles(self, stem):
+        assert split_sequence_suffix(stem) == (None, None)
+
+
+# =========================================================================
 # extract_series_info — 序列文件识别（v1.4.4 bug 修复核心 #2）
 # =========================================================================
 
@@ -594,3 +662,35 @@ class TestDetectSeriesFiles:
         ]
         groups, standalone = obj.detect_series_files(files)
         assert 'ABF-139' in groups, f"期望识别成序列组，实际 groups={groups}, standalone={standalone}"
+
+    @pytest.mark.parametrize("suffixes", [
+        ("_1", "_2", "_3"),
+        (" (1)", " (2)", " (3)"),
+        ("（1）", "（2）", "（3）"),
+        ("【1】", "【2】", "【3】"),
+        (" CD1", " CD2", " CD3"),
+        (" 第1集", " 第2集", " 第3集"),
+        ("a", "b", "c"),
+    ])
+    def test_generalized_title_suffixes_form_one_normal_mode_group(self, suffixes):
+        import jav_file_organizer as jfo_mod
+        obj = jfo_mod.JavFileOrganizer.__new__(jfo_mod.JavFileOrganizer)
+        obj.log = lambda *a, **kw: None
+        files = [f'ABF-139 Fixed Title{suffix}.mp4' for suffix in suffixes]
+
+        groups, standalone = obj.detect_series_files(files)
+
+        assert set(groups) == {'ABF-139'}
+        assert len(groups['ABF-139']) == 3
+        assert standalone == []
+
+    def test_single_suffix_candidate_is_not_promoted_to_video_group(self):
+        import jav_file_organizer as jfo_mod
+        obj = jfo_mod.JavFileOrganizer.__new__(jfo_mod.JavFileOrganizer)
+        obj.log = lambda *a, **kw: None
+        files = ['ABF-139 Fixed Title.mp4', 'ABF-139 Fixed Title_1.mp4']
+
+        groups, standalone = obj.detect_series_files(files)
+
+        assert groups == {}
+        assert standalone == files

@@ -118,14 +118,43 @@ class WorkflowService:
 
     def _resolve_provider(self, preferred_provider, filename, search_query):
         decision = route_provider(preferred_provider, filename, search_query)
-        if preferred_provider not in self._provider_instances:
-            self._provider_instances[preferred_provider] = self.provider_factory(preferred_provider)
-        provider = self._provider_instances[preferred_provider]
-        return decision, provider, preferred_provider
+        provider_name = decision.get('provider') or preferred_provider
+        if provider_name not in self._provider_instances:
+            self._provider_instances[provider_name] = self.provider_factory(provider_name)
+        if provider_name != preferred_provider:
+            self.log(
+                f'🧭 自动切换数据源: {filename} | {preferred_provider} -> '
+                f'{provider_name} | {decision.get("reason")}',
+                'INFO',
+            )
+        provider = self._provider_instances[provider_name]
+        return decision, provider, provider_name
+
+    def _provider_search_with_fallback(self, cache, decision, provider_name, provider, query):
+        candidates = list(decision.get('candidates') or [provider_name])
+        result = self._provider_search(cache, provider_name, provider, query)
+        active_name = provider_name
+        for fallback_name in candidates[1:]:
+            if result.get('ok') or self.stop_requested():
+                break
+            self.log(
+                f'🧭 自动来源回退: {query} | {active_name} 未成功，尝试 {fallback_name}',
+                'INFO',
+            )
+            if fallback_name not in self._provider_instances:
+                self._provider_instances[fallback_name] = self.provider_factory(fallback_name)
+            active_name = fallback_name
+            result = self._provider_search(
+                cache,
+                active_name,
+                self._provider_instances[active_name],
+                query,
+            )
+        return result, active_name
 
     def _search_query_for_file(self, *, website, filename, file_path, folder_path):
         query = self.clean_filename_for_search(filename)
-        if website != 'uncensored':
+        if website not in {'uncensored', 'auto_uncensored', 'auto_all'}:
             return query
 
         rel_path = os.path.relpath(file_path, folder_path)
@@ -750,8 +779,8 @@ class WorkflowService:
                     continue
                 if decision.get('warning_only'):
                     self.log(f'⚠️ provider 警告: {base_code} -> {decision.get("reason")}', 'WARNING')
-                routed_counts[provider_name] = routed_counts.get(provider_name, 0) + len(files)
                 if dry_run:
+                    routed_counts[provider_name] = routed_counts.get(provider_name, 0) + len(files)
                     self.log(f'🧪 DRY-RUN 序列组: {base_code} | provider={provider_name} | files={len(files)}', 'INFO')
                     for file_path, sequence in files:
                         file_results.append(self._new_file_result(
@@ -766,7 +795,10 @@ class WorkflowService:
                     completed_units += len(files)
                     self._emit_progress(completed_units, total_files, f'序列组 {base_code}')
                     continue
-                result = self._provider_search(provider_cache, provider_name, provider, base_code)
+                result, provider_name = self._provider_search_with_fallback(
+                    provider_cache, decision, provider_name, provider, base_code
+                )
+                routed_counts[provider_name] = routed_counts.get(provider_name, 0) + len(files)
                 provider_elapsed = self._provider_elapsed(result)
                 if not result.get('ok'):
                     reason = self._provider_failure_reason(result)
@@ -922,8 +954,8 @@ class WorkflowService:
                 continue
             if decision.get('warning_only'):
                 self.log(f'⚠️ provider 警告: {filename} -> {decision.get("reason")}', 'WARNING')
-            routed_counts[provider_name] = routed_counts.get(provider_name, 0) + 1
             if dry_run:
+                routed_counts[provider_name] = routed_counts.get(provider_name, 0) + 1
                 self.log(f'🧪 DRY-RUN 文件: {filename} | query={query} | provider={provider_name}', 'INFO')
                 file_results.append(self._new_file_result(
                     source_path=file_path,
@@ -935,7 +967,10 @@ class WorkflowService:
                 completed_units += 1
                 self._emit_progress(completed_units, total_files, filename)
                 continue
-            result = self._provider_search(provider_cache, provider_name, provider, query)
+            result, provider_name = self._provider_search_with_fallback(
+                provider_cache, decision, provider_name, provider, query
+            )
+            routed_counts[provider_name] = routed_counts.get(provider_name, 0) + 1
             provider_elapsed = self._provider_elapsed(result)
             if not result.get('ok') or not result.get('title'):
                 reason = self._provider_failure_reason(result)

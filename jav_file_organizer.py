@@ -25,6 +25,7 @@ import re
 from datetime import datetime
 import json
 import shutil
+import stat
 
 from app_metadata import (
     APP_TITLE,
@@ -201,6 +202,30 @@ class JavFileOrganizer:
         
         # 网站配置 - v1.9 修复版
         self.website_configs = {
+            'auto_all': {
+                'name': '全自动 - 有码/无码智能选择',
+                'search_url': 'auto://javbus,javhoo,uncensored',
+                'title_selectors': ['title'],
+                'image_selectors': ['img'],
+                'requires_verification': False,
+                'is_strategy': True,
+            },
+            'auto_censored': {
+                'name': '自动有码 - JavBus → JavHoo',
+                'search_url': 'auto://javbus,javhoo',
+                'title_selectors': ['title'],
+                'image_selectors': ['img'],
+                'requires_verification': False,
+                'is_strategy': True,
+            },
+            'auto_uncensored': {
+                'name': '自动无码 - 按文件名匹配内部站点',
+                'search_url': 'auto://uncensored',
+                'title_selectors': ['title'],
+                'image_selectors': ['img'],
+                'requires_verification': False,
+                'is_strategy': True,
+            },
             'javhoo': {
                 'name': 'JavHoo - 稳定快速',
                 'search_url': 'https://www.javhoo.com/search/{query}',   # v1.4.4: 改 /en/{query} → /search/{query}（实测新 URL）
@@ -282,7 +307,8 @@ class JavFileOrganizer:
                     'meta[name="twitter:image"]',
                     'img',
                 ],
-                'requires_verification': False
+                'requires_verification': False,
+                'is_internal': True,
             }
         }
         
@@ -1209,6 +1235,89 @@ class JavFileOrganizer:
             include_subdirectories=self._include_subdirectories(),
         )
 
+    def _cleanup_safe_metadata_files(self, folder_path, candidates):
+        """Delete only known disposable macOS metadata files found by a scan."""
+        root = os.path.abspath(folder_path)
+        deleted = []
+        for raw_name in candidates or []:
+            rel_name = os.path.normpath(str(raw_name or '').replace('\\', os.sep))
+            base_name = os.path.basename(rel_name)
+            if base_name != '.DS_Store' and not base_name.startswith('._'):
+                continue
+            if not rel_name or os.path.isabs(rel_name):
+                continue
+            full_path = os.path.abspath(os.path.join(root, rel_name))
+            try:
+                if os.path.commonpath((root, full_path)) != root:
+                    continue
+                file_mode = os.lstat(full_path).st_mode
+                if not stat.S_ISREG(file_mode):
+                    continue
+                os.unlink(full_path)
+                deleted.append(rel_name)
+            except (OSError, ValueError):
+                continue
+        if deleted:
+            self.log(f"已清理 {len(deleted)} 个 macOS 元数据文件（.DS_Store / ._*）", "INFO")
+        return deleted
+
+    def _scan_selected_video_files(self, folder_path, selected_files):
+        """Validate only the UI-selected paths without enumerating the directory."""
+        result = {
+            'accepted': [],
+            'skipped_hidden': [],
+            'skipped_small': [],
+            'manifest_entries': [],
+            'file_sizes': {},
+            'total_files': 0,
+            'missing_selected': [],
+        }
+        root = os.path.abspath(folder_path)
+        minimum_size = getattr(self, 'minimum_video_size_bytes', 16 * 1024)
+        extensions = {ext.lower() for ext in self.video_extensions}
+        seen = set()
+        for raw_name in selected_files or []:
+            rel_name = os.path.normpath(str(raw_name or '').replace('\\', os.sep))
+            if not rel_name or rel_name in seen or os.path.isabs(rel_name):
+                continue
+            full_path = os.path.abspath(os.path.join(root, rel_name))
+            try:
+                if os.path.commonpath((root, full_path)) != root:
+                    result['missing_selected'].append(rel_name)
+                    continue
+            except ValueError:
+                result['missing_selected'].append(rel_name)
+                continue
+            seen.add(rel_name)
+            base_name = os.path.basename(rel_name)
+            if base_name.startswith('.'):
+                result['skipped_hidden'].append(rel_name)
+                continue
+            extension = os.path.splitext(base_name)[1].lower()
+            if extension not in extensions:
+                result['missing_selected'].append(rel_name)
+                continue
+            try:
+                stat = os.stat(full_path, follow_symlinks=False)
+            except OSError:
+                result['missing_selected'].append(rel_name)
+                continue
+            result['total_files'] += 1
+            result['manifest_entries'].append({
+                'name': rel_name,
+                'size': stat.st_size,
+                'mtime': stat.st_mtime,
+                'extension': extension,
+                'is_hidden': False,
+                'is_video': True,
+            })
+            if stat.st_size < minimum_size:
+                result['skipped_small'].append(rel_name)
+                continue
+            result['accepted'].append(rel_name)
+            result['file_sizes'][rel_name] = stat.st_size
+        return result
+
     def _collect_video_files(self, folder_path):
         """收集可处理的视频文件（已过滤隐藏/AppleDouble/异常小视频）。"""
         return self._scan_video_files(folder_path)['accepted']
@@ -1295,9 +1404,16 @@ class JavFileOrganizer:
         return (1, text)
     
     def detect_series_files(self, file_list):
-        """检测并分组序列文件。"""
+        """检测并分组序列文件。
+
+        先保留番号自身携带分段号的旧规则，再对其余文件按完整标题尾部的
+        通用分段标记做成组判断。通用规则至少需要两个同基名、不同分段，
+        避免把单个正常文件末尾的数字或字母误当成视频组。
+        """
+        from filename_utils import clean_filename_for_search, split_sequence_suffix
+
         series_groups = {}
-        standalone_files = []
+        unresolved_files = []
         
         for file_path in file_list:
             filename = os.path.basename(file_path)
@@ -1309,7 +1425,44 @@ class JavFileOrganizer:
                     series_groups[base_code] = []
                 series_groups[base_code].append((file_path, sequence))
             else:
-                standalone_files.append(file_path)
+                unresolved_files.append(file_path)
+
+        generic_candidates = {}
+        compact_candidates = {}
+        for file_path in unresolved_files:
+            filename = os.path.basename(file_path)
+            stem = os.path.splitext(filename)[0]
+            shared_stem, sequence = split_sequence_suffix(stem)
+            if shared_stem and sequence is not None:
+                query = clean_filename_for_search(shared_stem)
+                if query:
+                    key = (shared_stem.casefold(), query.upper())
+                    generic_candidates.setdefault(key, []).append((file_path, sequence))
+                    continue
+
+            compact = re.fullmatch(r'(?P<base>.+?)(?P<sequence>[a-z])', stem, re.IGNORECASE)
+            if compact:
+                shared_stem = compact.group('base').rstrip(' ._-')
+                query = clean_filename_for_search(shared_stem)
+                if query:
+                    key = (shared_stem.casefold(), query.upper())
+                    compact_candidates.setdefault(key, []).append(
+                        (file_path, compact.group('sequence').casefold())
+                    )
+
+        promoted_paths = set()
+        for candidates in (generic_candidates, compact_candidates):
+            for (_shared_key, base_code), items in candidates.items():
+                sequences = {str(sequence).casefold() for _path, sequence in items}
+                if len(items) < 2 or len(sequences) < 2:
+                    continue
+                series_groups.setdefault(base_code, []).extend(items)
+                promoted_paths.update(path for path, _sequence in items)
+
+        standalone_files = [
+            file_path for file_path in unresolved_files
+            if file_path not in promoted_paths
+        ]
         
         for base_code in series_groups:
             series_groups[base_code].sort(key=lambda x: self._series_sort_key(x[1]))
@@ -1841,11 +1994,24 @@ class JavFileOrganizer:
             website = request.website
             website_config = request.website_config
             dry_run = request.dry_run
+            selected_files = [str(name) for name in (request.selected_files or []) if str(name).strip()]
 
             self.log(f"📝 配置信息:", "INFO")
-            self.log(f"   网站: {website_config.get('name', website)}", "INFO")
-            self.log(f"   搜索URL: {website_config['search_url']}", "INFO")
-            self.log(f"   扫描范围: {'当前目录 + 子目录' if request.include_subdirectories else '仅当前目录'}", "INFO")
+            if website_config.get('is_strategy'):
+                priorities = {
+                    'auto_all': 'JavBus → JavHoo → 无码源（明确的无码文件名直接走无码源）',
+                    'auto_censored': 'JavBus → JavHoo',
+                    'auto_uncensored': '按文件名前缀匹配无码内部站点',
+                }
+                self.log(f"   来源策略: {website_config.get('name', website)}", "INFO")
+                self.log(f"   优先级: {priorities.get(website, '自动选择')}", "INFO")
+            else:
+                self.log(f"   指定来源: {website_config.get('name', website)}", "INFO")
+                self.log(f"   搜索URL: {website_config['search_url']}", "INFO")
+            if selected_files:
+                self.log("   处理范围: 界面已选文件（不重新遍历目录）", "INFO")
+            else:
+                self.log(f"   扫描范围: {'当前目录 + 子目录' if request.include_subdirectories else '仅当前目录'}", "INFO")
             if dry_run:
                 self.log("🧪 当前为 Dry Run：只审计，不移动文件、不下载图片", "WARNING")
 
@@ -1853,36 +2019,13 @@ class JavFileOrganizer:
             self.log(f"📝 日志文件: {run_log_path}", "INFO")
             logs_dir = os.path.dirname(run_log_path)
 
-            scan_started = time.time()
-            cached_scan = self._get_recent_folder_scan(folder_path)
-            if cached_scan and cached_scan.get('scan'):
-                scan = cached_scan['scan']
-                scan_elapsed = time.time() - scan_started
-                self.log(
-                    f"⏱️ 文件扫描耗时: {scan_elapsed:.1f}秒（复用 {cached_scan.get('age_seconds', 0):.0f}秒前的目录扫描缓存）",
-                    "INFO",
-                )
-            else:
-                scan = self._scan_video_files(folder_path)
-                scan_elapsed = time.time() - scan_started
-                self._remember_folder_scan(folder_path, scan, scan_elapsed)
-                self.log(f"⏱️ 文件扫描耗时: {scan_elapsed:.1f}秒", "INFO")
-
-            selected_files = [str(name) for name in (request.selected_files or []) if str(name).strip()]
             if selected_files:
-                selected_set = set(selected_files)
-                original_accepted = list(scan.get('accepted') or [])
-                accepted = [name for name in original_accepted if name in selected_set]
-                scan = dict(scan)
-                scan['accepted'] = accepted
-                scan['file_sizes'] = {
-                    name: size
-                    for name, size in (scan.get('file_sizes') or {}).items()
-                    if name in selected_set
-                }
-                missing_selected = len(selected_set) - len(set(accepted))
+                scan_started = time.time()
+                scan = self._scan_selected_video_files(folder_path, selected_files)
+                scan_elapsed = time.time() - scan_started
+                missing_selected = len(scan.get('missing_selected') or [])
                 self.log(
-                    f"📝 勾选处理范围: {len(accepted)}/{len(selected_set)} 个文件",
+                    f"📝 直接使用界面已选清单: {len(scan.get('accepted') or [])}/{len(set(selected_files))} 个文件；未遍历整个目录",
                     "INFO",
                 )
                 if missing_selected:
@@ -1890,6 +2033,21 @@ class JavFileOrganizer:
                         f"⚠️ 有 {missing_selected} 个勾选文件已不在当前扫描结果中，已自动忽略",
                         "WARNING",
                     )
+            else:
+                scan_started = time.time()
+                cached_scan = self._get_recent_folder_scan(folder_path)
+                if cached_scan and cached_scan.get('scan'):
+                    scan = cached_scan['scan']
+                    scan_elapsed = time.time() - scan_started
+                    self.log(
+                        f"⏱️ 文件扫描耗时: {scan_elapsed:.1f}秒（复用 {cached_scan.get('age_seconds', 0):.0f}秒前的目录扫描缓存）",
+                        "INFO",
+                    )
+                else:
+                    scan = self._scan_video_files(folder_path)
+                    scan_elapsed = time.time() - scan_started
+                    self._remember_folder_scan(folder_path, scan, scan_elapsed)
+                    self.log(f"⏱️ 文件扫描耗时: {scan_elapsed:.1f}秒", "INFO")
             total_files_preview = len(scan['accepted'])
             batch_count_str = request.batch_count_text
             batch_count = None

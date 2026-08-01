@@ -15,6 +15,16 @@ ICON_PATH="assets/icons/JAVFileOrganizer.icns"
 ICON_ABS_PATH="${ROOT_DIR}/${ICON_PATH}"
 DESKTOP_APP="${HOME}/Desktop/${APP_NAME}.app"
 
+if ! "$PYTHON_BIN" -c '
+import webview
+assert callable(getattr(webview, "create_window", None))
+if __import__("sys").platform == "darwin":
+    import objc, Cocoa, Quartz, WebKit, Security, UniformTypeIdentifiers
+' >/dev/null 2>&1; then
+  echo "Missing desktop component runtime. Install requirements.txt in the selected Python environment before building." >&2
+  exit 1
+fi
+
 if [[ ! -f "$ICON_ABS_PATH" ]]; then
   echo "Missing icon: $ICON_ABS_PATH" >&2
   exit 1

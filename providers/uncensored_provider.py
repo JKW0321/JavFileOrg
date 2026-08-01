@@ -77,7 +77,7 @@ class UncensoredProvider(BaseProvider):
 
     MGSTAGE_PREFIXES = (
         '300MIUM', '393OTIM', '420HPT', '420STH', '546EROFV', '583ERKR',
-        '328CNSTV', '328HMDNV', '476MLA', '253KAKU', '292MY',
+        '328CNSTV', '328HMDNV', '476MLA', '253KAKU', '292MY', '413INSTV',
     )
 
     def _request(self, url):

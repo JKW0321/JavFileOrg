@@ -223,6 +223,8 @@ class OrganizerApi:
             payload = {}
         self.provider_overrides = payload.get('provider_overrides') or {}
         website = payload.get('website') or payload.get('default_website') or self.settings['website']
+        if website == 'uncensored':
+            website = 'auto_uncensored'
         self.settings.update({
             'website': website,
             'dry_run': bool(payload.get('dry_run', self.settings['dry_run'])),
@@ -363,6 +365,20 @@ class OrganizerApi:
         self._update_workspace_from_results([item or {}])
         self._emit('file_result', {'result': item or {}})
 
+    def _inspection_file_status(self, source_name, status, stage=''):
+        source_name = str(source_name or '')
+        status = str(status or 'planned')
+        for row in self.workspace_files:
+            if row.get('name') == source_name:
+                row['status'] = status
+                row['inspection_stage'] = str(stage or '')
+                break
+        self._emit('inspection_status', {
+            'source_name': source_name,
+            'status': status,
+            'stage': str(stage or ''),
+        })
+
     def _remember_session_run(self, result):
         if not isinstance(result, dict):
             return
@@ -430,11 +446,14 @@ class OrganizerApi:
     def initial_state(self):
         providers = []
         for key, config in self.engine.website_configs.items():
+            if config.get('is_internal'):
+                continue
             providers.append({
                 'key': key,
                 'name': config.get('name', key),
                 'requires_verification': bool(config.get('requires_verification')),
                 'search_url': config.get('search_url', ''),
+                'is_strategy': bool(config.get('is_strategy')),
             })
         return {
             'version': BASELINE_VERSION,
@@ -458,12 +477,15 @@ class OrganizerApi:
     def settings_state(self):
         providers = []
         for key, config in self.engine.website_configs.items():
+            if config.get('is_internal'):
+                continue
             default_cfg = self._provider_default_payload(key)
             effective_cfg = self._provider_effective_payload(key)
             providers.append({
                 'key': key,
                 'name': config.get('name', key),
                 'requires_verification': bool(config.get('requires_verification')),
+                'is_strategy': bool(config.get('is_strategy')),
                 'search_url': effective_cfg.get('search_url', ''),
                 'text_selector': effective_cfg.get('text_selector', ''),
                 'image_selector': effective_cfg.get('image_selector', ''),
@@ -516,7 +538,7 @@ class OrganizerApi:
         if website not in self.engine.website_configs:
             return {'ok': False, 'message': f'未知数据源: {website}'}
         self.settings['website'] = website
-        if website != 'uncensored':
+        if not self.engine.website_configs.get(website, {}).get('is_strategy') and website != 'uncensored':
             self.provider_overrides[website] = {
                 'search_url': str(payload.get('search_url') or '').strip(),
                 'text_selector': str(payload.get('text_selector') or '').strip(),
@@ -895,6 +917,22 @@ class OrganizerApi:
         started = time.time()
         scan = self.engine._scan_video_files(folder)
         elapsed = time.time() - started
+        deleted_metadata = self.engine._cleanup_safe_metadata_files(
+            folder,
+            scan.get('skipped_hidden') or [],
+        )
+        if deleted_metadata:
+            deleted_set = set(deleted_metadata)
+            scan = dict(scan)
+            scan['skipped_hidden'] = [
+                name for name in (scan.get('skipped_hidden') or [])
+                if name not in deleted_set
+            ]
+            scan['manifest_entries'] = [
+                item for item in (scan.get('manifest_entries') or [])
+                if item.get('name') not in deleted_set
+            ]
+            scan['total_files'] = max(0, int(scan.get('total_files') or 0) - len(deleted_set))
         self.engine._remember_folder_scan(folder, scan, elapsed)
         file_sizes = scan.get('file_sizes') or {}
         files = []
@@ -919,6 +957,7 @@ class OrganizerApi:
             'total_files': scan.get('total_files', 0),
             'skipped_hidden': len(scan.get('skipped_hidden') or []),
             'skipped_small': len(scan.get('skipped_small') or []),
+            'deleted_metadata': deleted_metadata,
             'include_subdirectories': self.engine._include_subdirectories(),
         }
         self.workspace_files = [dict(item) for item in files]
@@ -927,6 +966,7 @@ class OrganizerApi:
             'visible_files': len(files),
             'skipped_hidden': payload['skipped_hidden'],
             'skipped_small': payload['skipped_small'],
+            'deleted_metadata': len(deleted_metadata),
             'elapsed': elapsed,
             'include_subdirectories': payload['include_subdirectories'],
         }
@@ -1026,6 +1066,7 @@ class OrganizerApi:
                 stop_requested=self.engine._is_stop_requested,
                 progress_callback=self._progress,
                 file_result_callback=self._file_result,
+                file_status_callback=self._inspection_file_status,
                 minimum_video_size_bytes=getattr(self.engine, 'minimum_video_size_bytes', 16 * 1024),
                 duplicate_image_similarity_threshold=duplicate_similarity_threshold,
                 app_version=BASELINE_VERSION,
@@ -1146,14 +1187,27 @@ class OrganizerApi:
             'bestjavporn': 'ABF-311',
             'uncensored': 'CARIB-032226-001',
         }
-        query = test_query_map.get(website, 'SONE-753')
+        test_filename_map = {
+            'auto_all': 'SONE-753.mp4',
+            'auto_censored': 'SONE-753.mp4',
+            'auto_uncensored': '032226-001-CARIB.mp4',
+        }
+        from provider_router import route_provider
+        provisional_query = 'CARIB-032226-001' if website == 'auto_uncensored' else 'SONE-753'
+        decision = route_provider(
+            website,
+            test_filename_map.get(website, f'{provisional_query}.mp4'),
+            provisional_query,
+        )
+        effective_website = decision.get('provider') or website
+        query = test_query_map.get(effective_website, provisional_query)
         self.is_testing = True
         self._emit('state', {'testing': True})
 
         def worker():
             try:
-                self._ensure_anti_crawl(require_selenium=(website == 'javlibrary'))
-                result = self.engine._run_connection_probe(website, query)
+                self._ensure_anti_crawl(require_selenium=(effective_website == 'javlibrary'))
+                result = self.engine._run_connection_probe(effective_website, query)
             except Exception as e:
                 result = {
                     'ok': False,
@@ -1161,7 +1215,8 @@ class OrganizerApi:
                     'message': str(e),
                 }
             finally:
-                result = self._normalize_connection_result(website, query, result)
+                result = self._normalize_connection_result(effective_website, query, result)
+                result['requested_strategy'] = website if website != effective_website else None
                 self.is_testing = False
                 self._log(result['summary'], 'SUCCESS' if result.get('ok') else 'ERROR')
                 if result.get('advice'):
