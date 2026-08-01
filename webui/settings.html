@@ -452,7 +452,7 @@ async function api(name,...args){ const ready=await bridgeReady(); if(!ready) re
 let toastTimer = 0;
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),1600); }
 const TEST_CODES = { auto_all:'SONE-753', auto_censored:'SONE-753', auto_uncensored:'CARIB-032226-001', javhoo:'SONE-753', javbus:'SONE-753', javlibrary:'JBD-131', bestjavporn:'ABF-311', uncensored:'CARIB-032226-001' };
-let state = { providers: [], settings: {}, activeProvider: 'javbus', version: '', build_id: '', build_date: '', testing: false, lastEventId: 0, seen: new Set() };
+let state = { providers: [], settings: {}, activeProvider: 'auto_all', version: '', build_id: '', build_date: '', testing: false, lastEventId: 0, seen: new Set() };
 function providerDesc(p){ if(p.key==='auto_all')return '有码/无码智能判断 · JavBus → JavHoo → 无码源'; if(p.key==='auto_censored')return '仅有码自动回退 · JavBus → JavHoo'; if(p.key==='auto_uncensored')return '仅无码 · 按文件名匹配内部站点'; if(p.key==='uncensored')return '指定无码源'; if(p.key==='javhoo')return '指定详细源 · 稳定快速'; if(p.key==='javbus')return '指定详细源 · 内容丰富'; if(p.key==='javlibrary')return '指定详细源 · 数据完整'; if(p.key==='bestjavporn')return '指定详细源 · 日文源'; return p.name; }
 function shortName(name){ return String(name||'').split(' - ')[0]; }
 function providerLabel(key){ const p=state.providers.find(item=>item.key===key); return shortName((p||{}).name)||key||shortName(active().name); }

@@ -139,7 +139,7 @@ def strip_site_markers(name: str) -> str:
 _TRAILING_SEQUENCE_ATOM = r'(?:\d{1,3}|[a-z]|[ivxlcdm]{1,6})'
 _TRAILING_SEQUENCE_PATTERNS = [
     re.compile(
-        rf'^(?P<base>.+?)[\s._-]*[\(\[【](?P<sequence>{_TRAILING_SEQUENCE_ATOM})[\)\]】]$',
+        rf'^(?P<base>.+?)[\s._-]*[\(\[【（［](?P<sequence>{_TRAILING_SEQUENCE_ATOM})[\)\]】）］]$',
         re.IGNORECASE,
     ),
     re.compile(
@@ -174,7 +174,7 @@ def _sequence_atom_from_suffix(suffix: str, *, allow_compact: bool):
         return None
 
     wrapped = re.fullmatch(
-        rf'[\(\[【]\s*(?P<sequence>{_TRAILING_SEQUENCE_ATOM})\s*[\)\]】]',
+        rf'[\(\[【（［]\s*(?P<sequence>{_TRAILING_SEQUENCE_ATOM})\s*[\)\]】）］]',
         normalized,
         re.IGNORECASE,
     )
@@ -220,7 +220,8 @@ def split_sequence_suffix(stem: str, *, base_hint: str | None = None):
     compact forms such as ``Titlea`` where stripping a lone letter without
     group context would be unsafe.
     """
-    normalized_stem = unicodedata.normalize('NFKC', str(stem or '')).strip()
+    original_stem = str(stem or '').strip()
+    normalized_stem = unicodedata.normalize('NFKC', original_stem).strip()
     if not normalized_stem:
         return None, None
 
@@ -233,14 +234,21 @@ def split_sequence_suffix(stem: str, *, base_hint: str | None = None):
                 return str(base_hint).rstrip(), sequence
         return None, None
 
-    for pattern in _TRAILING_SEQUENCE_PATTERNS:
-        match = pattern.fullmatch(normalized_stem)
-        if not match:
-            continue
-        base = match.group('base').rstrip(' ._-')
-        sequence = _normalize_sequence_atom(match.group('sequence'))
-        if base and sequence is not None:
-            return base, sequence
+    # Match the spelling actually present on disk first.  Normalizing the
+    # entire stem before slicing used to change Japanese combining characters
+    # and full-width punctuation in the resulting shared cover filename.
+    candidates = [original_stem]
+    if normalized_stem != original_stem:
+        candidates.append(normalized_stem)
+    for candidate in candidates:
+        for pattern in _TRAILING_SEQUENCE_PATTERNS:
+            match = pattern.fullmatch(candidate)
+            if not match:
+                continue
+            base = match.group('base').rstrip(' ._-')
+            sequence = _normalize_sequence_atom(match.group('sequence'))
+            if base and sequence is not None:
+                return base, sequence
 
     return None, None
 
@@ -336,6 +344,17 @@ def extract_series_info(filename):
 
     base, sequence = _extract_series_info_from_stem(stem)
     if base:
+        # A later title token such as ``day1080P`` must not override the real
+        # leading identity ``OPIUMUD-027``.  Genuine series identities remain
+        # compatible (ABF-139-1 starts with the base ABF-139).
+        identity = _extract_code_from_prepared_name(
+            _prepare_name_for_code_extract(filename)
+        )
+        if identity:
+            identity_key = re.sub(r'[^A-Z0-9]', '', identity.upper())
+            base_key = re.sub(r'[^A-Z0-9]', '', base.upper())
+            if not identity_key.startswith(base_key):
+                return None, None
         return base, sequence
 
     return None, None
@@ -348,6 +367,11 @@ def extract_series_info(filename):
 # 常见版本后缀清理 (-C, -U, -UC, -CH, -AI, _Uncen, _Uncensored)
 _SUFFIX_PATTERN = re.compile(
     r'[-_]?(?:uncensored|uncen|ch|uc|ai|c|u)$',
+    re.IGNORECASE,
+)
+
+_RELEASE_TAG_TAIL_PATTERN = re.compile(
+    r'(?<=\d)[-_](?:UNCENSORED|UNCEN)(?:[-_][A-Z0-9]+)*$',
     re.IGNORECASE,
 )
 
@@ -369,9 +393,12 @@ _CODE_PATTERNS = [
 
 
 def _prepare_name_for_code_extract(filename: str) -> str:
-    name = os.path.splitext(filename)[0]
-    name = strip_site_markers(name)
+    # 下载站域名自身含有 ``.``；必须先移除 ``4k2.me@`` 之类的前缀，
+    # 再判断真正的文件扩展名，否则无扩展名的中间 stem 会被截成 ``4k2``。
+    name = strip_site_markers(filename)
+    name = os.path.splitext(name)[0]
     name = re.sub(r'_\[4K[}\]]', '', name)
+    name = _RELEASE_TAG_TAIL_PATTERN.sub('', name)
     return _SUFFIX_PATTERN.sub('', name)
 
 
@@ -382,13 +409,18 @@ def _normalize_extracted_code(code: str) -> str:
 
 
 def _extract_code_from_prepared_name(name: str):
-    for pattern in _CODE_PATTERNS:
-        match = re.search(pattern, name, re.IGNORECASE)
-        if match:
+    # Prefer the code that appears first in the filename, rather than the
+    # first regex family that happens to match. Otherwise a leading compact
+    # code such as ``N1069`` loses to a later token like ``MAAN-1069``.
+    matches = []
+    for priority, pattern in enumerate(_CODE_PATTERNS):
+        for match in re.finditer(pattern, name, re.IGNORECASE):
             candidate = _normalize_extracted_code(match.group(1))
             if _is_quality_code_candidate(candidate):
                 continue
-            return candidate
+            matches.append((match.start(1), priority, candidate))
+    if matches:
+        return min(matches)[2]
     return None
 
 
@@ -463,7 +495,10 @@ def analyze_unknown_filename(filename: str):
             pattern_shape='TOKYO[-_ ]HOT[-_ ]<letter+digits>[-_ ]<optional sequence>',
         )
 
-    bare_tokyo_hot = re.fullmatch(r'([Nn]\d{4,6})', compact.strip())
+    # Tokyo-Hot compact N-codes often have an existing title after the code.
+    # Keep the leading identity instead of letting a later embedded standard
+    # code take over on a subsequent inspection.
+    bare_tokyo_hot = re.match(r'^([Nn]\d{4,6})(?=\s|$)', compact.strip())
     if bare_tokyo_hot:
         return _candidate(
             'tokyo_hot',
@@ -524,6 +559,28 @@ def analyze_unknown_filename(filename: str):
             usable_for_search=True,
             reason='matched DPVR code and optional sequence/quality suffix',
             pattern_shape='DPVR[-_ ]<digits>[-_ ]<optional sequence>[-_ ]<optional quality>',
+        )
+
+    product_sequence_quality = re.search(
+        r'\b([A-Z]{2,10})[-_ ]*0*(\d{2,6})[-_ ]+(\d{1,3})'
+        r'[-_ ]+(?:4K|8K|2160P|4320P)\b',
+        compact,
+        re.IGNORECASE,
+    )
+    if product_sequence_quality:
+        normalized = (
+            f'{product_sequence_quality.group(1).upper()}-'
+            f'{int(product_sequence_quality.group(2))}'
+        )
+        return _candidate(
+            'product_sequence_quality',
+            filename,
+            normalized,
+            sequence=product_sequence_quality.group(3),
+            confidence=0.96,
+            usable_for_search=True,
+            reason='matched product code with part number and trailing quality marker',
+            pattern_shape='<letters><digits>_<part>_<4K/8K>',
         )
 
     japanhdv = re.search(
@@ -718,6 +775,26 @@ def analyze_unknown_filename(filename: str):
         compact,
         re.IGNORECASE,
     )
+    if (
+        bare_date_code
+        and _looks_like_mmddyy(bare_date_code.group(1))
+        and re.search(
+            r'(?:カリビアンコム|CARIBBEANCOM|CARIB)',
+            unicodedata.normalize('NFC', compact),
+            re.IGNORECASE,
+        )
+    ):
+        normalized = f"CARIB-{bare_date_code.group(1)}-{bare_date_code.group(2)}"
+        return _candidate(
+            'carib_text_marker_date_code',
+            filename,
+            normalized,
+            confidence=0.94,
+            usable_for_search=True,
+            reason='matched bare date/item code with CaribbeanCom name marker',
+            pattern_shape='<MMDDYY digits>[-_ ]<3 digit item> ... CaribbeanCom marker',
+            search_query=f"{bare_date_code.group(1)}-{bare_date_code.group(2)}-CARIB",
+        )
     if bare_date_code and '_' in compact and _looks_like_mmddyy(bare_date_code.group(1)):
         normalized = f"1PONDO-{bare_date_code.group(1)}-{bare_date_code.group(2)}"
         return _candidate(

@@ -11,6 +11,7 @@ from typing import Callable
 
 from app_metadata import BASELINE_VERSION
 from manifest_utils import build_manifest_from_entries, build_run_summary, scan_folder_manifest, scan_video_files, write_json_report
+from provider_result_validation import reject_mismatched_provider_result
 from provider_router import route_provider
 from providers import create_provider
 
@@ -29,6 +30,7 @@ class WorkflowDependencies:
     stop_requested: Callable | None = None
     progress_callback: Callable | None = None
     file_result_callback: Callable | None = None
+    finalizing_callback: Callable | None = None
 
 
 class ObservableFileResults(list):
@@ -47,6 +49,7 @@ class WorkflowService:
                  detect_series_files=None, smart_truncate_filename=None,
                  stop_requested=None, minimum_video_size_bytes: int = 16 * 1024,
                  progress_callback=None, file_result_callback=None,
+                 finalizing_callback=None,
                  app_version: str = BASELINE_VERSION,
                  dependencies: WorkflowDependencies | None = None):
         if dependencies:
@@ -59,6 +62,7 @@ class WorkflowService:
             stop_requested = stop_requested or dependencies.stop_requested
             progress_callback = progress_callback or dependencies.progress_callback
             file_result_callback = file_result_callback or dependencies.file_result_callback
+            finalizing_callback = finalizing_callback or dependencies.finalizing_callback
         self.log = log
         self.provider_factory = provider_factory or (lambda name: create_provider(name, log=log))
         self.atomic_processor = atomic_processor
@@ -70,6 +74,7 @@ class WorkflowService:
         self.minimum_video_size_bytes = minimum_video_size_bytes
         self.progress_callback = progress_callback or (lambda completed, total, label='': None)
         self.file_result_callback = file_result_callback or (lambda item: None)
+        self.finalizing_callback = finalizing_callback or (lambda result, dry_run=False: None)
         self.app_version = app_version
         self._created_finish_folders = set()
         self._provider_instances = {}
@@ -102,6 +107,13 @@ class WorkflowService:
     def _new_file_results_list(self):
         return ObservableFileResults(self._emit_file_result)
 
+    def _emit_finalizing(self, result, dry_run=False):
+        """Notify the UI as soon as file work is done, before slow report scans."""
+        try:
+            self.finalizing_callback(dict(result or {}), bool(dry_run))
+        except Exception as exc:
+            self.log(f'⚠️ 完成状态更新失败: {exc}', 'WARNING')
+
     def _scan_video_files(self, folder_path, *, include_subdirectories=True):
         return scan_video_files(
             folder_path,
@@ -118,7 +130,10 @@ class WorkflowService:
 
     def _resolve_provider(self, preferred_provider, filename, search_query):
         decision = route_provider(preferred_provider, filename, search_query)
-        provider_name = decision.get('provider') or preferred_provider
+        provider_name = decision.get('provider')
+        if decision.get('action') == 'skip':
+            return decision, None, provider_name
+        provider_name = provider_name or preferred_provider
         if provider_name not in self._provider_instances:
             self._provider_instances[provider_name] = self.provider_factory(provider_name)
         if provider_name != preferred_provider:
@@ -134,6 +149,9 @@ class WorkflowService:
         candidates = list(decision.get('candidates') or [provider_name])
         result = self._provider_search(cache, provider_name, provider, query)
         active_name = provider_name
+        meaningful_failure = None
+        if result.get('error_type') != 'unsupported-source':
+            meaningful_failure = (result, active_name)
         for fallback_name in candidates[1:]:
             if result.get('ok') or self.stop_requested():
                 break
@@ -150,6 +168,14 @@ class WorkflowService:
                 self._provider_instances[active_name],
                 query,
             )
+            if result.get('error_type') != 'unsupported-source':
+                meaningful_failure = (result, active_name)
+        if (
+            not result.get('ok')
+            and result.get('error_type') == 'unsupported-source'
+            and meaningful_failure is not None
+        ):
+            return meaningful_failure
         return result, active_name
 
     def _search_query_for_file(self, *, website, filename, file_path, folder_path):
@@ -403,13 +429,18 @@ class WorkflowService:
         else:
             self.log('⏳ 正在扫描处理后清单...', 'INFO')
             after_manifest_started = time.time()
-            after_manifest_path = write_json_report(
-                os.path.join(logs_dir, f'manifest_after_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'),
-                scan_folder_manifest(folder_path, include_subdirectories=include_subdirectories),
-            )
+            try:
+                after_manifest_path = write_json_report(
+                    os.path.join(logs_dir, f'manifest_after_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'),
+                    scan_folder_manifest(folder_path, include_subdirectories=include_subdirectories),
+                )
+                after_manifest_status = 'written'
+            except Exception as exc:
+                after_manifest_path = None
+                after_manifest_status = 'failed'
+                self.log(f'⚠️ 处理后清单生成失败，仍将保留文件结果和运行摘要: {exc}', 'WARNING')
             after_manifest_elapsed_seconds = round(time.time() - after_manifest_started, 3)
             self.log(f'⏱️ 处理后清单扫描耗时: {after_manifest_elapsed_seconds:.1f}秒', 'INFO')
-            after_manifest_status = 'written'
         filename_rule_candidates_path = self._write_filename_rule_candidates(
             logs_dir=logs_dir,
             video_files=video_files,
@@ -460,6 +491,7 @@ class WorkflowService:
         if cache_key not in cache:
             started = time.time()
             result = provider.search(query)
+            reject_mismatched_provider_result(query, result)
             elapsed = time.time() - started
             self._attach_provider_elapsed(result, elapsed)
             self.log(f'⏱️ Provider搜索耗时: provider={provider_name} | query={query} | {elapsed:.1f}秒', 'INFO')
@@ -470,6 +502,7 @@ class WorkflowService:
                 )
                 retry_started = time.time()
                 result = provider.search(query)
+                reject_mismatched_provider_result(query, result)
                 retry_elapsed = time.time() - retry_started
                 elapsed += retry_elapsed
                 self._attach_provider_elapsed(result, elapsed)
@@ -625,6 +658,8 @@ class WorkflowService:
     def _provider_failure_reason(self, result):
         error_type = result.get('error_type') or 'unknown'
         message = result.get('message') or ''
+        if error_type == 'code-mismatch' and message:
+            return message + '，源文件保持原样'
         return f'provider:{error_type}:{message}'
 
     def _log_not_processed(self, *, label, provider=None, query=None, reason='',
@@ -686,6 +721,16 @@ class WorkflowService:
         if total_files == 0:
             stats = self._derive_result_stats(file_results, total_files)
             paths = self._empty_paths()
+            preliminary = self._result_payload(
+                stats=stats,
+                routed_counts=routed_counts,
+                before_manifest_path=before_manifest_path,
+                paths=paths,
+                file_results=file_results,
+                start_time=start_time,
+                total_files=total_files,
+            )
+            self._emit_finalizing(preliminary, dry_run)
             if logs_dir:
                 paths = self._write_run_reports(
                     logs_dir=logs_dir,
@@ -1073,6 +1118,17 @@ class WorkflowService:
         self._log_pre_report_summary(stats, dry_run=dry_run, logs_dir=logs_dir)
 
         paths = self._empty_paths()
+        if not stats['cancelled_count']:
+            preliminary = self._result_payload(
+                stats=stats,
+                routed_counts=routed_counts,
+                before_manifest_path=before_manifest_path,
+                paths=paths,
+                file_results=file_results,
+                start_time=start_time,
+                total_files=total_files,
+            )
+            self._emit_finalizing(preliminary, dry_run)
         if logs_dir:
             paths = self._write_run_reports(
                 logs_dir=logs_dir,

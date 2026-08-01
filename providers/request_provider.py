@@ -1,9 +1,10 @@
 import time
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
+from filename_utils import extract_code_from_text
 from .base import BaseProvider, ProviderResult
 
 
@@ -132,10 +133,21 @@ class RequestHtmlProvider(BaseProvider):
                 break
         if expected_url and expected_url not in candidates:
             candidates.append(expected_url)
-        for url in candidates:
-            if code_lower.replace('-', '') in url.lower().replace('-', '').replace('/', ''):
-                return url
-        return candidates[0] if candidates else None
+        expected_code = extract_code_from_text(search_query)
+        if expected_code:
+            expected_compact = ''.join(char for char in expected_code.upper() if char.isalnum())
+            for url in candidates:
+                slug = unquote(urlparse(url).path).strip('/').split('/')[-1]
+                returned_code = extract_code_from_text(slug)
+                returned_compact = ''.join(
+                    char for char in str(returned_code or '').upper() if char.isalnum()
+                )
+                if returned_compact == expected_compact:
+                    return url
+            # Reject fuzzy candidates such as MIFD-153 for FD-153 and
+            # NTRD-021-2 for NTRD-021; try the provider's exact direct URL.
+            return expected_url
+        return expected_url or (candidates[0] if candidates else None)
 
     def _fetch_detail_page(self, detail_url):
         response = self._request(detail_url)

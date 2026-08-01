@@ -50,6 +50,20 @@ class FailingProvider:
         }
 
 
+class MismatchedProvider:
+    def search(self, _query):
+        return {
+            'ok': True,
+            'title': 'MIFD-153 Wrong Search Result',
+            'image_url': 'https://pics.javhoo.net/mifd-153.jpg',
+            'provider': 'javhoo',
+            'detail_url': 'https://www.javhoo.com/en/mifd-153',
+            'referer': 'https://www.javhoo.com/search/fd-153',
+            'error_type': None,
+            'message': None,
+        }
+
+
 class VerificationThenSuccessProvider:
     def __init__(self):
         self.calls = []
@@ -154,6 +168,104 @@ def test_workflow_dry_run_keeps_source_files():
         assert summary['counts']['file_result_counts'] == {'planned': 2}
 
 
+def test_workflow_skips_anime_release_without_constructing_auto_provider(tmp_path):
+    source = tmp_path / '[Erai-raws] Ousama Ranking - 07 [v0][1080p][Multiple Subtitle][815C2038].mkv'
+    source.write_bytes(b'v' * 32768)
+    created = []
+
+    def provider_factory(name):
+        created.append(name)
+        raise AssertionError(f'skipped file must not construct provider: {name}')
+
+    service = WorkflowService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=provider_factory,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, list(files)),
+        smart_truncate_filename=lambda title, _filename, _max_length: title,
+        minimum_video_size_bytes=16384,
+    )
+
+    result = service.run(
+        folder_path=str(tmp_path),
+        finish_folder=str(tmp_path / 'Finish'),
+        website='auto_all',
+        logs_dir=str(tmp_path / 'JFO_Logs'),
+    )
+
+    assert created == []
+    assert result['skipped_provider_count'] == 1
+    assert result['file_results'][0]['status'] == 'skipped'
+    assert result['file_results'][0]['reason'] == 'non-jav-anime-release'
+    assert source.exists()
+
+
+def test_workflow_rejects_provider_result_for_different_code(tmp_path):
+    source = tmp_path / 'fd-153.mp4'
+    source.write_bytes(b'v' * 32768)
+    logs = tmp_path / 'JFO_Logs'
+    service = WorkflowService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: MismatchedProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=lambda name: Path(name).stem.lower(),
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, list(files)),
+        smart_truncate_filename=lambda title, _filename, _max_length: title[:_max_length],
+    )
+
+    result = service.run(
+        folder_path=str(tmp_path),
+        finish_folder=str(tmp_path / 'Finish'),
+        website='javhoo',
+        logs_dir=str(logs),
+    )
+
+    assert result['failed_count'] == 1
+    assert source.exists()
+    assert not list(tmp_path.glob('MIFD-153*'))
+    assert '返回番号 MIFD-153' in result['file_results'][0]['reason']
+
+
+def test_workflow_notifies_ui_before_slow_after_manifest_scan(tmp_path, monkeypatch):
+    root = tmp_path
+    logs = root / 'JFO_Logs'
+    video = root / 'SONE-753.mp4'
+    video.write_bytes(b'v' * 32768)
+    order = []
+
+    original_scan = workflow_mod.scan_folder_manifest
+
+    def observed_scan(*args, **kwargs):
+        order.append('after-manifest-scan')
+        return original_scan(*args, **kwargs)
+
+    monkeypatch.setattr(workflow_mod, 'scan_folder_manifest', observed_scan)
+    service = WorkflowService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=lambda name: Path(name).stem,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, _original, _max_length: title,
+        finalizing_callback=lambda result, dry_run=False: order.append('ui-finalizing'),
+    )
+
+    result = service.run(
+        folder_path=str(root),
+        finish_folder=str(root / 'Finish'),
+        website='javhoo',
+        dry_run=True,
+        logs_dir=str(logs),
+    )
+
+    assert result['planned_count'] == 1
+    assert order[:2] == ['ui-finalizing', 'after-manifest-scan']
+
+
 def test_workflow_full_auto_routes_known_uncensored_file():
     created = []
 
@@ -229,6 +341,43 @@ def test_workflow_auto_censored_falls_back_from_javbus_to_javhoo():
     assert effective_name == 'javhoo'
     assert providers['javbus'].calls == ['abf-139']
     assert providers['javhoo'].calls == ['abf-139']
+
+
+def test_workflow_keeps_meaningful_general_failure_when_uncensored_is_unsupported():
+    class UnsupportedProvider:
+        def search(self, query):
+            return {
+                'ok': False,
+                'provider': 'uncensored',
+                'query': query,
+                'error_type': 'unsupported-source',
+                'message': 'source family unsupported',
+            }
+
+    providers = {
+        'javbus': FailingProvider(),
+        'javhoo': FailingProvider(),
+        'uncensored': UnsupportedProvider(),
+    }
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda name: providers[name],
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+    decision, provider, provider_name = svc._resolve_provider(
+        'auto_all', 'AJ-072.mp4', 'aj-072'
+    )
+
+    result, effective_name = svc._provider_search_with_fallback(
+        {}, decision, provider_name, provider, 'aj-072'
+    )
+
+    assert result['error_type'] == 'invalid-result'
+    assert effective_name == 'javhoo'
 
 
 def test_workflow_auto_routes_uncensored_video_group_as_one_provider_batch(tmp_path):

@@ -11,6 +11,8 @@ import errno
 import hashlib
 import json
 import threading
+import time
+import unicodedata
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Any, List
 from PIL import Image
@@ -62,6 +64,38 @@ class AtomicProcessor:
             return self.sanitize_filename(filename, max_bytes=max_filename_bytes)
         except TypeError:
             return self.sanitize_filename(filename)
+
+    def _resolve_existing_source_path(self, source_path: str) -> str:
+        """Re-resolve NFC/NFD-equivalent names on macOS and network volumes."""
+        requested = str(source_path or '')
+        for attempt in range(3):
+            parent = os.path.dirname(requested) or '.'
+            wanted = unicodedata.normalize('NFC', os.path.basename(requested))
+            try:
+                matches = [
+                    entry.path
+                    for entry in os.scandir(parent)
+                    if (
+                        unicodedata.normalize('NFC', entry.name) == wanted
+                        and entry.is_file(follow_symlinks=False)
+                    )
+                ]
+            except OSError:
+                matches = []
+            if len(matches) == 1:
+                try:
+                    os.stat(matches[0])
+                    return matches[0]
+                except OSError:
+                    pass
+            try:
+                os.stat(requested)
+                return requested
+            except OSError:
+                pass
+            if attempt < 2:
+                time.sleep(0.05)
+        return requested
 
     def _truncate_text_to_utf8_bytes(self, value: str, max_bytes: int, marker: str = '...') -> str:
         if max_bytes <= 0:
@@ -159,6 +193,22 @@ class AtomicProcessor:
         except Exception as e:
             print(f"图片验证失败: {e}")
             return False
+
+    def _downloaded_cover_validation_error(self, image_path: Path, image_source) -> str:
+        if not self.validate_image(image_path):
+            return '图片下载不完整或已损坏'
+        provider = ''
+        if isinstance(image_source, dict):
+            provider = str(image_source.get('provider') or '').lower()
+        if provider == 'javhoo':
+            try:
+                with Image.open(image_path) as image:
+                    width, height = image.size
+                if width < 300 or height < 300:
+                    return f'JavHoo 返回站点占位图或低清缩略图（{width}x{height}）'
+            except Exception:
+                return 'JavHoo 图片尺寸校验失败'
+        return ''
     
     def download_image_to_temp(self, image_source, filename: str,
                                max_filename_bytes: Optional[int] = None) -> Tuple[bool, Optional[Path], str]:
@@ -190,11 +240,15 @@ class AtomicProcessor:
             self._raise_if_stopped('图片下载后，提交文件前')
             
             # 验证图片完整性
-            if not self.validate_image(temp_image_path):
+            validation_error = self._downloaded_cover_validation_error(
+                temp_image_path,
+                image_source,
+            )
+            if validation_error:
                 # 删除无效图片
                 if temp_image_path.exists():
                     temp_image_path.unlink()
-                return False, None, "图片下载不完整或已损坏"
+                return False, None, validation_error
             
             return True, temp_image_path, "图片下载成功"
             
@@ -487,7 +541,20 @@ class AtomicProcessor:
         return actions
 
     def _rename_video(self, source_path: str, target_path: str) -> None:
-        os.rename(source_path, target_path)
+        current_source = source_path
+        for attempt in range(3):
+            current_source = self._resolve_existing_source_path(current_source)
+            try:
+                os.rename(current_source, target_path)
+                return
+            except OSError as exc:
+                if exc.errno != errno.ENOENT or attempt >= 2:
+                    raise
+                # 某些网络卷在 Unicode 文件名刚被访问后会短暂返回 ENOENT。
+                # 目标已经出现时视为提交完成，否则重新读取目录项后短重试。
+                if os.path.exists(target_path) and not os.path.exists(current_source):
+                    return
+                time.sleep(0.05)
 
     def _copy_across_filesystems(self, source_path: str, target_path: str) -> None:
         """Copy through a temp file in the target directory, then commit by rename."""
@@ -624,6 +691,7 @@ class AtomicProcessor:
                 return False, self._empty_file_result(reason=message), message
 
             self._recover_pending_transactions_for_commit(finish_folder)
+            file_path = self._resolve_existing_source_path(file_path)
             source_size = os.path.getsize(file_path)
             new_filename = self._sanitize_filename(new_filename, max_filename_bytes)
             # 步骤1: 如果有图片URL，先下载到临时目录
@@ -639,6 +707,9 @@ class AtomicProcessor:
                 reason = f"图片下载失败: {message}"
                 return False, self._empty_file_result(reason=reason), reason
             self._raise_if_stopped('视频移动前')
+            file_path = self._resolve_existing_source_path(file_path)
+            if os.path.getsize(file_path) != source_size:
+                raise RuntimeError('视频在封面下载期间发生变化，已取消本次提交')
             self._begin_transaction()
             transaction_started = True
             
@@ -806,6 +877,7 @@ class AtomicProcessor:
             planned = []
             reserved_targets = set()
             for file_path, sequence in series_files:
+                file_path = self._resolve_existing_source_path(file_path)
                 filename = os.path.basename(file_path)
                 file_ext = os.path.splitext(filename)[1]
                 source_size = os.path.getsize(file_path)

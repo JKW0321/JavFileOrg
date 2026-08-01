@@ -116,12 +116,13 @@ class OrganizerApi:
         self.session_runs = []
         self.provider_overrides = {}
         self.settings = {
-            'website': 'javbus',
+            'website': 'auto_all',
             'dry_run': False,
             'include_subdirectories': False,
             'max_filename_length': '80',
             'max_filename_bytes': '240',
             'inspection_similarity_threshold': '6',
+            'deep_cover_validation': False,
             'preserve_actor': True,
             'batch_count': '',
         }
@@ -143,6 +144,7 @@ class OrganizerApi:
         engine._run_on_ui_thread = lambda callback: callback()
         engine._update_processing_progress = self._progress
         engine._file_result_callback = self._file_result
+        engine._finalizing_callback = self._finalizing_processing_ui
         engine._complete_processing_ui = self._complete_processing_ui
         engine._finish_processing_ui = self._finish_processing_ui
         engine._show_messagebox = lambda kind, title, message: self._emit('dialog', {
@@ -161,7 +163,7 @@ class OrganizerApi:
         engine.speed_var = BridgeVar('')
         engine.log_text = None
         engine.folder_var = BridgeVar('')
-        engine.website_var = BridgeVar('javbus')
+        engine.website_var = BridgeVar('auto_all')
         engine.search_url_var = BridgeVar('')
         engine.text_selector_var = BridgeVar('')
         engine.image_selector_var = BridgeVar('')
@@ -173,7 +175,7 @@ class OrganizerApi:
         engine.dry_run_var = BridgeVar(False)
         engine._close_run_log = getattr(engine, '_close_run_log', lambda: None)
         engine.anti_crawl = LazyAntiCrawl(engine.session, self._log)
-        self._apply_provider_defaults(engine, 'javbus')
+        self._apply_provider_defaults(engine, 'auto_all')
         return engine
 
     def _ensure_anti_crawl(self, *, require_selenium=False):
@@ -225,6 +227,8 @@ class OrganizerApi:
         website = payload.get('website') or payload.get('default_website') or self.settings['website']
         if website == 'uncensored':
             website = 'auto_uncensored'
+        if website not in self.engine.website_configs:
+            website = 'auto_all'
         self.settings.update({
             'website': website,
             'dry_run': bool(payload.get('dry_run', self.settings['dry_run'])),
@@ -233,6 +237,8 @@ class OrganizerApi:
             'max_filename_length': str(payload.get('max_filename_length', self.settings['max_filename_length']) or ''),
             'max_filename_bytes': str(payload.get('max_filename_bytes', self.settings['max_filename_bytes']) or ''),
             'inspection_similarity_threshold': str(payload.get('inspection_similarity_threshold', self.settings['inspection_similarity_threshold']) or '6'),
+            # 深度验证会联网，启动时不自动恢复，必须由当前会话显式开启。
+            'deep_cover_validation': False,
             'preserve_actor': bool(payload.get('preserve_actor', self.settings['preserve_actor'])),
             'batch_count': str(payload.get('batch_count', self.settings['batch_count']) or ''),
         })
@@ -255,8 +261,8 @@ class OrganizerApi:
 
     def _write_bridge_config(self):
         payload = {
-            'website': self.settings.get('website') or 'javbus',
-            'default_website': self.settings.get('website') or 'javbus',
+            'website': self.settings.get('website') or 'auto_all',
+            'default_website': self.settings.get('website') or 'auto_all',
             'search_url': self.engine.search_url_var.get(),
             'text_selector': self.engine.text_selector_var.get(),
             'image_selector': self.engine.image_selector_var.get(),
@@ -409,6 +415,14 @@ class OrganizerApi:
         })
         self._finish_processing_ui()
 
+    def _finalizing_processing_ui(self, result, dry_run=False):
+        """Show completion immediately while reports finish in the worker thread."""
+        self._update_workspace_from_results((result or {}).get('file_results') or [])
+        self._emit('finalizing', {
+            'result': result or {},
+            'dry_run': bool(dry_run),
+        })
+
     def _finish_processing_ui(self):
         self.is_processing = False
         try:
@@ -424,7 +438,7 @@ class OrganizerApi:
     def _sync_engine_settings(self, payload=None):
         if isinstance(payload, dict):
             self.settings.update({k: v for k, v in payload.items() if k != 'selected_files'})
-        website = self.settings.get('website') or 'javbus'
+        website = self.settings.get('website') or 'auto_all'
         self._apply_provider_defaults(self.engine, website)
         config = self.engine.website_configs.get(website, {})
         if isinstance(payload, dict):
@@ -648,6 +662,7 @@ class OrganizerApi:
                 'needs_review_count': counts.get('needs_review_count') or 0,
                 'cancelled_count': counts.get('cancelled_count') or 0,
                 'normal_count': counts.get('normal_count') or 0,
+                'unverified_count': counts.get('unverified_count') or 0,
             })
         return runs
 
@@ -684,6 +699,7 @@ class OrganizerApi:
                 'failed_count': counts.get('failed_count') or 0,
                 'needs_review_count': counts.get('needs_review_count') or 0,
                 'normal_count': counts.get('normal_count') or 0,
+                'unverified_count': counts.get('unverified_count') or 0,
                 'cancelled_count': counts.get('cancelled_count') or 0,
                 'skipped_hidden': counts.get('skipped_hidden') or 0,
                 'skipped_small': counts.get('skipped_small') or 0,
@@ -902,7 +918,8 @@ class OrganizerApi:
             row['targetImage'] = result.get('target_image_path') or row.get('targetImage')
             row['detail'] = result.get('detail_url') or row.get('detail')
             row['reason'] = result.get('reason') or ''
-            row['note'] = result.get('reason') or ''
+            row['reason_text'] = result.get('reason_text') or ''
+            row['note'] = result.get('reason_text') or result.get('reason') or ''
             row['after'] = self._workspace_preview_from_result(result, str(status).lower(), row.get('after'))
             if result.get('file_elapsed_seconds') is not None:
                 row['elapsed'] = f"{float(result.get('file_elapsed_seconds')):.1f}s"
@@ -1020,7 +1037,8 @@ class OrganizerApi:
         self.run_thread.start()
         return {'ok': True}
 
-    def _run_inspection_worker(self, *, folder, website):
+    def _run_inspection_worker(self, *, folder, website, deep_cover_validation=False,
+                               deep_cover_selected_files=None):
         ui_completion_scheduled = False
         run_log_path = None
         try:
@@ -1067,6 +1085,7 @@ class OrganizerApi:
                 progress_callback=self._progress,
                 file_result_callback=self._file_result,
                 file_status_callback=self._inspection_file_status,
+                finalizing_callback=self._finalizing_processing_ui,
                 minimum_video_size_bytes=getattr(self.engine, 'minimum_video_size_bytes', 16 * 1024),
                 duplicate_image_similarity_threshold=duplicate_similarity_threshold,
                 app_version=BASELINE_VERSION,
@@ -1078,6 +1097,14 @@ class OrganizerApi:
                 max_filename_bytes=max_filename_bytes,
                 log_path=run_log_path,
                 logs_dir=logs_dir,
+                deep_cover_validation=bool(deep_cover_validation),
+                deep_cover_selected_files=list(deep_cover_selected_files or []),
+                deep_cover_similarity_threshold=duplicate_similarity_threshold,
+                known_video_sizes={
+                    row.get('name'): row.get('size')
+                    for row in self.workspace_files
+                    if row.get('name') and row.get('size')
+                },
             )
             self._complete_processing_ui(result, False, run_log_path)
             ui_completion_scheduled = True
@@ -1090,21 +1117,50 @@ class OrganizerApi:
     def start_inspection(self, settings=None):
         if self.is_processing:
             return {'ok': False, 'message': '任务正在处理中'}
-        website, _config = self._sync_engine_settings(settings or {})
+        request_settings = settings or {}
+        selected_files = list(request_settings.get('selected_files') or [])
+        deep_cover_validation = bool(request_settings.get('deep_cover_validation', False))
+        if deep_cover_validation and not selected_files:
+            return {
+                'ok': False,
+                'message': '深度封面验证已开启，但当前没有勾选视频；请至少勾选一个视频后重试',
+            }
+        requested_website, _config = self._sync_engine_settings(request_settings)
+        # 巡检必须覆盖混合目录，始终按文件名自动路由；界面的详细源选择
+        # 只影响普通处理和连接测试，不能限制巡检的回退链。
+        website = 'auto_all'
         folder = self.selected_folder
         if not folder or not os.path.exists(folder):
             return {'ok': False, 'message': '请选择有效的巡检目录'}
         self._ensure_anti_crawl(require_selenium=(website == 'javlibrary'))
+        self._log(
+            f'🔎 深度封面验证已提交：将联网核验 {len(selected_files)} 个已勾选视频'
+            if deep_cover_validation
+            else '⚡ 本次未开启深度封面验证：仅执行本地快速检查',
+            'INFO',
+        )
         self.is_processing = True
         self.run_started_at = time.time()
         self._emit('state', {
             'processing': True,
             'stopping': False,
             'run_started_at': self.run_started_at,
-            'request': {'mode': 'inspection', 'folder_path': folder, 'website': website},
+            'request': {
+                'mode': 'inspection',
+                'folder_path': folder,
+                'website': website,
+                'requested_website': requested_website,
+                'deep_cover_validation': deep_cover_validation,
+                'deep_cover_selected_count': len(selected_files),
+            },
         })
         self.run_thread = threading.Thread(
-            target=lambda: self._run_inspection_worker(folder=folder, website=website),
+            target=lambda: self._run_inspection_worker(
+                folder=folder,
+                website=website,
+                deep_cover_validation=deep_cover_validation,
+                deep_cover_selected_files=selected_files,
+            ),
             daemon=True,
         )
         self.run_thread.start()

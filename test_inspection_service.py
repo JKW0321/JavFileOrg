@@ -6,6 +6,7 @@ from PIL import Image
 
 from atomic_processor_v11 import AtomicProcessor
 from filename_utils import clean_filename_for_search, sanitize_filename
+import inspection_service as inspection_mod
 from inspection_service import InspectionService
 from providers.base import ProviderResult
 
@@ -62,6 +63,139 @@ def _service(tmp_path, events=None, duplicate_image_similarity_threshold=6):
     )
 
 
+def _deep_service(*, provider, reference_invert=False, events=None):
+    events = events if events is not None else []
+
+    def download(_image_source, save_path):
+        _pattern_image(save_path, invert=reference_invert)
+        return True
+
+    atomic = AtomicProcessor(download, sanitize_filename)
+    return InspectionService(
+        log=lambda message, level='INFO': events.append((level, message)),
+        provider_factory=lambda _name: provider,
+        atomic_processor=atomic,
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=sanitize_filename,
+        smart_truncate_filename=lambda title, _filename, _max_length: title[:_max_length],
+        minimum_video_size_bytes=16 * 1024,
+        duplicate_image_similarity_threshold=6,
+    )
+
+
+def test_deep_cover_validation_reports_mismatch_without_modifying_local_files(tmp_path):
+    video = tmp_path / 'NTRD-021 Fixed Title.mp4'
+    cover = tmp_path / 'NTRD-021 Fixed Title.jpg'
+    _video(video)
+    _pattern_image(cover)
+    original_video = video.read_bytes()
+    original_cover = cover.read_bytes()
+
+    class ExactProvider:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            return ProviderResult(
+                ok=True,
+                provider='javbus',
+                title='NTRD-021 Exact Title',
+                image_url='https://example.test/NTRD-021.jpg',
+                detail_url='https://example.test/NTRD-021',
+            )
+
+    provider = ExactProvider()
+    result = _deep_service(provider=provider, reference_invert=True).run(
+        folder_path=str(tmp_path),
+        website='javbus',
+        deep_cover_validation=True,
+        deep_cover_selected_files=[video.name],
+        deep_cover_similarity_threshold=6,
+    )
+
+    assert result['needs_review_count'] == 1
+    assert result['normal_count'] == 0
+    item = result['file_results'][0]
+    assert item['reason'].startswith('inspection-cover-content-mismatch:')
+    assert item['cover_content_verified'] is True
+    assert item['cover_hash_distance'] > item['cover_hash_threshold']
+    assert video.read_bytes() == original_video
+    assert cover.read_bytes() == original_cover
+    assert provider.calls == ['ntrd-021']
+
+
+def test_deep_cover_validation_reuses_one_reference_for_video_group(tmp_path):
+    videos = [
+        tmp_path / 'ABF-217 Fixed Title_A.mp4',
+        tmp_path / 'ABF-217 Fixed Title_B.mp4',
+    ]
+    cover = tmp_path / 'ABF-217 Fixed Title.jpg'
+    for video in videos:
+        _video(video)
+    _pattern_image(cover)
+
+    class ExactProvider:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            return ProviderResult(
+                ok=True,
+                provider='javbus',
+                title='ABF-217 Exact Title',
+                image_url='https://example.test/ABF-217.jpg',
+                detail_url='https://example.test/ABF-217',
+            )
+
+    provider = ExactProvider()
+    result = _deep_service(provider=provider).run(
+        folder_path=str(tmp_path),
+        website='javbus',
+        deep_cover_validation=True,
+        deep_cover_selected_files=[video.name for video in videos],
+        deep_cover_similarity_threshold=6,
+    )
+
+    assert result['normal_count'] == 2
+    assert result['unverified_count'] == 0
+    assert provider.calls == ['abf-217']
+    assert all(item.get('cover_content_verified') for item in result['file_results'])
+    assert sum(bool(item.get('cover_reference_cache_hit')) for item in result['file_results']) == 1
+
+
+def test_deep_cover_validation_separates_unavailable_reference_from_normal(tmp_path):
+    video = tmp_path / 'ABF-217 Fixed Title.mp4'
+    cover = tmp_path / 'ABF-217 Fixed Title.jpg'
+    _video(video)
+    _pattern_image(cover)
+
+    class OfflineProvider:
+        def search(self, _query):
+            return ProviderResult(
+                ok=False,
+                provider='javbus',
+                error_type='network-error',
+                message='temporary timeout',
+            )
+
+    result = _deep_service(provider=OfflineProvider()).run(
+        folder_path=str(tmp_path),
+        website='javbus',
+        deep_cover_validation=True,
+        deep_cover_selected_files=[video.name],
+    )
+
+    assert result['normal_count'] == 0
+    assert result['unverified_count'] == 1
+    assert result['needs_review_count'] == 0
+    item = result['file_results'][0]
+    assert item['status'] == 'skipped'
+    assert item['reason'] == 'inspection-cover-content-unverified'
+    assert '本地文件保持原样' in item['reason_text']
+
+
 def test_inspection_repairs_corrupt_cover_without_moving_video(tmp_path):
     video = tmp_path / 'ABF-217 Fixed Title.mp4'
     cover = tmp_path / 'ABF-217 Fixed Title.jpg'
@@ -79,6 +213,236 @@ def test_inspection_repairs_corrupt_cover_without_moving_video(tmp_path):
     with Image.open(cover) as image:
         assert image.size == (12, 16)
     assert (tmp_path / '01.wip' / 'ABF-217 Fixed Title.jpg').exists()
+
+
+def test_inspection_cleans_only_safe_dot_metadata_files(tmp_path):
+    (tmp_path / '.DS_Store').write_bytes(b'metadata')
+    (tmp_path / '._ABF-217.mp4').write_bytes(b'apple-double')
+    important = tmp_path / '.important'
+    important.write_text('keep', encoding='utf-8')
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['total_files'] == 0
+    assert not (tmp_path / '.DS_Store').exists()
+    assert not (tmp_path / '._ABF-217.mp4').exists()
+    assert important.read_text(encoding='utf-8') == 'keep'
+
+
+@pytest.mark.parametrize(
+    ('video_name', 'cover_name', 'expected_video_name', 'expected_normal', 'expected_success'),
+    [
+        (
+            'DASS-592 Long Organized Title-c.mp4',
+            'DASS-592 Long Organized Title.jpg',
+            'DASS-592 Long Organized Title-c.mp4',
+            1,
+            0,
+        ),
+        (
+            'DV-1544 Human Business_1.avi',
+            'DV-1544 Human Business.jpg',
+            'DV-1544 Human Business.avi',
+            0,
+            1,
+        ),
+        (
+            'STAR-534 Actress Title.mkv',
+            'STAR-534 Title Actress.jpg',
+            'STAR-534 Actress Title.mkv',
+            1,
+            0,
+        ),
+    ],
+)
+def test_inspection_pairs_cover_by_exact_code_when_titles_or_suffixes_differ(
+    tmp_path,
+    video_name,
+    cover_name,
+    expected_video_name,
+    expected_normal,
+    expected_success,
+):
+    video = tmp_path / video_name
+    cover = tmp_path / cover_name
+    _video(video)
+    _valid_image(cover)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['normal_count'] == expected_normal
+    assert result['success_count'] == expected_success
+    assert result['needs_review_count'] == 0
+    assert (tmp_path / expected_video_name).exists()
+    assert video.exists() is (video_name == expected_video_name)
+    assert cover.exists()
+    assert not (tmp_path / '01.wip').exists()
+    item = result['file_results'][0]
+    assert item['target_image_path'] == str(cover)
+    assert item['reason'] == (
+        'inspection-ok-no-action'
+        if expected_normal
+        else 'inspection-single-sequence-normalized'
+    )
+
+
+def test_inspection_does_not_pair_partial_or_conflicting_codes(tmp_path):
+    video = tmp_path / 'MIFD-153 Organized Title.mp4'
+    wrong_cover = tmp_path / 'FD-153 Different Product.jpg'
+    _video(video)
+    _valid_image(wrong_cover)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    orphan = next(
+        item for item in result['file_results']
+        if item.get('reason') == 'inspection-orphan-image-moved-to-wip'
+    )
+    assert orphan['source_name'] == wrong_cover.name
+    assert not wrong_cover.exists()
+    assert (tmp_path / '01.wip' / wrong_cover.name).exists()
+
+
+def test_cover_repair_does_not_move_same_corrupt_path_twice(tmp_path, monkeypatch):
+    video = tmp_path / 'ABP-721 Organized Title.mp4'
+    cover = tmp_path / 'ABP-721 Organized Title.jpg'
+    _video(video)
+    cover.write_text('corrupt', encoding='utf-8')
+    moves = []
+    original_move = inspection_mod.shutil.move
+
+    def counted_move(source, target):
+        moves.append((str(source), str(target)))
+        return original_move(source, target)
+
+    monkeypatch.setattr(inspection_mod.shutil, 'move', counted_move)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    old_cover_moves = [source for source, _target in moves if source == str(cover)]
+    assert old_cover_moves == [str(cover)]
+    assert result['success_count'] == 1
+    assert cover.exists()
+
+
+def test_cover_commit_failure_is_one_file_failure_and_restores_old_cover(tmp_path):
+    first_video = tmp_path / 'ABP-721 Organized Title.mp4'
+    first_cover = tmp_path / 'ABP-721 Organized Title.jpg'
+    second_video = tmp_path / 'ABP-722 Organized Title.mp4'
+    second_cover = tmp_path / 'ABP-722 Organized Title.jpg'
+    _video(first_video)
+    _video(second_video)
+    first_cover.write_text('corrupt', encoding='utf-8')
+    _valid_image(second_cover)
+
+    service = _service(tmp_path)
+    original_commit = service.atomic_processor._move_temp_image_to_final
+
+    def fail_first_commit(temp_path, final_path):
+        if str(final_path) == str(first_cover):
+            raise FileNotFoundError(2, 'network share path unavailable', str(final_path))
+        return original_commit(temp_path, final_path)
+
+    service.atomic_processor._move_temp_image_to_final = fail_first_commit
+    result = service.run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['failed_count'] == 1
+    assert result['normal_count'] == 1
+    failed = next(item for item in result['file_results'] if item['status'] == 'failed')
+    assert failed['reason'].startswith('inspection-cover-commit-failed:')
+    assert failed['rollback_ok'] is True
+    assert first_cover.exists()
+    assert first_cover.read_text(encoding='utf-8') == 'corrupt'
+    assert second_cover.exists()
+
+
+def test_inspection_notifies_ui_before_after_manifest_scan(tmp_path, monkeypatch):
+    video = tmp_path / 'ABF-217 Fixed Title.mp4'
+    cover = tmp_path / 'ABF-217 Fixed Title.jpg'
+    logs = tmp_path / 'JFO_Logs'
+    _video(video)
+    _valid_image(cover)
+    order = []
+
+    original_scan = inspection_mod.scan_folder_manifest
+
+    def observed_scan(*args, **kwargs):
+        order.append('after-manifest-scan')
+        return original_scan(*args, **kwargs)
+
+    monkeypatch.setattr(inspection_mod, 'scan_folder_manifest', observed_scan)
+    service = _service(tmp_path)
+    service.finalizing_callback = lambda result, dry_run=False: order.append('ui-finalizing')
+
+    result = service.run(
+        folder_path=str(tmp_path),
+        website='javbus',
+        logs_dir=str(logs),
+    )
+
+    assert result['normal_count'] == 1
+    assert order[:2] == ['ui-finalizing', 'after-manifest-scan']
+
+
+def test_inspection_reuses_scanned_video_size_without_restating_network_file(
+    tmp_path,
+    monkeypatch,
+):
+    video = tmp_path / 'ABF-217 Fixed Title.mp4'
+    cover = tmp_path / 'ABF-217 Fixed Title.jpg'
+    _video(video)
+    _valid_image(cover)
+
+    service = _service(tmp_path)
+    service._scan_current_dir = lambda _folder: ([video], [cover])
+    original_stat = Path.stat
+
+    def guarded_stat(path, *args, **kwargs):
+        if path == video:
+            raise AssertionError('cached network video size must avoid Path.stat')
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'stat', guarded_stat)
+
+    result = service.run(
+        folder_path=str(tmp_path),
+        website='javbus',
+        known_video_sizes={video.name: 64 * 1024},
+    )
+
+    assert result['normal_count'] == 1
+    assert result['failed_count'] == 0
+
+
+def test_sequence_cover_context_uses_prefix_index_in_large_folder(
+    tmp_path,
+    monkeypatch,
+):
+    videos = [
+        tmp_path / f'VID-{index:04d} Unrelated Title.mp4'
+        for index in range(80)
+    ]
+    images = [
+        tmp_path / f'IMG-{index:04d} Different Cover.jpg'
+        for index in range(80)
+    ]
+    for image in images:
+        image.touch()
+
+    calls = 0
+    original_split = inspection_mod.split_sequence_suffix
+
+    def counted_split(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_split(*args, **kwargs)
+
+    monkeypatch.setattr(inspection_mod, 'split_sequence_suffix', counted_split)
+
+    result = _service(tmp_path)._shared_cover_stems_for_sequences(videos, images)
+
+    assert result == {}
+    assert calls <= len(videos) + len(images)
 
 
 def test_inspection_routes_uncensored_marker_to_uncensored_provider_for_cover_repair(tmp_path):
@@ -125,6 +489,7 @@ def test_inspection_routes_uncensored_marker_to_uncensored_provider_for_cover_re
     assert calls == [('uncensored', 'carib-011126-001')]
     assert result['file_results'][0]['provider'] == 'uncensored'
     assert any('auto_all -> uncensored' in message for _level, message in events)
+    assert any('巡检数据源策略: 全自动' in message for _level, message in events)
 
 
 def test_inspection_keeps_specified_uncensored_source_for_general_code(tmp_path):
@@ -144,8 +509,9 @@ def test_inspection_keeps_specified_uncensored_source_for_general_code(tmp_path)
         _valid_image(save_path)
         return True
 
+    events = []
     service = InspectionService(
-        log=lambda *_args, **_kwargs: None,
+        log=lambda message, level='INFO': events.append((level, message)),
         provider_factory=lambda name: NamedProvider(name),
         atomic_processor=AtomicProcessor(download, sanitize_filename),
         clean_filename_for_search=clean_filename_for_search,
@@ -170,6 +536,62 @@ def test_inspection_processes_unprocessed_video_in_place(tmp_path):
     assert not original.exists()
     assert (tmp_path / 'MIDA-588 Fixed Title.mp4').exists()
     assert (tmp_path / 'MIDA-588 Fixed Title.jpg').exists()
+
+
+def test_inspection_rejects_provider_result_for_different_code(tmp_path):
+    original = tmp_path / 'fd-153.mp4'
+    events = []
+    _video(original)
+
+    class WrongProvider:
+        def search(self, _query):
+            return ProviderResult(
+                ok=True,
+                provider='javhoo',
+                title='MIFD-153 Wrong Search Result',
+                image_url='https://pics.javhoo.net/mifd-153.jpg',
+                detail_url='https://www.javhoo.com/en/mifd-153',
+            )
+
+    service = InspectionService(
+        log=lambda message, level='INFO': events.append((level, message)),
+        provider_factory=lambda _name: WrongProvider(),
+        atomic_processor=AtomicProcessor(
+            lambda _source, save_path: (_valid_image(save_path) or True),
+            sanitize_filename,
+        ),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=sanitize_filename,
+        smart_truncate_filename=lambda title, _filename, _max_length: title[:_max_length],
+    )
+
+    result = service.run(folder_path=str(tmp_path), website='javhoo')
+
+    assert result['failed_count'] == 1
+    assert original.exists()
+    assert not list(tmp_path.glob('MIFD-153*'))
+    item = result['file_results'][0]
+    assert item['reason'].startswith('provider:code-mismatch:')
+    assert '返回番号 MIFD-153' in item['reason_text']
+    assert any('已拒绝自动修改' in message for _level, message in events)
+
+
+def test_inspection_does_not_treat_temporarily_unavailable_video_as_small(tmp_path):
+    ghost_video = tmp_path / 'DASD-948 Title.mp4'
+    paired_cover = tmp_path / 'DASD-948 Title.jpg'
+    _valid_image(paired_cover)
+    service = _service(tmp_path)
+    service._scan_current_dir = lambda _folder: ([ghost_video], [paired_cover])
+
+    result = service.run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['needs_review_count'] == 0
+    assert result['failed_count'] == 0
+    assert result['file_results'][0]['status'] == 'skipped'
+    assert result['file_results'][0]['reason'] == 'inspection-video-deferred'
+    assert '延后' in result['file_results'][0]['reason_text']
+    assert paired_cover.exists()
+    assert not (tmp_path / '01.wip').exists()
 
 
 def test_inspection_reports_healthy_paired_video_as_skipped_without_log_noise(tmp_path):
@@ -261,17 +683,28 @@ def test_inspection_emits_duplicate_stage_progress(tmp_path):
 
 def test_inspection_emits_repair_stage_progress_for_file_changes(tmp_path):
     progress = []
+    events = []
     small = tmp_path / 'BAD-001.mp4'
     small_cover = tmp_path / 'BAD-001.jpg'
 
     _video(small, size=4 * 1024)
     _valid_image(small_cover)
 
-    service = _service(tmp_path)
+    service = _service(tmp_path, events)
     service.progress_callback = lambda completed, total, label='': progress.append((completed, total, label))
     result = service.run(folder_path=str(tmp_path), website='javbus')
 
     assert result['needs_review_count'] == 1
+    item = result['file_results'][0]
+    assert item['reason'] == 'inspection-small-video-moved-to-wip'
+    assert '实际 4.0 KB' in item['reason_text']
+    assert '阈值 16.0 KB' in item['reason_text']
+    assert '疑似下载不完整或占位文件' in item['reason_text']
+    assert any(
+        '视频文件过小（实际 4.0 KB，小于阈值 16.0 KB）' in message
+        and 'inspection-small-video-moved-to-wip' not in message
+        for _level, message in events
+    )
     assert any(label.startswith('修复小视频 ') for _completed, _total, label in progress)
 
 
@@ -503,8 +936,9 @@ def test_inspection_moves_redundant_per_part_covers_when_shared_cover_exists(
         _valid_image(cover)
 
     atomic = AtomicProcessor(lambda *_args: True, sanitize_filename)
+    events = []
     service = InspectionService(
-        log=lambda *_args, **_kwargs: None,
+        log=lambda message, level='INFO': events.append((level, message)),
         provider_factory=lambda _name: (_ for _ in ()).throw(
             AssertionError('healthy shared cover must not trigger provider access')
         ),
@@ -520,6 +954,52 @@ def test_inspection_moves_redundant_per_part_covers_when_shared_cover_exists(
     assert all(video.exists() for video in videos)
     assert all(not cover.exists() for cover in per_part_covers)
     assert all((tmp_path / '01.wip' / cover.name).exists() for cover in per_part_covers)
+    assert sum(
+        item.get('reason') == 'inspection-redundant-sequence-cover-moved-to-wip'
+        for item in result['file_results']
+    ) == 3
+    assert result['success_count'] == 3
+    assert result['needs_review_count'] == 0
+    assert result['normal_count'] == 0
+    assert sum(
+        level == 'SUCCESS'
+        and '巡检修复成功' in message
+        and '已保留共享封面' in message
+        and '冗余分集封面移入 01.wip' in message
+        for level, message in events
+    ) == 3
+
+
+def test_inspection_rechecks_redundant_part_covers_after_creating_shared_cover(
+    tmp_path,
+):
+    videos = [
+        tmp_path / f'PPT-059 Fixed Title ({sequence}).mp4'
+        for sequence in (1, 2, 3, 4)
+    ]
+    per_part_covers = [video.with_suffix('.jpg') for video in videos]
+    shared_cover = tmp_path / 'PPT-059 Fixed Title.jpg'
+
+    for video in videos:
+        _video(video)
+    for cover in per_part_covers:
+        _valid_image(cover)
+
+    result = _service(tmp_path).run(
+        folder_path=str(tmp_path),
+        website='javbus',
+    )
+
+    assert all(video.exists() for video in videos)
+    assert shared_cover.exists()
+    assert sorted(path.name for path in tmp_path.glob('*.jpg')) == [
+        shared_cover.name
+    ]
+    assert not per_part_covers[0].exists()
+    assert all(
+        (tmp_path / '01.wip' / cover.name).exists()
+        for cover in per_part_covers[1:]
+    )
     assert sum(
         item.get('reason') == 'inspection-redundant-sequence-cover-moved-to-wip'
         for item in result['file_results']
@@ -704,10 +1184,10 @@ def test_inspection_keeps_larger_duplicate_video_and_moves_smaller_original(tmp_
     assert any('已规范重复保留文件名' in message for _level, message in events)
 
 
-def test_inspection_normalizes_healthy_legacy_duplicate_suffix_without_duplicate(tmp_path):
+def test_inspection_removes_sequence_marker_from_single_video_and_cover(tmp_path):
     legacy = tmp_path / 'ABF-217 Fixed Title_1.mp4'
     legacy_cover = tmp_path / 'ABF-217 Fixed Title_1.jpg'
-    expected = tmp_path / 'ABF-217 Fixed Title.mp4'
+    expected_video = tmp_path / 'ABF-217 Fixed Title.mp4'
     expected_cover = tmp_path / 'ABF-217 Fixed Title.jpg'
 
     _video(legacy)
@@ -716,12 +1196,240 @@ def test_inspection_normalizes_healthy_legacy_duplicate_suffix_without_duplicate
     result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
 
     assert result['success_count'] == 1
-    assert expected.exists()
-    assert expected_cover.exists()
     assert not legacy.exists()
+    assert expected_video.exists()
+    assert expected_cover.exists()
     assert not legacy_cover.exists()
     assert not (tmp_path / '01.wip').exists()
-    assert result['file_results'][0]['reason'] == 'inspection-duplicate-keep-normalized'
+    assert result['file_results'][0]['reason'] == 'inspection-single-sequence-normalized'
+    assert result['file_results'][0]['target_video_path'] == str(expected_video)
+
+
+def test_inspection_removes_fullwidth_five_from_lone_umso_video(tmp_path):
+    title = 'UMSO-482 Fixed Title'
+    legacy = tmp_path / f'{title}（5）.mp4'
+    shared_cover = tmp_path / f'{title}.jpg'
+    expected_video = tmp_path / f'{title}.mp4'
+    _video(legacy)
+    _valid_image(shared_cover)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    assert not legacy.exists()
+    assert expected_video.exists()
+    assert shared_cover.exists()
+    assert result['success_count'] == 1
+    item = next(
+        item for item in result['file_results']
+        if item.get('reason') == 'inspection-single-sequence-normalized'
+    )
+    assert item['target_video_path'] == str(expected_video)
+    assert item['target_image_path'] == str(shared_cover)
+
+
+def test_inspection_preserves_parenthesized_age_in_single_video_title(tmp_path):
+    title = 'HDKA-166 はだかの主婦 練馬区在住松永さな（30）'
+    video = tmp_path / f'{title}.mp4'
+    cover = tmp_path / f'{title}.jpg'
+    _video(video)
+    _valid_image(cover)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['success_count'] == 0
+    assert result['normal_count'] == 1
+    assert video.exists()
+    assert cover.exists()
+    assert not (tmp_path / 'HDKA-166 はだかの主婦 練馬区在住松永さな.mp4').exists()
+
+
+@pytest.mark.parametrize('code', ['KNAM-064', 'KNMB-052'])
+def test_inspection_does_not_reprocess_organized_title_containing_at_sign(tmp_path, code):
+    title = f'{code} 完ナマSTYLE@のあ 既に整理済みのタイトル'
+    video = tmp_path / f'{title}.mp4'
+    cover = tmp_path / f'{title}.jpg'
+    _video(video)
+    _valid_image(cover)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['success_count'] == 0
+    assert result['normal_count'] == 1
+    assert video.exists()
+    assert cover.exists()
+
+
+def test_inspection_removes_lone_suffix_once_without_readding_it_for_at_title(tmp_path):
+    title = 'KNAM-064 完ナマSTYLE@のあ 既に整理済みのタイトル'
+    legacy_video = tmp_path / f'{title}_1.mp4'
+    legacy_cover = tmp_path / f'{title}_1.jpg'
+    expected_video = tmp_path / f'{title}.mp4'
+    expected_cover = tmp_path / f'{title}.jpg'
+    _video(legacy_video)
+    _valid_image(legacy_cover)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['success_count'] == 1
+    assert expected_video.exists()
+    assert expected_cover.exists()
+    assert not legacy_video.exists()
+    assert not legacy_cover.exists()
+    assert not (tmp_path / f'{title}_2.mp4').exists()
+    assert [item['reason'] for item in result['file_results']].count(
+        'inspection-single-sequence-normalized'
+    ) == 1
+
+
+def test_inspection_does_not_reprocess_or_truncate_title_with_embedded_later_code(tmp_path):
+    title = 'N1069 一刀両断 椎名愛莉 MAAN-1069 unrelated metadata'
+    video = tmp_path / f'{title}.wmv'
+    cover = tmp_path / f'{title}.jpg'
+    _video(video)
+    _valid_image(cover)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='auto_all')
+
+    assert result['success_count'] == 0
+    assert result['normal_count'] == 1
+    assert result['file_results'][0]['query'] == 'tokyo-hot-n1069'
+    assert video.exists()
+    assert cover.exists()
+
+
+def test_inspection_defers_transient_video_stat_failure_without_counting_problem(tmp_path, monkeypatch):
+    video = tmp_path / 'ABF-217 Fixed Title.mp4'
+    cover = tmp_path / 'ABF-217 Fixed Title.jpg'
+    _video(video)
+    _valid_image(cover)
+    original_stat = Path.stat
+    calls = {'count': 0}
+
+    def unavailable_stat(path, *args, **kwargs):
+        if path == video and calls['count'] < 2:
+            calls['count'] += 1
+            raise OSError('temporary NAS read failure')
+        return original_stat(path, *args, **kwargs)
+
+    service = _service(tmp_path)
+    service._scan_current_dir = lambda _folder: ([video], [cover])
+    monkeypatch.setattr(Path, 'stat', unavailable_stat)
+    result = service.run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['failed_count'] == 0
+    assert result['needs_review_count'] == 0
+    deferred = next(item for item in result['file_results'] if item['reason'] == 'inspection-video-deferred')
+    assert deferred['status'] == 'skipped'
+    assert video.exists()
+    assert cover.exists()
+
+
+def test_inspection_defers_source_that_disappears_before_atomic_commit(tmp_path):
+    video = tmp_path / 'hhd800.com@ABF-217.mp4'
+    _video(video)
+
+    class DisappearingProvider(FakeProvider):
+        def search(self, query):
+            video.unlink()
+            return super().search(query)
+
+    def download(_image_source, save_path):
+        _valid_image(save_path)
+        return True
+
+    service = InspectionService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: DisappearingProvider(),
+        atomic_processor=AtomicProcessor(download, sanitize_filename),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=sanitize_filename,
+        smart_truncate_filename=lambda title, _filename, _max_length: title,
+        minimum_video_size_bytes=16 * 1024,
+    )
+    result = service.run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['failed_count'] == 0
+    deferred = next(item for item in result['file_results'] if item['reason'] == 'inspection-video-deferred')
+    assert deferred['status'] == 'skipped'
+
+
+@pytest.mark.parametrize(
+    ('video_name', 'expected_cover_name'),
+    [
+        ('DV-1544 Human Business_1.avi', 'DV-1544 Human Business.jpg'),
+        ('ABF-217 Fixed Title (1).mp4', 'ABF-217 Fixed Title.jpg'),
+        ('ABF-219 Fixed Title 第2集.mp4', 'ABF-219 Fixed Title.jpg'),
+    ],
+)
+def test_inspection_repairs_single_sequence_file_with_shared_cover_name(
+    tmp_path, video_name, expected_cover_name
+):
+    video = tmp_path / video_name
+    _video(video)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    expected_cover = tmp_path / expected_cover_name
+    expected_video = expected_cover.with_suffix(video.suffix)
+    assert result['success_count'] == 2
+    assert not video.exists()
+    assert expected_video.exists()
+    assert expected_cover.exists()
+    assert not video.with_suffix('.jpg').exists()
+    repair_item = next(
+        item for item in result['file_results']
+        if item.get('reason') == 'inspection-cover-repaired'
+    )
+    assert repair_item['target_video_path'] == str(expected_video)
+    assert repair_item['target_image_path'] == str(expected_cover)
+
+
+@pytest.mark.parametrize(
+    'stem',
+    [
+        'ABP-532 Real Title 1',
+        'ABP-600 Real Title 17',
+        'APNS-165 Real Title-C',
+        'NSFS-157 Real Title VOL.3',
+        'SGKI-062 Real Title R-20',
+        'TKI-052 MASOTRONIX 12',
+        'ABF-218 Real Title Part A',
+    ],
+)
+def test_inspection_does_not_treat_ambiguous_lone_title_suffix_as_video_group(
+    tmp_path, stem
+):
+    video = tmp_path / f'{stem}.mp4'
+    cover = tmp_path / f'{stem}.jpg'
+    _video(video)
+    _valid_image(cover)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['normal_count'] == 1
+    assert result['success_count'] == 0
+    assert video.exists()
+    assert cover.exists()
+    assert result['file_results'][0]['reason'] == 'inspection-ok-no-action'
+
+
+def test_inspection_sequence_cover_normalization_preserves_original_unicode(tmp_path):
+    base = unicodedata.normalize('NFD', 'DASS-592 ペニス下さい！！ 椎名心春')
+    video = tmp_path / f'{base}_1.mp4'
+    cover = tmp_path / f'{base}_1.jpg'
+    expected_video = tmp_path / f'{base}.mp4'
+    expected_cover = tmp_path / f'{base}.jpg'
+    _video(video)
+    _valid_image(cover)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['success_count'] == 1
+    assert not video.exists()
+    assert expected_video.exists()
+    assert expected_cover.exists()
+    assert not cover.exists()
+    assert result['file_results'][0]['target_image_path'] == str(expected_cover)
 
 
 def test_inspection_stop_request_stops_before_full_batch(tmp_path):

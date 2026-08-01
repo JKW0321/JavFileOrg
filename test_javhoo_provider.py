@@ -70,6 +70,48 @@ def test_request_provider_success_result_includes_query_detail_and_referer():
     assert seen_urls[0] == result.referer
 
 
+def test_javhoo_does_not_treat_longer_prefix_as_exact_code_match():
+    search_html = '''
+    <html><body>
+      <article>
+        <h2><a href="/en/mifd-153">MIFD-153 Wrong Result</a></h2>
+        <img src="https://pics.javhoo.net/mifd-153.jpg" />
+      </article>
+    </body></html>
+    '''
+    soup = BeautifulSoup(search_html, 'html.parser')
+    provider = JavHooProvider(log=lambda *a, **k: None)
+
+    detail_url = provider._find_detail_url(
+        soup,
+        'https://www.javhoo.com/search/fd-153',
+        'fd-153',
+    )
+
+    assert detail_url == 'https://www.javhoo.com/fd-153'
+
+
+def test_javhoo_does_not_accept_extra_numeric_detail_suffix():
+    search_html = '''
+    <html><body>
+      <article>
+        <h2><a href="/en/ntrd-021-2">NTRD-021-2 Wrong Result</a></h2>
+        <img src="https://pics.javhoo.net/ntrd-021-2.jpg" />
+      </article>
+    </body></html>
+    '''
+    soup = BeautifulSoup(search_html, 'html.parser')
+    provider = JavHooProvider(log=lambda *a, **k: None)
+
+    detail_url = provider._find_detail_url(
+        soup,
+        'https://www.javhoo.com/search/ntrd-021',
+        'ntrd-021',
+    )
+
+    assert detail_url == 'https://www.javhoo.com/ntrd-021'
+
+
 def test_javhoo_falls_back_to_direct_detail_when_search_page_returns_500():
     detail_html = '''
     <html><body>
@@ -162,6 +204,33 @@ def test_javhoo_rejects_search_results_title_and_logo_without_detail_request():
     assert 'search-results-title' in result.message
     assert 'placeholder-image' in result.message
     assert seen_urls == ['https://www.javhoo.com/search/jbd-102']
+
+
+def test_javhoo_rejects_uniform_thumb_placeholder_even_with_valid_title():
+    search_html = '''
+    <html><body>
+      <article>
+        <h2><a href="/gana-3218">GANA-3218 Valid Looking Title</a></h2>
+        <img src="https://pics.javhoo.net/thumb.png" />
+      </article>
+    </body></html>
+    '''
+    detail_html = '''
+    <html><body>
+      <h1>GANA-3218 Valid Looking Title</h1>
+      <img src="https://pics.javhoo.net/thumb.png" />
+    </body></html>
+    '''
+    provider = JavHooProvider(log=lambda *a, **k: None)
+    provider._request = lambda url: DummyResponse(
+        detail_html if url.endswith('/gana-3218') else search_html
+    )
+
+    result = provider.search('gana-3218')
+
+    assert result.ok is False
+    assert result.error_type == 'invalid-result'
+    assert 'placeholder-image' in result.message
 
 
 def test_request_provider_retries_transient_timeout_once():

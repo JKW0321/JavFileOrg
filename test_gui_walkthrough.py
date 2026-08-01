@@ -149,9 +149,10 @@ def make_organizer(folder_path, finish_path):
     obj.anti_crawl = type('FakeAntiCrawl', (), {'session': obj.session})()
 
     # 下载图片函数（mock：复制 dummy jpg 到目标）
-    dummy_jpg = Path(tempfile.gettempdir()) / 'walkthrough_dummy.jpg'
-    if not dummy_jpg.exists():
-        Image.new('RGB', (1, 1), color=(255, 100, 50)).save(str(dummy_jpg), 'JPEG')
+    dummy_jpg = Path(tempfile.gettempdir()) / 'walkthrough_valid_cover.jpg'
+    # 使用接近真实封面的尺寸，避免把 1x1 测试占位图误当作有效下载。
+    # JavHoo 的统一 Logo/占位图现在会在写入前被拒绝。
+    Image.new('RGB', (800, 538), color=(255, 100, 50)).save(str(dummy_jpg), 'JPEG')
 
     def fake_download(url, dest):
         shutil.copy(str(dummy_jpg), dest)

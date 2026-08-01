@@ -24,6 +24,17 @@ class JavHooProvider(RequestHtmlProvider):
     retry_backoff = 0.75
     fallback_to_detail_on_search_error = True
 
+    @staticmethod
+    def _is_placeholder_image(image_url):
+        image_lower = (image_url or '').strip().lower().split('?', 1)[0]
+        basename = image_lower.rsplit('/', 1)[-1]
+        return (
+            not image_lower
+            or 'logo' in basename
+            or basename in {'thumb.png', 'thumb.jpg', 'thumbnail.png', 'thumbnail.jpg'}
+            or any(marker in basename for marker in ('noimage', 'no-image', 'placeholder'))
+        )
+
     def _invalid_result_reason(self, title, image_url, detail_url, referer):
         reasons = []
         title_lower = (title or '').strip().lower()
@@ -32,7 +43,7 @@ class JavHooProvider(RequestHtmlProvider):
             reasons.append('search-results-title')
         if not image_lower:
             reasons.append('missing-image')
-        elif 'logo' in image_lower or image_lower.endswith('/logo.png'):
+        elif self._is_placeholder_image(image_url):
             reasons.append('placeholder-image')
         if reasons:
             return 'javhoo invalid result: ' + ','.join(reasons)
@@ -70,7 +81,7 @@ class JavHooProvider(RequestHtmlProvider):
             alt = (img.get('alt') or '').strip()
             if not src or 'pics.javhoo.net' not in src_lower:
                 continue
-            if 'logo' in src_lower or 'flag' in src_lower or 'qtranxs' in cls or 'thumb' in cls:
+            if self._is_placeholder_image(src) or 'flag' in src_lower or 'qtranxs' in cls or 'thumb' in cls:
                 continue
             if alt or '_b.' in src_lower or src_lower.endswith(('.jpg', '.jpeg', '.png')):
                 image_url = urljoin(detail_url, src)
@@ -84,7 +95,7 @@ class JavHooProvider(RequestHtmlProvider):
                 cls = ' '.join(img.get('class', [])).lower()
                 if not src or 'pics.javhoo.net' not in src_lower:
                     continue
-                if 'logo' in src_lower or 'flag' in src_lower or 'qtranxs' in cls:
+                if self._is_placeholder_image(src) or 'flag' in src_lower or 'qtranxs' in cls:
                     continue
                 image_url = urljoin(detail_url, src)
                 break

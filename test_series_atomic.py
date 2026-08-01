@@ -4,10 +4,12 @@
 import tempfile
 import errno
 import threading
+import unicodedata
 from pathlib import Path
 
 from PIL import Image
 
+import atomic_processor_v11 as atomic_mod
 from atomic_processor_v11 import AtomicProcessor
 from filename_utils import sanitize_filename as real_sanitize_filename
 
@@ -43,6 +45,83 @@ def test_process_file_atomic_success_requires_video_and_image():
         assert (out / 'SONE-753 TITLE.jpg').exists()
         assert not (out / '.jfo_transactions').exists()
         assert result['image_downloaded'] is True
+
+
+def test_process_file_atomic_resolves_unicode_equivalent_source_name(tmp_path):
+    source_nfc = unicodedata.normalize('NFC', 'PB-064 聖コスプレ学園.avi')
+    requested_nfd = unicodedata.normalize('NFD', source_nfc)
+    source = tmp_path / source_nfc
+    source.write_bytes(b'video')
+    finish = tmp_path / 'Finish'
+    finish.mkdir()
+
+    processor = AtomicProcessor(_dummy_download, _sanitize)
+    ok, result, message = processor.process_file_atomic(
+        str(tmp_path / requested_nfd),
+        'PB-064 Fixed.avi',
+        'https://example.test/cover.jpg',
+        str(finish),
+    )
+
+    assert ok is True, message
+    assert Path(result['video_path']).exists()
+    assert not source.exists()
+
+
+def test_process_file_atomic_retries_transient_source_rename_enoent(tmp_path, monkeypatch):
+    source = tmp_path / unicodedata.normalize('NFD', 'PB-064 聖コスプレ学園.avi')
+    source.write_bytes(b'video')
+    finish = tmp_path / 'Finish'
+    finish.mkdir()
+    real_rename = atomic_mod.os.rename
+    failed_once = {'value': False}
+
+    def flaky_rename(left, right):
+        if str(left).endswith('.avi') and not failed_once['value']:
+            failed_once['value'] = True
+            raise FileNotFoundError(errno.ENOENT, 'transient network filename lookup', left)
+        return real_rename(left, right)
+
+    monkeypatch.setattr(atomic_mod.os, 'rename', flaky_rename)
+    processor = AtomicProcessor(_dummy_download, _sanitize)
+    ok, result, message = processor.process_file_atomic(
+        str(tmp_path / unicodedata.normalize('NFC', source.name)),
+        'PB-064 Fixed.avi',
+        'https://example.test/cover.jpg',
+        str(finish),
+    )
+
+    assert failed_once['value'] is True
+    assert ok is True, message
+    assert Path(result['video_path']).exists()
+    assert not source.exists()
+
+
+def test_process_file_atomic_rejects_small_javhoo_placeholder(tmp_path):
+    source = tmp_path / 'GANA-3218.mp4'
+    source.write_bytes(b'video')
+    finish = tmp_path / 'Finish'
+    finish.mkdir()
+
+    def placeholder_download(_image_source, destination):
+        Image.new('RGB', (147, 200), color=(30, 30, 30)).save(destination, 'JPEG')
+        return True
+
+    processor = AtomicProcessor(placeholder_download, _sanitize)
+    ok, result, message = processor.process_file_atomic(
+        str(source),
+        'GANA-3218 Fixed.mp4',
+        {
+            'image_url': 'https://pics.javhoo.net/not-obviously-placeholder.jpg',
+            'provider': 'javhoo',
+        },
+        str(finish),
+    )
+
+    assert ok is False
+    assert '占位图' in message
+    assert source.exists()
+    assert list(finish.iterdir()) == []
 
 
 def test_atomic_processors_use_isolated_temp_dirs_for_parallel_runs():

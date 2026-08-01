@@ -19,6 +19,7 @@ v1.4.4 新增的 pytest 测试套件。覆盖：
 
 import os
 import sys
+import unicodedata
 
 import pytest
 
@@ -133,6 +134,11 @@ class TestExtractCode:
     def test_extract(self, inp, expected):
         assert extract_code_from_text(inp) == expected
 
+    def test_leading_compact_code_wins_over_later_hyphenated_code(self):
+        name = 'N1069 一刀両断 椎名愛莉 MAAN-1069 unrelated metadata.wmv'
+        assert extract_code_from_text(name) == 'TOKYO-HOT-N1069'
+        assert clean_filename_for_search(name) == 'tokyo-hot-n1069'
+
     @pytest.mark.parametrize("inp", [
         "",
         "random-file-without-code.mp4",
@@ -236,6 +242,16 @@ class TestAdaptiveFilenameRules:
         assert candidate['normalized_code'] == '1PONDO-010220-952'
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("010220-952.mp4") == "1pondo-010220-952"
+
+    def test_bare_date_code_with_caribbeancom_marker_uses_carib_source(self):
+        name = "062914-632 無修正 カリビアンコムパシオン 作品名.mp4"
+        candidate = analyze_unknown_filename(name)
+
+        assert candidate['rule_id'] == 'carib_text_marker_date_code'
+        assert candidate['normalized_code'] == 'CARIB-062914-632'
+        assert candidate['search_query'] == '062914-632-CARIB'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search(name) == '062914-632-carib'
 
     def test_bare_1pondo_underscore_low_item_candidate_is_auto_usable(self):
         candidate = analyze_unknown_filename("012018_002.mp4")
@@ -526,6 +542,11 @@ class TestSplitSequenceSuffix:
     def test_does_not_strip_non_sequence_titles(self, stem):
         assert split_sequence_suffix(stem) == (None, None)
 
+    def test_preserves_original_unicode_spelling_in_sequence_base(self):
+        base = unicodedata.normalize('NFD', 'DASS-592 ペニス下さい！！ 椎名心春')
+
+        assert split_sequence_suffix(f'{base}_1') == (base, '1')
+
 
 # =========================================================================
 # extract_series_info — 序列文件识别（v1.4.4 bug 修复核心 #2）
@@ -578,6 +599,41 @@ class TestExtractSeriesInfo:
         base, seq = extract_series_info(inp)
         assert base is None
         assert seq is None
+
+    def test_title_quality_text_does_not_override_leading_product_code(self):
+        name = 'OPIUMUD-027 resident Evil another day1080P 60FPS.mp4'
+
+        assert extract_series_info(name) == (None, None)
+        assert extract_code_from_text(name) == 'OPIUMUD-027'
+        assert clean_filename_for_search(name) == 'opiumud-027'
+
+    def test_release_tags_after_product_code_are_not_part_of_query(self):
+        name = 'STARS-229_UNCENSORED_LEAKED_NOWATERMARK.mp4'
+
+        assert extract_series_info(name) == (None, None)
+        assert extract_code_from_text(name) == 'STARS-229'
+        assert clean_filename_for_search(name) == 'stars-229'
+
+    def test_download_site_prefix_is_removed_before_extension_parsing(self):
+        assert extract_code_from_text('4k2.me@start-451') == 'START-451'
+        assert clean_filename_for_search('4k2.me@start-451') == 'start-451'
+
+    @pytest.mark.parametrize(
+        ('name', 'code', 'sequence'),
+        [
+            ('4k2.com@savr00826_1_8k.mp4', 'SAVR-826', '1'),
+            ('4k2.com@savr00826_2_8k.mp4', 'SAVR-826', '2'),
+            ('twojav.com@savr00937_3_8k.mp4', 'SAVR-937', '3'),
+        ],
+    )
+    def test_general_product_code_sequence_quality_suffix(self, name, code, sequence):
+        candidate = analyze_unknown_filename(name)
+
+        assert candidate['rule_id'] == 'product_sequence_quality'
+        assert candidate['normalized_code'] == code
+        assert candidate['sequence'] == sequence
+        assert clean_filename_for_search(name) == code.lower()
+        assert extract_series_info(name) == (code, sequence)
 
 
 class TestCleanFilenameForSearchSeries:
@@ -694,3 +750,50 @@ class TestDetectSeriesFiles:
 
         assert groups == {}
         assert standalone == files
+
+    @pytest.mark.parametrize('files', [
+        ['ROE-445.mp4', 'ROE-451.mp4', 'ROE-458.mp4'],
+        ['SODA-083.mp4', 'SODA-085.mp4'],
+        ['SODN-002.mp4', 'SODN-003.mp4'],
+        ['FLNS-113.mp4', 'FLNS-114.mp4'],
+        ['476MLA-259.mp4', '476MLA-261.mp4', '476MLA-265.mp4'],
+    ])
+    def test_distinct_product_codes_are_never_grouped_by_shared_prefix(self, files):
+        import jav_file_organizer as jfo_mod
+        obj = jfo_mod.JavFileOrganizer.__new__(jfo_mod.JavFileOrganizer)
+        obj.log = lambda *a, **kw: None
+
+        groups, standalone = obj.detect_series_files(files)
+
+        assert groups == {}
+        assert standalone == files
+
+    def test_download_site_prefix_does_not_create_fake_4k2_group(self):
+        import jav_file_organizer as jfo_mod
+        obj = jfo_mod.JavFileOrganizer.__new__(jfo_mod.JavFileOrganizer)
+        obj.log = lambda *a, **kw: None
+        files = ['4k2.me@start-451.mp4', '4k2.me@start-492.mp4']
+
+        groups, standalone = obj.detect_series_files(files)
+
+        assert groups == {}
+        assert standalone == files
+
+    def test_savr_quality_parts_form_separate_exact_code_groups(self):
+        import jav_file_organizer as jfo_mod
+        obj = jfo_mod.JavFileOrganizer.__new__(jfo_mod.JavFileOrganizer)
+        obj.log = lambda *a, **kw: None
+        files = [
+            '4k2.com@savr00826_1_8k.mp4',
+            '4k2.com@savr00826_2_8k.mp4',
+            'twojav.com@savr00937_1_8k.mp4',
+            'twojav.com@savr00937_2_8k.mp4',
+            'twojav.com@savr00937_3_8k.mp4',
+        ]
+
+        groups, standalone = obj.detect_series_files(files)
+
+        assert set(groups) == {'SAVR-826', 'SAVR-937'}
+        assert [sequence for _path, sequence in groups['SAVR-826']] == ['1', '2']
+        assert [sequence for _path, sequence in groups['SAVR-937']] == ['1', '2', '3']
+        assert standalone == []

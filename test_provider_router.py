@@ -20,6 +20,17 @@ def test_hidden_file_should_skip():
     assert decision['reason'] == 'hidden-file'
 
 
+def test_anime_release_group_filename_should_skip_as_non_jav_media():
+    decision = route_provider(
+        'auto_all',
+        '[Erai-raws] Ousama Ranking - 07 [v0][1080p][Multiple Subtitle][815C2038].mkv',
+        'erai-raws',
+    )
+
+    assert decision['action'] == 'skip'
+    assert decision['reason'] == 'non-jav-anime-release'
+
+
 def test_standard_jav_code_keeps_javlibrary():
     decision = route_provider('javlibrary', 'SDAB-351.mp4', 'sdab-351')
     assert decision['action'] == 'process'

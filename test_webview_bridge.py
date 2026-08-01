@@ -24,7 +24,8 @@ def test_webview_initial_state_exposes_real_version_and_providers(tmp_path):
         item['key'] for item in state['providers']
     }
     assert 'uncensored' not in {item['key'] for item in state['providers']}
-    assert state['settings']['website'] == 'javbus'
+    assert state['settings']['website'] == 'auto_all'
+    assert api.engine.website_var.get() == 'auto_all'
     assert state['settings']['include_subdirectories'] is False
 
 
@@ -38,6 +39,21 @@ def test_webview_log_mirrors_runtime_entries_to_run_log(tmp_path):
     assert captured
     assert 'SUCCESS' in captured[0]
     assert '图片下载成功: cover.jpg' in captured[0]
+
+
+def test_webview_finalizing_event_keeps_worker_running_until_report_ready(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.is_processing = True
+
+    api._finalizing_processing_ui({
+        'total_files': 1,
+        'success_count': 1,
+        'file_results': [],
+    })
+
+    assert api.is_processing is True
+    assert api.events[-1]['type'] == 'finalizing'
+    assert api.events[-1]['payload']['result']['success_count'] == 1
 
 
 def test_webview_settings_state_contains_version_processing_and_provider_fields(tmp_path):
@@ -500,6 +516,53 @@ def test_webview_start_processing_passes_selected_files_to_worker(tmp_path):
     assert captured[0].selected_files == ['SONE-753.mp4', 'ABF-139-1.mp4']
 
 
+def test_webview_start_inspection_passes_deep_cover_selection_to_worker(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.set_folder(str(tmp_path))
+    captured = []
+
+    def fake_worker(**kwargs):
+        captured.append(kwargs)
+
+    api._run_inspection_worker = fake_worker
+    response = api.start_inspection({
+        'website': 'javbus',
+        'deep_cover_validation': True,
+        'selected_files': ['NTRD-021.mp4', 'ABF-217_A.mp4'],
+    })
+
+    assert response['ok'] is True
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline and not captured:
+        time.sleep(0.01)
+
+    assert captured == [{
+        'folder': str(tmp_path),
+        'website': 'auto_all',
+        'deep_cover_validation': True,
+        'deep_cover_selected_files': ['NTRD-021.mp4', 'ABF-217_A.mp4'],
+    }]
+    state_event = next(event for event in api.events if event['type'] == 'state')
+    assert state_event['payload']['request']['website'] == 'auto_all'
+    assert state_event['payload']['request']['requested_website'] == 'javbus'
+    assert api.settings['website'] == 'javbus'
+
+
+def test_webview_rejects_deep_cover_validation_without_selected_files(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.set_folder(str(tmp_path))
+
+    response = api.start_inspection({
+        'website': 'javbus',
+        'deep_cover_validation': True,
+        'selected_files': [],
+    })
+
+    assert response['ok'] is False
+    assert '没有勾选视频' in response['message']
+    assert api.is_processing is False
+
+
 def test_selected_file_scan_validates_only_selected_paths(tmp_path):
     api = _api_with_temp_config(tmp_path)
     chosen = tmp_path / 'chosen.mp4'
@@ -553,6 +616,16 @@ def test_webview_migrates_legacy_uncensored_selection_to_auto_uncensored(tmp_pat
     assert api.settings['website'] == 'auto_uncensored'
 
 
+def test_webview_invalid_saved_provider_falls_back_to_auto_all(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.engine._load_saved_config = lambda: {'website': 'removed-provider'}
+
+    api._load_bridge_config()
+
+    assert api.settings['website'] == 'auto_all'
+    assert api.engine.website_var.get() == 'auto_all'
+
+
 def test_webview_inspection_status_updates_workspace_and_emits_event(tmp_path):
     api = _api_with_temp_config(tmp_path)
     api.workspace_files = [{'name': 'ABF-217.mp4', 'status': 'planned'}]
@@ -564,6 +637,23 @@ def test_webview_inspection_status_updates_workspace_and_emits_event(tmp_path):
     event = api.poll_events(0)[-1]
     assert event['type'] == 'inspection_status'
     assert event['payload']['source_name'] == 'ABF-217.mp4'
+
+
+def test_webview_workspace_uses_readable_reason_but_preserves_reason_code(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+    api.workspace_files = [{'name': 'BAD-001.mp4', 'status': 'planned'}]
+
+    api._update_workspace_from_results([{
+        'source_name': 'BAD-001.mp4',
+        'status': 'needs_review',
+        'reason': 'inspection-small-video-moved-to-wip',
+        'reason_text': '视频文件过小（实际 4.0 KB，小于阈值 16.0 KB）',
+    }])
+
+    row = api.workspace_files[0]
+    assert row['reason'] == 'inspection-small-video-moved-to-wip'
+    assert row['reason_text'] == '视频文件过小（实际 4.0 KB，小于阈值 16.0 KB）'
+    assert row['note'] == row['reason_text']
 
 
 def test_webview_connection_failure_includes_clear_advice(tmp_path):
@@ -654,6 +744,11 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'bridgeReady' in index
     assert 'bridgeReady' in settings
     assert 'bridgeReady' in report
+    assert "activeProvider: 'auto_all'" in index
+    assert "settings: { website: 'auto_all'" in index
+    assert "activeProvider: 'auto_all'" in workspace
+    assert "settings: { website: 'auto_all'" in workspace
+    assert "activeProvider: 'auto_all'" in settings
     assert 'poll_events' in settings
     assert '连接测试成功' in index
     assert '连接测试失败' in index
@@ -675,6 +770,8 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'raw===\'\'?6:parseInt(raw,10)' in index
     assert 'updateStartButton' in index
     assert 'prepareInspectionWorkspace' in index
+    assert 'selectedInspectionFiles' in index
+    assert 'state.inspectionMode?selectedInspectionFiles():selectedProcessableFiles()' in index
     assert 'scanFresh: false' in index
     assert 'state.scanFresh=!replay' in index
     assert 'state.scanFresh=true' in index
@@ -688,6 +785,10 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "api('start_inspection',currentSettings())" in index
     assert '开始巡检当前目录' in index
     assert '巡检完成' in index
+    assert "ev.type==='finalizing'" in index
+    assert '报告生成中…' in index
+    assert 'id="btnDoneReport"' in index
+    assert 'setDoneReportReady(true)' in index
     assert '巡检已停止' in index
     assert '为加快停止，本次未重新扫描处理后清单' in index
     assert '已记录结果' in index
@@ -695,6 +796,11 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'function resultKeys' in index
     assert 'function findRowForResult' in index
     assert 'function applyResultToRow' in index
+    assert 'function inspectionResultRank' in index
+    assert "inspectionResultRank(f.status,f.reason)>inspectionResultRank(status,r.reason)" in index
+    assert 'f.reason_text=r.reason_text||\'\'' in index
+    assert 'f.reason_text||f.note||f.reason' in index
+    assert 'item.reason_text||' in report
     assert "f.name=target" not in index
     assert 'payloadName(f)' in index
     assert 'user-select: text' in index
@@ -727,7 +833,14 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "normal:['正常','st st-ok']" in index
     assert "fixed:['已修复','st st-ok']" in index
     assert "['normal','正常']" in index
-    assert "['precheck','已预检'],['checking','巡检中'],['normal','正常'],['ok','已修复']" in index
+    assert "['precheck','已预检'],['checking','巡检中'],['normal','正常'],['unverified','未验证'],['ok','已修复']" in index
+    assert 'id="tglDeepCover"' in index
+    assert '深度封面验证（较慢）' in index
+    assert 'deep_cover_validation: state.inspectionMode&&state.deepCoverValidation' in index
+    assert "const provider=providerLabel('auto_all')" in index
+    assert '数据源固定为全自动' in index
+    assert "reason==='inspection-cover-content-unverified'" in report
+    assert "['unverified','未验证'" in report
     assert "['checked','已巡检']" not in index
     assert "]:[['all','全部'],['planned','待处理'],['ok','成功']" in index
     assert "if(status==='checked'&&state.inspectionMode)return 'prechecked'" in index
@@ -786,7 +899,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'function selectedProcessableFiles' in index
     assert 'function isProcessableStatus' in index
     assert "['planned','prechecking','prechecked','review','audit','err']" in index
-    assert 'selected_files: selectedProcessableFiles()' in index
+    assert 'selected_files: state.inspectionMode?selectedInspectionFiles():selectedProcessableFiles()' in index
     assert '失败、待确认' in index
     assert '没有勾选可处理文件' in index
     assert '本次将处理已勾选文件' in index
@@ -804,6 +917,12 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'batchSelectedCount' in index
     assert 'state.batchSelectedCount=selected.length' in index
     assert "const selected=state.batchSelectedCount===null?currentSelected:state.batchSelectedCount" in index
+    assert 'inspectionBatchIds: new Set()' in index
+    assert 'state.inspectionBatchIds=new Set(state.checked)' in index
+    assert '已巡检 ${completed} / ${selectedIds.length} 个文件' in index
+    assert 'completionNoticeShown: false' in index
+    assert 'if(!replay&&!state.completionNoticeShown)' in index
+    assert "else if(!state.completionNoticeShown){ state.completionNoticeShown=true; $('doneOverlay').classList.remove('hidden'); }" in index
     assert 'function restoreWorkspaceSnapshot' in index
     assert 'restoreWorkspaceSnapshot(s.workspace||{})' in index
     assert 'function scrollToFile' in index
@@ -843,6 +962,8 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'raw===\'\'?6:parseInt(raw,10)' in workspace
     assert 'updateStartButton' in workspace
     assert 'prepareInspectionWorkspace' in workspace
+    assert 'selectedInspectionFiles' in workspace
+    assert 'state.inspectionMode?selectedInspectionFiles():selectedProcessableFiles()' in workspace
     assert 'scanFresh: false' in workspace
     assert 'state.scanFresh=!replay' in workspace
     assert 'state.scanFresh=true' in workspace
@@ -863,6 +984,10 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'function resultKeys' in workspace
     assert 'function findRowForResult' in workspace
     assert 'function applyResultToRow' in workspace
+    assert 'function inspectionResultRank' in workspace
+    assert "inspectionResultRank(f.status,f.reason)>inspectionResultRank(status,r.reason)" in workspace
+    assert 'f.reason_text=r.reason_text||\'\'' in workspace
+    assert 'f.reason_text||f.note||f.reason' in workspace
     assert "f.name=target" not in workspace
     assert 'payloadName(f)' in workspace
     assert 'class="rowcheck"' in workspace
@@ -889,7 +1014,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "normal:['正常','st st-ok']" in workspace
     assert "fixed:['已修复','st st-ok']" in workspace
     assert "['normal','正常']" in workspace
-    assert "['precheck','已预检'],['checking','巡检中'],['normal','正常'],['ok','已修复']" in workspace
+    assert "['precheck','已预检'],['checking','巡检中'],['normal','正常'],['unverified','未验证'],['ok','已修复']" in workspace
     assert "['checked','已巡检']" not in workspace
     assert "]:[['all','全部'],['planned','待处理'],['ok','成功']" in workspace
     assert "if(status==='checked'&&state.inspectionMode)return 'prechecked'" in workspace
@@ -945,7 +1070,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'function selectedProcessableFiles' in workspace
     assert 'function isProcessableStatus' in workspace
     assert "['planned','prechecking','prechecked','review','audit','err']" in workspace
-    assert 'selected_files: selectedProcessableFiles()' in workspace
+    assert 'selected_files: state.inspectionMode?selectedInspectionFiles():selectedProcessableFiles()' in workspace
     assert '失败、待确认' in workspace
     assert '没有勾选可处理文件' in workspace
     assert '本次将处理已勾选文件' in workspace
@@ -963,6 +1088,12 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert 'batchSelectedCount' in workspace
     assert 'state.batchSelectedCount=selected.length' in workspace
     assert "const selected=state.batchSelectedCount===null?currentSelected:state.batchSelectedCount" in workspace
+    assert 'inspectionBatchIds: new Set()' in workspace
+    assert 'state.inspectionBatchIds=new Set(state.checked)' in workspace
+    assert '已巡检 ${completed} / ${selectedIds.length} 个文件' in workspace
+    assert 'completionNoticeShown: false' in workspace
+    assert 'if(!replay&&!state.completionNoticeShown)' in workspace
+    assert "else if(!state.completionNoticeShown){ state.completionNoticeShown=true; $('doneOverlay').classList.remove('hidden'); }" in workspace
     assert 'function restoreWorkspaceSnapshot' in workspace
     assert 'restoreWorkspaceSnapshot(s.workspace||{})' in workspace
     assert 'function scrollToFile' in workspace
@@ -1013,7 +1144,7 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "reason==='inspection-ok-no-action'" in report
     assert "'封面与视频配对正常，无需处理'" in report
     assert "'巡检'" in report
-    assert "'正常率'" in report
+    assert "'未验证'" in report
     assert "'已修复'" in report
     assert "normal_count" in report
     assert "mode==='inspection'" in report

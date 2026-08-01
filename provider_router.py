@@ -20,6 +20,10 @@ NON_JAV_GENERAL_MARKERS = {
 }
 
 GENERAL_JAV_CODE = re.compile(r'^[a-z]{2,10}-\d{2,6}$', re.IGNORECASE)
+ANIME_RELEASE_NAME = re.compile(
+    r'^\[[^\]]+\]\s+.+?\s+-\s+\d{1,4}\s+(?:\[[^\]]+\]\s*)+\.(?:mkv|mp4|avi|mov)$',
+    re.IGNORECASE,
+)
 
 
 def route_provider(preferred_provider: str, filename: str, search_query: str) -> dict:
@@ -31,6 +35,13 @@ def route_provider(preferred_provider: str, filename: str, search_query: str) ->
             'action': 'skip',
             'provider': None,
             'reason': 'hidden-file',
+        }
+
+    if ANIME_RELEASE_NAME.match(filename or ''):
+        return {
+            'action': 'skip',
+            'provider': None,
+            'reason': 'non-jav-anime-release',
         }
 
     matched_marker = None

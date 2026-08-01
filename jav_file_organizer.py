@@ -375,7 +375,7 @@ class JavFileOrganizer:
         self._init_design_styles()
 
         self.folder_var = tk.StringVar()
-        self.website_var = tk.StringVar(value='javbus')
+        self.website_var = tk.StringVar(value='auto_all')
         self.search_url_var = tk.StringVar(value="https://www.javhoo.com/search/{query}")
         self.text_selector_var = tk.StringVar(value="title")
         self.image_selector_var = tk.StringVar(value="a.dt-single-image img")
@@ -1436,6 +1436,17 @@ class JavFileOrganizer:
             if shared_stem and sequence is not None:
                 query = clean_filename_for_search(shared_stem)
                 if query:
+                    full_query = clean_filename_for_search(stem)
+                    # ``ROE-445`` and ``ROE-451`` are different products, not
+                    # parts 445/451 of a group named ROE.  Generic suffix
+                    # grouping is only safe when stripping the suffix keeps
+                    # the same product identity (e.g. Title (1)/(2)).
+                    if (
+                        full_query
+                        and re.fullmatch(r'[a-z0-9]{2,15}-\d{2,6}', full_query, re.IGNORECASE)
+                        and full_query.casefold() != query.casefold()
+                    ):
+                        continue
                     key = (shared_stem.casefold(), query.upper())
                     generic_candidates.setdefault(key, []).append((file_path, sequence))
                     continue
@@ -2048,6 +2059,25 @@ class JavFileOrganizer:
                     scan_elapsed = time.time() - scan_started
                     self._remember_folder_scan(folder_path, scan, scan_elapsed)
                     self.log(f"⏱️ 文件扫描耗时: {scan_elapsed:.1f}秒", "INFO")
+            deleted_metadata = self._cleanup_safe_metadata_files(
+                folder_path,
+                scan.get('skipped_hidden') or [],
+            )
+            if deleted_metadata:
+                deleted_set = set(deleted_metadata)
+                scan = dict(scan)
+                scan['skipped_hidden'] = [
+                    name for name in (scan.get('skipped_hidden') or [])
+                    if name not in deleted_set
+                ]
+                scan['manifest_entries'] = [
+                    item for item in (scan.get('manifest_entries') or [])
+                    if item.get('name') not in deleted_set
+                ]
+                scan['total_files'] = max(
+                    0,
+                    int(scan.get('total_files') or 0) - len(deleted_set),
+                )
             total_files_preview = len(scan['accepted'])
             batch_count_str = request.batch_count_text
             batch_count = None
@@ -2106,6 +2136,7 @@ class JavFileOrganizer:
                 stop_requested=self._is_stop_requested,
                 progress_callback=self._update_processing_progress,
                 file_result_callback=getattr(self, '_file_result_callback', None),
+                finalizing_callback=getattr(self, '_finalizing_callback', None),
             )
             service = WorkflowService(
                 log=self.log,
