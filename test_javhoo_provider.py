@@ -112,6 +112,27 @@ def test_javhoo_does_not_accept_extra_numeric_detail_suffix():
     assert detail_url == 'https://www.javhoo.com/ntrd-021'
 
 
+def test_javhoo_keyword_search_opens_the_returned_candidate_detail():
+    search_html = '''
+    <html><body>
+      <article>
+        <h2><a href="/mird-876">MIRD-876 監禁凌辱作品 三浦亜沙妃</a></h2>
+        <img src="https://pics.javhoo.net/mird-876.jpg" />
+      </article>
+    </body></html>
+    '''
+    soup = BeautifulSoup(search_html, 'html.parser')
+    provider = JavHooProvider(log=lambda *a, **k: None)
+
+    detail_url = provider._find_detail_url(
+        soup,
+        'https://www.javhoo.com/search/監禁凌辱作品',
+        '監禁凌辱作品 三浦亜沙妃',
+    )
+
+    assert detail_url == 'https://www.javhoo.com/mird-876'
+
+
 def test_javhoo_falls_back_to_direct_detail_when_search_page_returns_500():
     detail_html = '''
     <html><body>

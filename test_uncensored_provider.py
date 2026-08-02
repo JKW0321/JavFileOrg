@@ -451,6 +451,21 @@ def test_uncensored_provider_parses_fc2_official_article():
     assert result.raw_meta['family'] == 'fc2-ppv'
 
 
+def test_uncensored_provider_accepts_fc2_ppt_common_typo():
+    html = '''
+    <html><head>
+      <meta property="og:title" content="FC2-PPV-3202758 Sample FC2 Title" />
+      <meta property="og:image" content="https://storage.example/fc2.jpg" />
+    </head><body></body></html>
+    '''
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=DummySession(html))
+
+    result = provider.search('FC2-PPT-3202758')
+
+    assert result.ok is True
+    assert result.title == 'FC2-PPV-3202758 Sample FC2 Title'
+
+
 def test_uncensored_provider_finds_fc2_storage_image_in_script():
     html = r'''
     <html><head>
@@ -633,6 +648,32 @@ def test_uncensored_provider_routes_413instv_to_mgstage():
     assert result.ok is True
     assert result.raw_meta['family'] == 'mgstage'
     assert result.detail_url == 'https://www.mgstage.com/product/product_detail/413INSTV-721/'
+
+
+def test_uncensored_provider_translates_gana_to_real_mgstage_content_id():
+    html = '''
+    <html><head>
+      <meta property="og:title" content="MGStage GANA Sample" />
+      <meta property="og:image" content="//image.mgstage.com/images/nanpatv/200gana/3218/pb_e_200gana-3218.jpg" />
+    </head><body></body></html>
+    '''
+    session = DummySession(html)
+    provider = UncensoredProvider(log=lambda *a, **k: None, session=session)
+
+    result = provider.search('GANA-3218')
+
+    assert result.ok is True
+    assert result.title == 'GANA-3218 MGStage GANA Sample'
+    assert result.detail_url == 'https://www.mgstage.com/product/product_detail/200GANA-3218/'
+    assert result.image_url.endswith('/nanpatv/200gana/3218/pb_e_200gana-3218.jpg')
+    assert result.raw_meta['family'] == 'mgstage'
+    assert result.raw_meta['code'] == '200GANA-3218'
+
+
+def test_dedicated_mgstage_provider_is_available_for_automatic_routing():
+    provider = create_provider('mgstage', log=lambda *a, **k: None)
+
+    assert provider.name == 'mgstage'
 
 
 def test_uncensored_provider_reports_http_403_as_access_denied():

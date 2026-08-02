@@ -266,7 +266,7 @@ def test_workflow_notifies_ui_before_slow_after_manifest_scan(tmp_path, monkeypa
     assert order[:2] == ['ui-finalizing', 'after-manifest-scan']
 
 
-def test_workflow_full_auto_routes_known_uncensored_file():
+def test_workflow_full_auto_routes_known_mgstage_file_to_exact_source_chain():
     created = []
 
     def provider_factory(name):
@@ -287,9 +287,37 @@ def test_workflow_full_auto_routes_known_uncensored_file():
         'auto_all', '420HPT-049.mp4', '420hpt-049'
     )
 
-    assert decision['candidates'] == ['uncensored']
-    assert provider_name == 'uncensored'
-    assert created == ['uncensored']
+    assert decision['candidates'] == ['libredmm', 'mgstage']
+    assert provider_name == 'libredmm'
+    assert created == ['libredmm']
+
+
+def test_workflow_gana_falls_back_from_libredmm_to_official_mgstage_adapter():
+    providers = {
+        'libredmm': FailingProvider(),
+        'mgstage': DummyProvider('GANA-3218 Japanese title'),
+    }
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda name: providers[name],
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    decision, provider, provider_name = svc._resolve_provider(
+        'auto_all', 'GANA-3218.mp4', 'gana-3218'
+    )
+    result, effective_name = svc._provider_search_with_fallback(
+        {}, decision, provider_name, provider, 'gana-3218'
+    )
+
+    assert result['ok'] is True
+    assert effective_name == 'mgstage'
+    assert providers['libredmm'].calls == ['gana-3218']
+    assert providers['mgstage'].calls == ['gana-3218']
 
 
 def test_workflow_specified_uncensored_source_is_not_changed():
@@ -319,7 +347,12 @@ def test_workflow_specified_uncensored_source_is_not_changed():
 
 
 def test_workflow_auto_censored_falls_back_from_javbus_to_javhoo():
-    providers = {'javbus': FailingProvider(), 'javhoo': DummyProvider('JAVHOO')}
+    providers = {
+        'javbus': FailingProvider(),
+        'r18dev': FailingProvider(),
+        'libredmm': FailingProvider(),
+        'javhoo': DummyProvider('JAVHOO'),
+    }
     svc = WorkflowService(
         log=lambda *a, **k: None,
         provider_factory=lambda name: providers[name],
@@ -341,6 +374,136 @@ def test_workflow_auto_censored_falls_back_from_javbus_to_javhoo():
     assert effective_name == 'javhoo'
     assert providers['javbus'].calls == ['abf-139']
     assert providers['javhoo'].calls == ['abf-139']
+    assert providers['libredmm'].calls == []
+    assert providers['r18dev'].calls == []
+
+
+def test_auto_keyword_search_discovers_code_then_requires_dmm_verification():
+    class KeywordCandidateProvider:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            return {
+                'ok': True,
+                'title': 'MIRD-876 監禁凌辱作品 三浦亜沙妃',
+                'image_url': 'https://pics.javhoo.net/mird-876.jpg',
+                'provider': 'javhoo',
+                'detail_url': 'https://www.javhoo.com/mird-876',
+                'referer': f'https://www.javhoo.com/search/{query}',
+                'error_type': None,
+                'message': None,
+            }
+
+    class ExactDmmProvider:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            return {
+                'ok': True,
+                'title': 'MIRD-876 監禁凌辱作品 三浦亜沙妃',
+                'image_url': 'https://pics.dmm.co.jp/digital/video/mird00876/mird00876pl.jpg',
+                'provider': 'libredmm',
+                'detail_url': 'https://www.libredmm.com/movies/MIRD-876.json',
+                'referer': 'https://www.libredmm.com/search?q=MIRD-876&format=json',
+                'error_type': None,
+                'message': None,
+                'raw_meta': {'normalized_id': 'MIRD-876'},
+            }
+
+    javhoo = KeywordCandidateProvider()
+    libredmm = ExactDmmProvider()
+    providers = {
+        'javbus': FailingProvider(),
+        'javhoo': javhoo,
+        'libredmm': libredmm,
+        'r18dev': FailingProvider(),
+        'uncensored': FailingProvider(),
+    }
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda name: providers[name],
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+    query = '監禁凌辱作品 三浦亜沙妃'
+    decision, provider, provider_name = svc._resolve_provider(
+        'auto_all', '三浦亜沙妃.avi', query
+    )
+
+    result, effective_name = svc._provider_search_with_fallback(
+        {}, decision, provider_name, provider, query
+    )
+
+    assert result['ok'] is True
+    assert effective_name == 'libredmm'
+    assert javhoo.calls == [query]
+    assert libredmm.calls == ['mird-876']
+    assert result['raw_meta']['keyword_discovery']['candidate_code'] == 'MIRD-876'
+
+
+def test_auto_keyword_search_rejects_irrelevant_first_candidate_without_dmm_lookup():
+    class IrrelevantCandidateProvider:
+        def search(self, query):
+            return {
+                'ok': True,
+                'title': 'ABF-217 完全に別の作品',
+                'image_url': 'https://pics.javhoo.net/abf-217.jpg',
+                'provider': 'javhoo',
+                'detail_url': 'https://www.javhoo.com/abf-217',
+                'referer': f'https://www.javhoo.com/search/{query}',
+                'error_type': None,
+                'message': None,
+            }
+
+    class RecordingDmm:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query):
+            self.calls.append(query)
+            return {
+                'ok': False,
+                'provider': 'libredmm',
+                'query': query,
+                'error_type': 'unsupported-query',
+                'message': 'standard code required',
+            }
+
+    dmm = RecordingDmm()
+    providers = {
+        'javbus': FailingProvider(),
+        'javhoo': IrrelevantCandidateProvider(),
+        'libredmm': dmm,
+        'r18dev': FailingProvider(),
+        'uncensored': FailingProvider(),
+    }
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda name: providers[name],
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+    query = '監禁凌辱作品 三浦亜沙妃'
+    decision, provider, provider_name = svc._resolve_provider(
+        'auto_all', '三浦亜沙妃.avi', query
+    )
+
+    result, _effective_name = svc._provider_search_with_fallback(
+        {}, decision, provider_name, provider, query
+    )
+
+    assert result['ok'] is False
+    assert 'abf-217' not in dmm.calls
 
 
 def test_workflow_keeps_meaningful_general_failure_when_uncensored_is_unsupported():
@@ -356,6 +519,8 @@ def test_workflow_keeps_meaningful_general_failure_when_uncensored_is_unsupporte
 
     providers = {
         'javbus': FailingProvider(),
+        'r18dev': FailingProvider(),
+        'libredmm': FailingProvider(),
         'javhoo': FailingProvider(),
         'uncensored': UnsupportedProvider(),
     }
@@ -377,7 +542,7 @@ def test_workflow_keeps_meaningful_general_failure_when_uncensored_is_unsupporte
     )
 
     assert result['error_type'] == 'invalid-result'
-    assert effective_name == 'javhoo'
+    assert effective_name == 'r18dev'
 
 
 def test_workflow_auto_routes_uncensored_video_group_as_one_provider_batch(tmp_path):
@@ -640,6 +805,465 @@ def test_workflow_can_process_current_directory_only():
         assert result['planned_count'] == 1
         assert result['total_files'] == 1
         assert provider.calls == []
+
+
+def test_numeric_single_video_uses_parent_directory_context_for_any_provider(tmp_path):
+    movie_dir = tmp_path / 'MIRD-876 監禁凌辱作品'
+    movie_dir.mkdir()
+    video = movie_dir / '01.mp4'
+    video.write_bytes(b'v' * 32768)
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    query = svc._search_query_for_file(
+        website='javbus',
+        filename=video.name,
+        file_path=str(video),
+        folder_path=str(tmp_path),
+        directory_video_count=1,
+    )
+
+    assert query == 'mird-876'
+
+
+def test_directory_context_uses_only_immediate_parent_not_ancestors(tmp_path):
+    collection = tmp_path / '上级合集名称'
+    movie_dir = collection / 'MIRD-876 監禁凌辱作品'
+    movie_dir.mkdir(parents=True)
+    video = movie_dir / '01.mp4'
+    video.write_bytes(b'v' * 32768)
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    query = svc._search_query_for_file(
+        website='auto_all',
+        filename=video.name,
+        file_path=str(video),
+        folder_path=str(tmp_path),
+        directory_video_count=1,
+    )
+
+    assert query == 'mird-876'
+    assert '上级合集' not in query
+
+
+def test_single_weak_video_name_uses_immediate_parent_code(tmp_path):
+    movie_dir = tmp_path / 'SERO-0028 絵色千佳'
+    movie_dir.mkdir()
+    video = movie_dir / 'CD1.avi'
+    video.write_bytes(b'v' * 32768)
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    query = svc._search_query_for_file(
+        website='auto_all',
+        filename=video.name,
+        file_path=str(video),
+        folder_path=str(tmp_path),
+        directory_video_count=1,
+    )
+
+    assert query == 'sero-0028'
+
+
+def test_single_title_only_video_combines_immediate_folder_and_filename_keywords(tmp_path):
+    movie_dir = tmp_path / 'Extreme Sexual Torture 爆イキ 10'
+    movie_dir.mkdir()
+    video = movie_dir / '三浦亜沙妃 Asahi Miura.avi'
+    video.write_bytes(b'v' * 32768)
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    query = svc._search_query_for_file(
+        website='auto_all',
+        filename=video.name,
+        file_path=str(video),
+        folder_path=str(tmp_path),
+        directory_video_count=1,
+    )
+
+    assert query == 'extreme sexual torture 爆イキ 10 三浦亜沙妃 asahi miura'
+
+
+def test_numeric_file_does_not_borrow_parent_when_directory_contains_multiple_videos(tmp_path):
+    movie_dir = tmp_path / 'MIRD-876 監禁凌辱作品'
+    movie_dir.mkdir()
+    video = movie_dir / '01.mp4'
+    video.write_bytes(b'v' * 32768)
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    query = svc._search_query_for_file(
+        website='javbus',
+        filename=video.name,
+        file_path=str(video),
+        folder_path=str(tmp_path),
+        directory_video_count=2,
+    )
+
+    assert query == '01'
+
+
+def test_art_collection_uses_direct_folder_as_catalog_context_even_with_many_videos(tmp_path):
+    art_dir = tmp_path / '04. ART'
+    art_dir.mkdir()
+    first = art_dir / '1754 淫乱美麗奴倶楽部.wmv'
+    second = art_dir / 'No.2090.wmv'
+    first.write_bytes(b'v' * 32768)
+    second.write_bytes(b'v' * 32768)
+    service = WorkflowService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, list(files)),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    assert service._search_query_for_file(
+        website='auto_all',
+        filename=first.name,
+        file_path=str(first),
+        folder_path=str(art_dir),
+        directory_video_count=2,
+    ) == 'ART VIDEO 1754 淫乱美麗奴倶楽部'
+    assert service._search_query_for_file(
+        website='auto_all',
+        filename=second.name,
+        file_path=str(second),
+        folder_path=str(art_dir),
+        directory_video_count=2,
+    ) == 'ART VIDEO 2090'
+
+
+def test_art_collection_preserves_japanese_diacritics_and_removes_maker_markers(tmp_path):
+    art_dir = tmp_path / '04. ART'
+    art_dir.mkdir()
+    service = WorkflowService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, list(files)),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    assert service._art_network_query(
+        '[Art Video] アートビデオ 猟奇の檻 12 丸山ゆり.avi',
+        str(art_dir / 'sample.avi'),
+    ) == 'ART VIDEO 猟奇の檻 12 丸山ゆり'
+    assert service._art_network_query(
+        '[ArtVideo] Extreme Sexual Torture アートビデオ 爆イキ 10 (2008) - 三浦亜沙妃 (Asahi Miura).avi',
+        str(art_dir / 'sample.avi'),
+    ) == 'ART VIDEO Extreme Sexual Torture 爆イキ 10 (2008) - 三浦亜沙妃 (Asahi Miura)'
+    assert service._art_network_query(
+        '奴隷通信 36 アートビデオ みだら縄ただれ縄狂ひ縄 桐島千沙.avi',
+        str(art_dir / 'sample.avi'),
+    ) == 'ART VIDEO 奴隷通信 36 みだら縄ただれ縄狂ひ縄 桐島千沙'
+
+
+def test_normalized_art_filename_keeps_catalog_identity_inside_finish(tmp_path):
+    finish_dir = tmp_path / 'Finish'
+    finish_dir.mkdir()
+    video = finish_dir / 'ART-1754 淫乱美麗奴倶楽部.wmv'
+    service = WorkflowService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, list(files)),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    assert service._search_query_for_file(
+        website='auto_all',
+        filename=video.name,
+        file_path=str(video),
+        folder_path=str(finish_dir),
+        directory_video_count=45,
+    ) == 'ART VIDEO 1754 淫乱美麗奴倶楽部'
+
+
+def test_normalized_numeric_only_art_filename_uses_art_provider_without_guessing_title(tmp_path):
+    finish_dir = tmp_path / 'Finish'
+    finish_dir.mkdir()
+    video = finish_dir / 'ART-2090.wmv'
+    service = WorkflowService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, list(files)),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    assert service._search_query_for_file(
+        website='auto_all',
+        filename=video.name,
+        file_path=str(video),
+        folder_path=str(finish_dir),
+        directory_video_count=45,
+    ) == 'ART VIDEO 2090'
+
+
+def test_art_batch_identity_is_inferred_from_current_directory_not_ancestors(tmp_path):
+    finish_dir = tmp_path / 'Unrelated Collection' / 'Finish'
+    finish_dir.mkdir(parents=True)
+    paths = [
+        finish_dir / 'ART-1754 淫乱美麗奴倶楽部.wmv',
+        finish_dir / 'ART-1856 異形の淫獣.wmv',
+        finish_dir / 'ART-1893 美肉マゾ倶楽部.wmv',
+        finish_dir / 'ART-1927 女芯悦獄4.wmv',
+        finish_dir / '猟奇の檻11 森口久美 桜台なぎさ.avi',
+    ]
+    contexts = WorkflowService._art_context_directories([str(path) for path in paths])
+
+    assert contexts == {str(finish_dir.resolve())}
+
+    service = WorkflowService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, list(files)),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+    assert service._search_query_for_file(
+        website='auto_all',
+        filename=paths[-1].name,
+        file_path=str(paths[-1]),
+        folder_path=str(finish_dir),
+        directory_video_count=5,
+        art_batch_context=True,
+    ) == 'ART VIDEO 猟奇の檻11 森口久美 桜台なぎさ'
+
+
+def test_single_unmarked_title_is_not_reclassified_from_collection_ancestor(tmp_path):
+    art_ancestor = tmp_path / 'ART' / 'Finish'
+    art_ancestor.mkdir(parents=True)
+    video = art_ancestor / '普通标题.avi'
+
+    assert WorkflowService._art_context_directories([str(video)]) == set()
+
+
+def test_art_collection_requires_verified_network_metadata_and_keeps_local_pair(tmp_path):
+    art_dir = tmp_path / '04. ART'
+    art_dir.mkdir()
+    source_video = art_dir / '1754 淫乱美麗奴倶楽部.wmv'
+    source_cover = art_dir / '1754 淫乱美麗奴倶楽部.jpg'
+    source_video.write_bytes(b'v' * 32768)
+    Image.new('RGB', (640, 900), color=(80, 20, 30)).save(source_cover, 'JPEG')
+    created = []
+    logs = []
+
+    class ArtNetworkProvider:
+        def search(self, query):
+            assert query == 'ART VIDEO 1754 淫乱美麗奴倶楽部'
+            return {
+                'ok': True,
+                'title': 'ART-1754 淫乱美麗奴倶楽部 公式題名',
+                'image_url': 'https://pureadult.co.jp/user_data/sp_images/gazou/126018/126018314000.jpg',
+                'provider': 'artvideo',
+                'detail_url': 'https://pureadult.co.jp/user_data/sp_artist_product_detail.php?mid=3&pid=126018314000',
+                'referer': 'https://pureadult.co.jp/user_data/sp_search_result.php?km=2',
+                'error_type': None,
+                'message': None,
+                'raw_meta': {'maker': 'ＡＲＴ　ＶＩＤＥＯ'},
+            }
+
+    def provider_factory(name):
+        created.append(name)
+        assert name == 'artvideo'
+        return ArtNetworkProvider()
+
+    service = WorkflowService(
+        log=lambda message, level='INFO': logs.append((level, message)),
+        provider_factory=provider_factory,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, list(files)),
+        smart_truncate_filename=lambda title, original, max_length: title,
+        minimum_video_size_bytes=16384,
+    )
+
+    result = service.run(
+        folder_path=str(art_dir),
+        finish_folder=str(art_dir / 'Finish'),
+        website='auto_all',
+        logs_dir=str(art_dir / 'JFO_Logs'),
+        include_subdirectories=False,
+    )
+
+    target_video = art_dir / 'Finish' / 'ART-1754 淫乱美麗奴倶楽部 公式題名.wmv'
+    target_cover = art_dir / 'Finish' / 'ART-1754 淫乱美麗奴倶楽部 公式題名.jpg'
+    assert result['success_count'] == 1
+    assert created == ['artvideo']
+    assert target_video.exists()
+    assert target_cover.exists()
+    assert not source_video.exists()
+    assert source_cover.exists()
+    with Image.open(target_cover) as image:
+        image.load()
+        assert image.size == (1, 1)
+    assert result['file_results'][0]['provider'] == 'artvideo'
+    assert result['file_results'][0]['query'] == 'ART VIDEO 1754 淫乱美麗奴倶楽部'
+    assert not any('复用' in message and '本地配套封面' in message for _level, message in logs)
+
+
+def test_night24_numeric_collection_is_identified_without_using_generic_number_search(tmp_path):
+    night_dir = tmp_path / 'Night24'
+    night_dir.mkdir()
+    video = night_dir / '1216.mp4'
+    video.write_bytes(b'v' * 32768)
+    service = WorkflowService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, list(files)),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    assert service._search_query_for_file(
+        website='auto_all',
+        filename=video.name,
+        file_path=str(video),
+        folder_path=str(night_dir),
+        directory_video_count=349,
+    ) == 'dms-night24-1216'
+
+
+def test_meaningful_video_filename_wins_over_parent_directory_context(tmp_path):
+    movie_dir = tmp_path / 'Unrelated Folder 999'
+    movie_dir.mkdir()
+    video = movie_dir / 'ABF-139.mp4'
+    video.write_bytes(b'v' * 32768)
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda _name: DummyProvider(),
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+    )
+
+    query = svc._search_query_for_file(
+        website='auto_all',
+        filename=video.name,
+        file_path=str(video),
+        folder_path=str(tmp_path),
+        directory_video_count=1,
+    )
+
+    assert query == 'abf-139'
+
+
+def test_recursive_run_searches_single_numeric_video_with_parent_directory_code(tmp_path):
+    movie_dir = tmp_path / 'MIRD-876 監禁凌辱作品'
+    movie_dir.mkdir()
+    (movie_dir / '01.mp4').write_bytes(b'v' * 32768)
+    provider = DummyProvider()
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda _name: provider,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+        minimum_video_size_bytes=16384,
+    )
+
+    result = svc.run(
+        folder_path=str(tmp_path),
+        finish_folder=str(tmp_path / 'Finish'),
+        website='javbus',
+        dry_run=False,
+        include_subdirectories=True,
+    )
+
+    assert provider.calls == ['mird-876']
+    assert result['success_count'] == 1
+
+
+def test_selected_numeric_video_does_not_hide_other_videos_in_same_directory(tmp_path):
+    movie_dir = tmp_path / 'MIRD-876 監禁凌辱作品'
+    movie_dir.mkdir()
+    (movie_dir / '01.mp4').write_bytes(b'a' * 32768)
+    (movie_dir / '02.mp4').write_bytes(b'b' * 32768)
+    provider = DummyProvider()
+    svc = WorkflowService(
+        log=lambda *a, **k: None,
+        provider_factory=lambda _name: provider,
+        atomic_processor=AtomicProcessor(_download, _sanitize),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=_sanitize,
+        detect_series_files=lambda files: ({}, files),
+        smart_truncate_filename=lambda title, original, max_length: title,
+        minimum_video_size_bytes=16384,
+    )
+
+    result = svc.run(
+        folder_path=str(tmp_path),
+        finish_folder=str(tmp_path / 'Finish'),
+        website='javbus',
+        dry_run=False,
+        include_subdirectories=True,
+        initial_scan={
+            'accepted': ['MIRD-876 監禁凌辱作品/01.mp4'],
+            'skipped_hidden': [],
+            'skipped_small': [],
+            'manifest_entries': [],
+            'file_sizes': {'MIRD-876 監禁凌辱作品/01.mp4': 32768},
+        },
+    )
+
+    assert provider.calls == ['01']
+    assert result['success_count'] == 1
+    assert (movie_dir / '02.mp4').exists()
 
 
 def test_workflow_treats_underscore_suffix_as_series_sequence():

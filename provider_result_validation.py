@@ -11,6 +11,13 @@ from filename_utils import extract_code_from_text
 
 def _display_code(value: str | None) -> str | None:
     text = str(value or '')
+    gana = re.search(
+        r'(?<![A-Z0-9])200GANA[-_](\d{2,6})(?!\d)',
+        text,
+        re.IGNORECASE,
+    )
+    if gana:
+        return f'GANA-{gana.group(1)}'
     code = extract_code_from_text(text)
     if code:
         return code
@@ -25,7 +32,15 @@ def _display_code(value: str | None) -> str | None:
 def _explicit_display_codes(value: str | None) -> list[str]:
     """Return every explicit standard code, including codes after an old name."""
     text = str(value or '')
-    return [
+    source_aliases = [
+        f'GANA-{match.group(1)}'
+        for match in re.finditer(
+            r'(?<![A-Z0-9])200GANA[-_](\d{2,6})(?!\d)',
+            text,
+            re.IGNORECASE,
+        )
+    ]
+    standard_codes = [
         match.group(1).replace('_', '-').upper()
         for match in re.finditer(
             r'(?<![A-Z0-9])([A-Z][A-Z0-9]{1,11}[-_]\d{2,6})(?![A-Z0-9])',
@@ -33,6 +48,7 @@ def _explicit_display_codes(value: str | None) -> list[str]:
             re.IGNORECASE,
         )
     ]
+    return source_aliases + standard_codes
 
 
 def _canonical_code(value: str | None) -> str:
@@ -72,7 +88,31 @@ def _is_expected_code_with_image_dimension(
 
 def _field_text(field: str, value: str) -> str:
     if field.endswith('_url'):
-        return unquote(urlparse(value).path)
+        parsed = urlparse(value)
+        path = unquote(parsed.path)
+        hostname = (parsed.hostname or '').lower()
+        if hostname == 'image.mgstage.com' or hostname.endswith('.image.mgstage.com'):
+            # MGStage cover basenames use technical wrappers such as
+            # ``pb_e_200gana-3218.jpg``. Without stripping the wrapper, the
+            # generic code scanner sees a bogus ``E-200`` conflicting code.
+            path = re.sub(
+                r'/(?:pb_e|pb_p|pf_o\d+)_',
+                '/',
+                path,
+                flags=re.IGNORECASE,
+            )
+        if hostname == 'pics.dmm.co.jp' or hostname.endswith('.pics.dmm.co.jp'):
+            # DMM image paths wrap the public catalog id in service/label ids,
+            # e.g. h_066FAD1470 and td041SERO00028.  Those wrappers are not
+            # product numbers and must not be reported as conflicting H-066
+            # or TD-041 codes by the generic URL scanner.
+            path = re.sub(
+                r'/(?:[a-z]{1,6}_?)?\d{1,6}(?=[a-z])',
+                '/',
+                path,
+                flags=re.IGNORECASE,
+            )
+        return path
     return value
 
 
@@ -81,6 +121,19 @@ def _is_expected_family_url_alias(field: str, value: str, expected_display: str)
     if not field.endswith('_url'):
         return False
     expected = str(expected_display or '').upper()
+    gana = re.fullmatch(r'GANA-(\d{2,6})', expected)
+    if gana:
+        parsed = urlparse(str(value or ''))
+        hostname = (parsed.hostname or '').lower()
+        if hostname == 'mgstage.com' or hostname.endswith('.mgstage.com'):
+            path = unquote(parsed.path)
+            number = gana.group(1)
+            return bool(re.search(
+                rf'(?<![A-Z0-9])200GANA[-_/]{number}(?!\d)',
+                path,
+                re.IGNORECASE,
+            ))
+
     match = re.fullmatch(r'CARIB-(\d{6})-(\d{2,5})', expected)
     if not match:
         return False

@@ -1,15 +1,25 @@
 from .bestjavporn_provider import BestJavPornProvider
+from .artvideo_provider import ArtVideoProvider
 from .javbus_provider import JavBusProvider
 from .javhoo_provider import JavHooProvider
 from .javlibrary_provider import JavLibraryProvider
+from .libredmm_provider import LibreDMMProvider
+from .madouqu_provider import MadouQuProvider
+from .mgstage_provider import MGStageProvider
+from .r18dev_provider import R18DevProvider
 from .uncensored_provider import UncensoredProvider
 
 
 def create_provider(name: str, *, log, session=None, anti_crawl=None, stop_requested=None):
     mapping = {
+        'artvideo': ArtVideoProvider,
         'javhoo': JavHooProvider,
         'javbus': JavBusProvider,
         'javlibrary': JavLibraryProvider,
+        'r18dev': R18DevProvider,
+        'libredmm': LibreDMMProvider,
+        'madouqu': MadouQuProvider,
+        'mgstage': MGStageProvider,
         'bestjavporn': BestJavPornProvider,
         'uncensored': UncensoredProvider,
     }

@@ -54,6 +54,7 @@ hiddenimports = [
 ]
 
 datas += [('${ROOT_DIR}/webui', 'webui')]
+datas += collect_data_files('certifi')
 datas += collect_data_files('webdriver_manager')
 hiddenimports += collect_submodules('providers')
 hiddenimports += collect_submodules('selenium')
@@ -134,6 +135,12 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
+CERTIFI_BUNDLE="$APP_PATH/Contents/Frameworks/certifi/cacert.pem"
+if [[ ! -f "$CERTIFI_BUNDLE" ]]; then
+  echo "Build is missing the TLS certificate bundle: $CERTIFI_BUNDLE" >&2
+  exit 1
+fi
+
 xattr -cr "$APP_PATH" || true
 find "$APP_PATH" -name Python.framework -exec xattr -d com.apple.FinderInfo {} \; 2>/dev/null || true
 find "$APP_PATH" -name Python.framework -exec xattr -d 'com.apple.fileprovider.fpfs#P' {} \; 2>/dev/null || true
@@ -164,6 +171,11 @@ case "$DESKTOP_APP" in
     exit 1
     ;;
 esac
+DESKTOP_EXECUTABLE="$DESKTOP_APP/Contents/MacOS/$APP_NAME"
+if pgrep -f "$DESKTOP_EXECUTABLE" >/dev/null 2>&1; then
+  echo "JAVFileOrganizer is still running. Close it before replacing the desktop app." >&2
+  exit 1
+fi
 rm -rf "$DESKTOP_APP"
 ditto --noextattr --norsrc "$APP_PATH" "$DESKTOP_APP"
 codesign --force --deep --sign - "$DESKTOP_APP"

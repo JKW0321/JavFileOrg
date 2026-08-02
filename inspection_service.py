@@ -10,6 +10,7 @@ import time
 import unicodedata
 import hashlib
 from bisect import bisect_left, bisect_right
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -67,6 +68,7 @@ class InspectionService:
         self.app_version = app_version
         self._image_valid_cache = {}
         self._image_hash_cache = {}
+        self._video_hash_cache = {}
         self._provider_instances = {}
         self._deep_reference_cache = {}
         self._known_video_sizes = {}
@@ -302,7 +304,7 @@ class InspectionService:
                     f'封面可正常解码、配对正确，且内容与数据源参考封面相符'
                     f'（差异 {distance}，阈值 {threshold}）'
                 )
-            return '封面可正常解码，且与视频或视频组配对正确，无需处理'
+            return '封面可完整解码且未发现损坏，并与视频或视频组配对正确，无需处理'
         if reason == 'inspection-cover-content-unverified':
             detail = str((item or {}).get('cover_verification_message') or '参考封面不可用')
             return f'本地封面结构和配对正常，但未完成内容核验：{detail}；本地文件保持原样'
@@ -358,8 +360,10 @@ class InspectionService:
         if reason.startswith('inspection-duplicate-video-pair-moved-to-wip:'):
             match = re.search(r'cover-distance-(\d+)-lte-(\d+)', reason)
             detail = f'（封面差异 {match.group(1)}，阈值 {match.group(2)}）' if match else ''
-            return f'检测到重复视频副本且封面高度相似{detail}，副本及其封面已移入 01.wip'
+            return f'视频大小和 SHA-256 内容完全一致，且封面高度相似{detail}，副本及其封面已移入 01.wip'
         if reason.startswith('inspection-duplicate-video-needs-review:'):
+            if 'video-content-unavailable' in reason:
+                return '疑似重复视频，但无法完成视频内容比对，未自动移动，请人工确认'
             if 'cover-similarity-unavailable' in reason:
                 return '疑似重复视频，但封面无法完成相似度比较，未自动移动，请人工确认'
             match = re.search(r'cover-distance-(\d+)-gt-(\d+)', reason)
@@ -382,7 +386,11 @@ class InspectionService:
             return 0
 
     def _is_image_valid(self, path: Path) -> bool:
-        key = self._path_signature(path)
+        # Quick inspection must fully decode every local cover so truncated or
+        # otherwise damaged pixel data is detected. The path-only cache is
+        # scoped to one run and prevents the same shared cover from being read
+        # repeatedly for every part in a video group.
+        key = str(Path(path))
         if key in self._image_valid_cache:
             return self._image_valid_cache[key]
         try:
@@ -400,6 +408,97 @@ class InspectionService:
         except Exception:
             self._image_valid_cache[key] = False
             return False
+
+    def _prevalidate_images(self, images, *, completed: int, total_units: int):
+        """Fully decode unique covers concurrently and warm the run cache."""
+        unique_images = list(dict.fromkeys(Path(image) for image in images))
+        if not unique_images:
+            return completed, False
+
+        workers = min(4, len(unique_images))
+        checked = 0
+        cancelled = False
+        executor = ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix='jfo-cover-check',
+        )
+        futures = {
+            executor.submit(self._is_image_valid, image): image
+            for image in unique_images
+        }
+        try:
+            for future in as_completed(futures):
+                image = futures[future]
+                try:
+                    future.result()
+                except Exception:
+                    self._image_valid_cache[str(image)] = False
+                checked += 1
+                completed += 1
+                if checked == 1 or checked % 50 == 0 or checked == len(unique_images):
+                    self._emit_progress(
+                        completed,
+                        max(total_units, 1),
+                        f'完整解码封面 {checked}/{len(unique_images)} · {image.name}',
+                    )
+                    self.log(
+                        f'🖼️ 快速巡检封面完整解码进度: '
+                        f'{checked}/{len(unique_images)}',
+                        'INFO',
+                    )
+                if self._is_stop_requested():
+                    cancelled = True
+                    break
+        finally:
+            if cancelled:
+                for future in futures:
+                    future.cancel()
+            executor.shutdown(wait=not cancelled, cancel_futures=cancelled)
+        return completed, cancelled
+
+    def _video_sha256(self, path: Path):
+        """Return a full-content digest, or None when the video cannot be read.
+
+        This is deliberately used only after sizes match. Shared covers are
+        normal for multi-part videos, so a cover hash must never be used as
+        proof that two video files are duplicates.
+        """
+        try:
+            stat = path.stat()
+            key = (str(path), int(stat.st_size), int(stat.st_mtime_ns))
+        except OSError:
+            return None
+        if key in self._video_hash_cache:
+            return self._video_hash_cache[key]
+        digest = hashlib.sha256()
+        try:
+            with path.open('rb') as stream:
+                while True:
+                    if self._is_stop_requested():
+                        return None
+                    chunk = stream.read(8 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+        except OSError:
+            self._video_hash_cache[key] = None
+            return None
+        value = digest.hexdigest()
+        self._video_hash_cache[key] = value
+        return value
+
+    def _same_video_content(self, left: Path, right: Path):
+        left_size = self._file_size(left)
+        right_size = self._file_size(right)
+        if left_size <= 0 or right_size <= 0:
+            return None
+        if left_size != right_size:
+            return False
+        left_hash = self._video_sha256(left)
+        right_hash = self._video_sha256(right)
+        if left_hash is None or right_hash is None:
+            return None
+        return left_hash == right_hash
 
     def _image_dhash(self, path: Path):
         key = self._path_signature(path)
@@ -864,6 +963,32 @@ class InspectionService:
                     continue
                 meta = metadata.get(str(video)) or {}
                 paired_images = [img for img in meta.get('paired_images', []) if img.exists()]
+                self._emit_progress(
+                    progress_state['completed'],
+                    max(int(progress_state.get('total') or 1), 1),
+                    f'核对视频内容 {video.name}',
+                )
+                same_content = self._same_video_content(keep, video)
+                if same_content is False:
+                    # Same cover is expected for a video group. Different
+                    # video bytes prove this is not a duplicate copy.
+                    continue
+                if same_content is None:
+                    item = {
+                        'source_path': str(video),
+                        'source_name': video.name,
+                        'size': self._file_size(video),
+                        'status': 'needs_review',
+                        'provider': '-',
+                        'query': meta.get('query') or '-',
+                        'reason': 'inspection-duplicate-video-needs-review:video-content-unavailable',
+                        'after': '视频内容比对未完成，文件保持原样',
+                        'rollback_ok': True,
+                    }
+                    results.append(item)
+                    self._emit_file_result(item)
+                    handled.add(str(video))
+                    continue
                 candidate_image = self._best_valid_image(paired_images)
                 distance = self._image_hash_distance(keep_image, candidate_image)
                 threshold = self.duplicate_image_similarity_threshold
@@ -910,7 +1035,10 @@ class InspectionService:
                     'status': 'needs_review',
                     'provider': '-',
                     'query': meta.get('query') or '-',
-                    'reason': f'inspection-duplicate-video-pair-moved-to-wip:cover-distance-{distance}-lte-{threshold}',
+                    'reason': (
+                        'inspection-duplicate-video-pair-moved-to-wip:'
+                        f'video-sha256-match,cover-distance-{distance}-lte-{threshold}'
+                    ),
                     'after': f'已移入 01.wip: {Path(moved[0]).name if moved else video.name}',
                     'target_video_path': moved[0] if moved else None,
                     'target_image_path': next((path for path in moved[1:] if Path(path).suffix.lower() in IMAGE_EXTENSIONS), None),
@@ -1250,6 +1378,7 @@ class InspectionService:
                 'rollback_ok': rollback_ok,
                 'provider_elapsed_seconds': provider_elapsed,
             }
+        self._image_valid_cache[str(Path(final_path))] = True
         try:
             self.atomic_processor._fsync_committed_path(final_path)
         except Exception:
@@ -1426,6 +1555,9 @@ class InspectionService:
         started = time.time()
         self._provider_instances = {}
         self._deep_reference_cache = {}
+        self._image_valid_cache = {}
+        self._image_hash_cache = {}
+        self._video_hash_cache = {}
         self._known_video_sizes = {}
         for name, raw_size in (known_video_sizes or {}).items():
             try:
@@ -1443,13 +1575,13 @@ class InspectionService:
             image_by_stem.setdefault(self._stem_key(image.stem), []).append(image)
 
         file_results = []
-        total_units = (len(videos) * 3) + len(images)
+        total_units = (len(videos) * 3) + (len(images) * 2)
         completed = 0
         cancelled = self._is_stop_requested()
         self.log(f'🩺 巡检模式: 扫描 {len(videos)} 个视频，{len(images)} 张图片', 'INFO')
         if website == 'auto_all':
             self.log(
-                '🧭 巡检数据源策略: 全自动；有码按 JavBus → JavHoo → 无码源回退，无码按文件名直接选择无码源',
+                '🧭 巡检数据源策略: 全自动；先按文件名判断有码/无码，有码按 JavBus → JavHoo → LibreDMM → R18.dev，无码直接选择无码源',
                 'INFO',
             )
         deep_selected = {
@@ -1470,9 +1602,20 @@ class InspectionService:
             )
         else:
             self.log(
-                '⚡ 深度封面验证未开启：本轮只检查封面是否存在、可解码及文件名配对，不联网比较图片内容',
+                '⚡ 深度封面验证未开启：本轮仍会逐张完整解码本地封面，'
+                '检查图片是否损坏及文件名是否配对；只是不联网比较封面内容',
                 'INFO',
             )
+
+        image_validation_started = time.time()
+        completed, image_validation_cancelled = self._prevalidate_images(
+            images,
+            completed=completed,
+            total_units=max(total_units, 1),
+        )
+        if image_validation_cancelled:
+            cancelled = True
+        self._log_stage_elapsed('本地封面完整解码与损坏检查', image_validation_started)
 
         moved_paths = set()
         unavailable_video_stems = set()
@@ -1692,6 +1835,14 @@ class InspectionService:
         for sequence_video, sequence_stem in shared_cover_stem_by_video.items():
             sequence_key = self._stem_key(sequence_stem)
             sequence_group_sizes[sequence_key] = sequence_group_sizes.get(sequence_key, 0) + 1
+        normal_video_stem_keys = {
+            self._stem_key(video.stem) for video in normal_videos
+        }
+        for sequence_key in tuple(sequence_group_sizes):
+            if sequence_key in normal_video_stem_keys:
+                # ``Title.mp4`` + ``Title (2).mp4`` is a two-part group, not
+                # a lone numbered file that should be collapsed to Title.
+                sequence_group_sizes[sequence_key] += 1
         self.log(f'🩺 巡检阶段: 校验配对封面并修复缺失/损坏封面，共 {len(normal_videos)} 个视频', 'INFO')
         for video in normal_videos:
             if cancelled:

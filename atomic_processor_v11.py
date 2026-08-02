@@ -694,10 +694,10 @@ class AtomicProcessor:
             file_path = self._resolve_existing_source_path(file_path)
             source_size = os.path.getsize(file_path)
             new_filename = self._sanitize_filename(new_filename, max_filename_bytes)
-            # 步骤1: 如果有图片URL，先下载到临时目录
+            # 步骤1: 联网封面先下载到临时目录并完整解码。
             video_basename = os.path.splitext(new_filename)[0]
             image_filename = f"{video_basename}.jpg"
-            
+
             success, temp_image_path, message = self.download_image_to_temp(
                 image_source,
                 image_filename,
@@ -721,9 +721,10 @@ class AtomicProcessor:
             )
 
             video_basename = os.path.splitext(os.path.basename(new_video_path))[0]
+            image_extension = '.jpg'
             image_filename = self._replace_extension(
-                f'{video_basename}.jpg',
-                '.jpg',
+                f'{video_basename}{image_extension}',
+                image_extension,
                 max_filename_bytes,
             )
             final_image_path = self._available_target_path(
@@ -742,11 +743,13 @@ class AtomicProcessor:
             self._write_transaction_journal(operation_journal_path, {
                 'kind': 'file-operation',
                 'status': 'committing',
-                'sources': [{
-                    'source_path': file_path,
-                    'target_path': new_video_path,
-                    'source_size': source_size,
-                }],
+                'sources': [
+                    {
+                        'source_path': file_path,
+                        'target_path': new_video_path,
+                        'source_size': source_size,
+                    },
+                ],
                 'temp_image_path': str(temp_image_path) if temp_image_path else None,
                 'final_image_path': final_image_path,
             })
@@ -761,7 +764,7 @@ class AtomicProcessor:
                 )
             self._raise_if_stopped('图片提交前')
 
-            # 步骤3: 如果有临时图片，移动到最终位置
+            # 步骤3: 提交已经完整解码的联网封面。
             if temp_image_path and temp_image_path.exists():
                 self._move_temp_image_to_final(temp_image_path, final_image_path)
                 self._fsync_committed_path(final_image_path)

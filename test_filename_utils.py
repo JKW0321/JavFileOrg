@@ -170,6 +170,47 @@ class TestCleanFilenameForSearch:
     def test_empty(self):
         assert clean_filename_for_search("") == ""
 
+    @pytest.mark.parametrize(
+        ('filename', 'expected'),
+        [
+            (
+                '(Sm-miracle)(e0654)「喘ぎ声に変わる瞬間～菱縄調教～」雨宮優香.wmv',
+                'e-0654',
+            ),
+            ('Love69.org_sm_e0678_hd.wmv', 'e-0678'),
+            ('konoha57-n0933_shion_takeuchi_fs_n.mp4', 'tokyo-hot-n0933'),
+            ('奴隷色のステージ 21_RBD-353_椎名ひかる 愛花沙也.avi', 'rbd-353'),
+            ('奴隷色のステージ16_RDB-289_椎名ゆな 水沢真樹.avi', 'rdb-289'),
+            ('SGOM-01GIGA顔面拷問1.wmv', 'sgom-01'),
+            ('TMA-20ID-035.avi', 'tma-20'),
+            ('H-4610 オリジナル 矢內里華.wmv', 'h-4610'),
+            ('MKD-S26 Uncensored KIRARI 26.avi', 'mkd-s26'),
+            ('2314 SM淫獣図鑑 8.wmv', '2314'),
+        ],
+    )
+    def test_legacy_log_embedded_codes_win_over_uploader_or_title_text(
+        self,
+        filename,
+        expected,
+    ):
+        assert clean_filename_for_search(filename) == expected
+
+    def test_no_code_title_search_keeps_distinguishing_words(self):
+        first = clean_filename_for_search('問答無用 No 124.wmv')
+        second = clean_filename_for_search('問答無用 No.030 ルナ 22歳 競泳選手.avi')
+
+        assert first == '問答無用 no 124'
+        assert second == '問答無用 no030 ルナ 22歳 競泳選手'
+        assert first != second
+
+    def test_no_code_title_search_drops_ascii_release_group(self):
+        query = clean_filename_for_search(
+            '[ArtVideo] Extreme Sexual Torture アートビデオ 爆イキ 10 (2008) - 三浦亜沙妃.avi'
+        )
+
+        assert query.startswith('extreme sexual torture ')
+        assert 'artvideo' not in query
+
 
 class TestAdaptiveFilenameRules:
     def test_fc2_ppv_candidate_is_auto_usable(self):
@@ -179,6 +220,13 @@ class TestAdaptiveFilenameRules:
         assert candidate['normalized_code'] == 'FC2-PPV-1234567'
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("FC2-PPV-1234567.mp4") == "fc2-ppv-1234567"
+
+    def test_fc2_ppt_common_typo_is_normalized_to_fc2_ppv(self):
+        candidate = analyze_unknown_filename("FC2-PPT-1234567.mp4")
+
+        assert candidate['rule_id'] == 'fc2_ppv'
+        assert candidate['normalized_code'] == 'FC2-PPV-1234567'
+        assert clean_filename_for_search("FC2-PPT-1234567.mp4") == "fc2-ppv-1234567"
 
     def test_fc2_ppv_series_candidate(self):
         base, seq = extract_series_info("FC2-PPV-1234567-2.mp4")
@@ -341,6 +389,23 @@ class TestAdaptiveFilenameRules:
         assert candidate['usable_for_search'] is True
         assert clean_filename_for_search("413INSTV-721.mp4") == "413instv-721"
 
+    @pytest.mark.parametrize(
+        'filename',
+        [
+            'GANA-3218.mp4',
+            'gana3218.mp4',
+            '200GANA-3218.mp4',
+            'hhd800.com@200gana_3218_sample.mp4',
+        ],
+    )
+    def test_gana_mgstage_aliases_use_public_display_code(self, filename):
+        candidate = analyze_unknown_filename(filename)
+
+        assert candidate['rule_id'] == 'mgstage_gana'
+        assert candidate['normalized_code'] == 'GANA-3218'
+        assert candidate['usable_for_search'] is True
+        assert clean_filename_for_search(filename) == 'gana-3218'
+
     def test_uncen_release_suffix_is_removed_from_general_code(self):
         assert clean_filename_for_search("STARS-239_Uncen.mp4") == "stars-239"
 
@@ -429,6 +494,24 @@ class TestAdaptiveFilenameRules:
         assert candidate['normalized_code'] == 'HEYDOUGA-4030-2069'
         assert candidate['sequence'] == '1'
         assert extract_series_info("hey-4030-2069_hd1.mp4") == ("HEYDOUGA-4030-2069", "1")
+
+    def test_heydouga_item_id_is_not_mistaken_for_series_sequence(self):
+        assert clean_filename_for_search('hey-4030-1823.mp4') == 'heydouga-4030-1823'
+        assert extract_series_info('hey-4030-1823.mp4') == (None, None)
+
+    @pytest.mark.parametrize(
+        ('filename', 'expected'),
+        [
+            ('RED162.640x480.mp4', 'red-162'),
+            ('RED182.rmvb.mp4', 'red-182'),
+            ('S2MBD-028_acl_0028_fhd.mp4', 's2mbd-028'),
+            ('xxx-av-22220-.mp4', 'xxx-av-22220'),
+        ],
+    )
+    def test_uncensored_catalog_identity_beats_resolution_or_embedded_tokens(
+        self, filename, expected,
+    ):
+        assert clean_filename_for_search(filename) == expected
         assert clean_filename_for_search("hey-4030-2069_hd1.mp4") == "heydouga-4030-2069"
 
     def test_generic_multi_segment_candidate_needs_review(self):
@@ -745,6 +828,22 @@ class TestDetectSeriesFiles:
         obj = jfo_mod.JavFileOrganizer.__new__(jfo_mod.JavFileOrganizer)
         obj.log = lambda *a, **kw: None
         files = ['ABF-139 Fixed Title.mp4', 'ABF-139 Fixed Title_1.mp4']
+
+        groups, standalone = obj.detect_series_files(files)
+
+        assert groups == {}
+        assert standalone == files
+
+    def test_complete_multisegment_uncensored_ids_are_not_grouped_as_parts(self):
+        import jav_file_organizer as jfo_mod
+        obj = jfo_mod.JavFileOrganizer.__new__(jfo_mod.JavFileOrganizer)
+        obj.log = lambda *a, **kw: None
+        files = [
+            '102011-001.mp4',
+            '102011-002.mp4',
+            'hey-4030-1823.mp4',
+            'heydouga-4030-1757.mp4',
+        ]
 
         groups, standalone = obj.detect_series_files(files)
 

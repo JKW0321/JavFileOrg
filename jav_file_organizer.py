@@ -204,15 +204,15 @@ class JavFileOrganizer:
         self.website_configs = {
             'auto_all': {
                 'name': '全自动 - 有码/无码智能选择',
-                'search_url': 'auto://javbus,javhoo,uncensored',
+                'search_url': 'auto://javbus,javhoo,libredmm,r18dev,uncensored',
                 'title_selectors': ['title'],
                 'image_selectors': ['img'],
                 'requires_verification': False,
                 'is_strategy': True,
             },
             'auto_censored': {
-                'name': '自动有码 - JavBus → JavHoo',
-                'search_url': 'auto://javbus,javhoo',
+                'name': '自动有码 - JavBus → JavHoo → LibreDMM → R18.dev',
+                'search_url': 'auto://javbus,javhoo,libredmm,r18dev',
                 'title_selectors': ['title'],
                 'image_selectors': ['img'],
                 'requires_verification': False,
@@ -259,6 +259,22 @@ class JavFileOrganizer:
                     '.movie-poster img'
                 ],
                 'requires_verification': True
+            },
+            'r18dev': {
+                'name': 'R18.dev - FANZA/DMM 编目补充',
+                'search_url': 'https://r18.dev/videos/vod/movies/detail/-/dvd_id={query}/json',
+                'title_selectors': ['JSON title'],
+                'image_selectors': ['JSON images.jacket_image.large2'],
+                'requires_verification': False,
+                'is_structured_api': True,
+            },
+            'libredmm': {
+                'name': 'LibreDMM - FANZA/MGStage/SOD 聚合',
+                'search_url': 'https://www.libredmm.com/search?q={query}&format=json',
+                'title_selectors': ['JSON title'],
+                'image_selectors': ['JSON cover_image_url'],
+                'requires_verification': False,
+                'is_structured_api': True,
             },
             'javlibrary': {
                 'name': 'JAVLibrary - 数据完整，高清封面',
@@ -1410,7 +1426,11 @@ class JavFileOrganizer:
         通用分段标记做成组判断。通用规则至少需要两个同基名、不同分段，
         避免把单个正常文件末尾的数字或字母误当成视频组。
         """
-        from filename_utils import clean_filename_for_search, split_sequence_suffix
+        from filename_utils import (
+            analyze_unknown_filename,
+            clean_filename_for_search,
+            split_sequence_suffix,
+        )
 
         series_groups = {}
         unresolved_files = []
@@ -1432,6 +1452,16 @@ class JavFileOrganizer:
         for file_path in unresolved_files:
             filename = os.path.basename(file_path)
             stem = os.path.splitext(filename)[0]
+            identity_candidate = analyze_unknown_filename(filename)
+            if (
+                identity_candidate
+                and identity_candidate.get('usable_for_search')
+                and not identity_candidate.get('sequence')
+            ):
+                # Multi-segment identities such as HEYDOUGA-4030-1823 and
+                # 1Pondo 102011-001 are complete product codes.  Their last
+                # number is not a video-part suffix.
+                continue
             shared_stem, sequence = split_sequence_suffix(stem)
             if shared_stem and sequence is not None:
                 query = clean_filename_for_search(shared_stem)
@@ -2010,8 +2040,8 @@ class JavFileOrganizer:
             self.log(f"📝 配置信息:", "INFO")
             if website_config.get('is_strategy'):
                 priorities = {
-                    'auto_all': 'JavBus → JavHoo → 无码源（明确的无码文件名直接走无码源）',
-                    'auto_censored': 'JavBus → JavHoo',
+                    'auto_all': 'JavBus → JavHoo → LibreDMM → R18.dev → 无码源（先按文件名判断；明确的无码文件名直接走无码源）',
+                    'auto_censored': 'JavBus → JavHoo → LibreDMM → R18.dev',
                     'auto_uncensored': '按文件名前缀匹配无码内部站点',
                 }
                 self.log(f"   来源策略: {website_config.get('name', website)}", "INFO")
@@ -2241,6 +2271,8 @@ class JavFileOrganizer:
         test_query_map = {
             'javhoo': 'SONE-753',
             'javbus': 'SONE-753',
+            'r18dev': 'RBD-353',
+            'libredmm': 'RBD-353',
             'javlibrary': 'JBD-131',
             'bestjavporn': 'ABF-311',
             'uncensored': 'CARIB-032226-001',

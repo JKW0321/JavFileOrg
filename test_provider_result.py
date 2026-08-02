@@ -115,6 +115,60 @@ def test_provider_result_accepts_caribbeancom_bare_code_urls():
     assert result.error_type is None
 
 
+def test_provider_result_accepts_gana_mgstage_catalog_prefix_and_cover_wrapper():
+    result = ProviderResult(
+        ok=True,
+        title='GANA-3218 Japanese title',
+        image_url=(
+            'https://image.mgstage.com/images/nanpatv/200gana/3218/'
+            'pb_e_200gana-3218.jpg'
+        ),
+        detail_url='https://www.mgstage.com/product/product_detail/200GANA-3218/',
+        provider='libredmm',
+    )
+
+    reject_mismatched_provider_result('GANA-3218', result)
+
+    assert result.ok is True
+    assert result.error_type is None
+
+
+def test_provider_result_still_rejects_wrong_gana_number():
+    result = ProviderResult(
+        ok=True,
+        title='GANA-3218 Japanese title',
+        image_url=(
+            'https://image.mgstage.com/images/nanpatv/200gana/9999/'
+            'pb_e_200gana-9999.jpg'
+        ),
+        detail_url='https://www.mgstage.com/product/product_detail/200GANA-9999/',
+        provider='libredmm',
+    )
+
+    reject_mismatched_provider_result('GANA-3218', result)
+
+    assert result.ok is False
+    assert result.error_type == 'code-mismatch'
+
+
+def test_provider_result_accepts_dmm_service_wrapper_in_cover_url():
+    result = ProviderResult(
+        ok=True,
+        title='FAD-1470 大胆不敵 破廉恥野外SEX',
+        image_url=(
+            'https://pics.dmm.co.jp/mono/movie/adult/h_066fad1470r/'
+            'h_066fad1470rpl.jpg'
+        ),
+        detail_url='https://r18.dev/videos/vod/movies/detail/-/dvd_id=fad1470/json',
+        provider='r18dev',
+    )
+
+    reject_mismatched_provider_result('FAD-1470', result)
+
+    assert result.ok is True
+    assert result.error_type is None
+
+
 def test_provider_result_rejects_wrong_code_in_image_url():
     result = ProviderResult(
         ok=True,

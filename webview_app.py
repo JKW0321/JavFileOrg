@@ -16,7 +16,7 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from app_metadata import APP_TITLE, BASELINE_BUILD_DATE, BASELINE_BUILD_ID, BASELINE_VERSION, CONFIG_FILENAME, STATUS_READY
+from app_metadata import APP_TITLE, BASELINE_BUILD_DATE, BASELINE_BUILD_ID, BASELINE_VERSION, CONFIG_FILENAME, RELEASE_NOTES, STATUS_READY
 from filename_utils import clean_filename_for_search, extract_code_from_text, extract_series_info
 from jav_file_organizer import JavFileOrganizer, OptimizedAntiCrawlHandler, ProcessingRequest
 
@@ -468,11 +468,13 @@ class OrganizerApi:
                 'requires_verification': bool(config.get('requires_verification')),
                 'search_url': config.get('search_url', ''),
                 'is_strategy': bool(config.get('is_strategy')),
+                'is_structured_api': bool(config.get('is_structured_api')),
             })
         return {
             'version': BASELINE_VERSION,
             'build_id': BASELINE_BUILD_ID,
             'build_date': BASELINE_BUILD_DATE,
+            'release_notes': list(RELEASE_NOTES),
             'providers': providers,
             'settings': self.settings,
             'folder': self.selected_folder,
@@ -500,6 +502,7 @@ class OrganizerApi:
                 'name': config.get('name', key),
                 'requires_verification': bool(config.get('requires_verification')),
                 'is_strategy': bool(config.get('is_strategy')),
+                'is_structured_api': bool(config.get('is_structured_api')),
                 'search_url': effective_cfg.get('search_url', ''),
                 'text_selector': effective_cfg.get('text_selector', ''),
                 'image_selector': effective_cfg.get('image_selector', ''),
@@ -512,6 +515,7 @@ class OrganizerApi:
             'version': BASELINE_VERSION,
             'build_id': BASELINE_BUILD_ID,
             'build_date': BASELINE_BUILD_DATE,
+            'release_notes': list(RELEASE_NOTES),
             'providers': providers,
             'settings': dict(self.settings),
             'selected_folder': self.selected_folder,
@@ -552,7 +556,8 @@ class OrganizerApi:
         if website not in self.engine.website_configs:
             return {'ok': False, 'message': f'未知数据源: {website}'}
         self.settings['website'] = website
-        if not self.engine.website_configs.get(website, {}).get('is_strategy') and website != 'uncensored':
+        config = self.engine.website_configs.get(website, {})
+        if not config.get('is_strategy') and not config.get('is_structured_api') and website != 'uncensored':
             self.provider_overrides[website] = {
                 'search_url': str(payload.get('search_url') or '').strip(),
                 'text_selector': str(payload.get('text_selector') or '').strip(),
@@ -841,8 +846,14 @@ class OrganizerApi:
         if self.window is None:
             return {'ok': False, 'message': 'window not ready'}
         try:
-            import webview
-            result = self.window.create_file_dialog(webview.FOLDER_DIALOG, allow_multiple=False)
+            try:
+                import webview
+                dialog_type = webview.FOLDER_DIALOG
+            except ImportError:
+                # Keep the bridge testable/headless; pywebview defines the
+                # folder-dialog constant as 10 in the packaged application.
+                dialog_type = 10
+            result = self.window.create_file_dialog(dialog_type, allow_multiple=False)
             if not result:
                 return {'ok': False, 'message': 'cancelled'}
             folder = result[0] if isinstance(result, (list, tuple)) else result
@@ -1239,6 +1250,8 @@ class OrganizerApi:
         test_query_map = {
             'javhoo': 'SONE-753',
             'javbus': 'SONE-753',
+            'r18dev': 'RBD-353',
+            'libredmm': 'RBD-353',
             'javlibrary': 'JBD-131',
             'bestjavporn': 'ABF-311',
             'uncensored': 'CARIB-032226-001',

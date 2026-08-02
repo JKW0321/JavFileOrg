@@ -3,7 +3,7 @@ import time
 import unicodedata
 from pathlib import Path
 
-from app_metadata import BASELINE_BUILD_ID, BASELINE_VERSION
+from app_metadata import BASELINE_BUILD_ID, BASELINE_VERSION, RELEASE_NOTES
 from webview_app import OrganizerApi
 
 
@@ -19,7 +19,9 @@ def test_webview_initial_state_exposes_real_version_and_providers(tmp_path):
     state = api.initial_state()
 
     assert state['version'] == BASELINE_VERSION
+    assert state['version'] == 'v2.1.4'
     assert state['build_id'] == BASELINE_BUILD_ID
+    assert state['release_notes'] == list(RELEASE_NOTES)
     assert {'auto_all', 'auto_censored', 'auto_uncensored', 'javhoo', 'javbus', 'javlibrary', 'bestjavporn'} <= {
         item['key'] for item in state['providers']
     }
@@ -63,6 +65,7 @@ def test_webview_settings_state_contains_version_processing_and_provider_fields(
     javbus = next(item for item in state['providers'] if item['key'] == 'javbus')
 
     assert state['version'] == BASELINE_VERSION
+    assert state['release_notes'] == list(RELEASE_NOTES)
     assert state['settings']['max_filename_length'] == '80'
     assert state['settings']['max_filename_bytes'] == '240'
     assert state['settings']['inspection_similarity_threshold'] == '6'
@@ -607,6 +610,32 @@ def test_webview_exposes_auto_strategies_before_detailed_sources(tmp_path):
     assert 'uncensored' not in {item['key'] for item in providers}
 
 
+def test_webview_exposes_r18_and_libredmm_as_structured_sources(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+
+    providers = {item['key']: item for item in api.settings_state()['providers']}
+
+    assert providers['r18dev']['is_structured_api'] is True
+    assert providers['libredmm']['is_structured_api'] is True
+    assert providers['r18dev']['requires_verification'] is False
+    assert providers['libredmm']['requires_verification'] is False
+
+
+def test_structured_source_settings_cannot_override_api_contract(tmp_path):
+    api = _api_with_temp_config(tmp_path)
+
+    result = api.save_provider_config({
+        'website': 'libredmm',
+        'search_url': 'https://wrong.example/{query}',
+        'text_selector': '.wrong',
+        'image_selector': '.wrong-image',
+    })
+
+    assert result['ok'] is True
+    assert 'libredmm' not in api.provider_overrides
+    assert result['provider']['search_url'] == 'https://www.libredmm.com/search?q={query}&format=json'
+
+
 def test_webview_migrates_legacy_uncensored_selection_to_auto_uncensored(tmp_path):
     api = _api_with_temp_config(tmp_path)
     api.engine._load_saved_config = lambda: {'website': 'uncensored'}
@@ -733,12 +762,14 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     workspace = (root / 'workspace.html').read_text(encoding='utf-8')
     settings = (root / 'settings.html').read_text(encoding='utf-8')
     report = (root / 'report.html').read_text(encoding='utf-8')
+    about = (root / 'about.html').read_text(encoding='utf-8')
 
     assert '完整设置页下一步接入' not in index
     assert (root / 'app-icon.png').exists()
-    for html in (index, workspace, settings, report):
+    for html in (index, workspace, settings, report, about):
         assert 'src="app-icon.png"' in html
         assert 'appmark svg' not in html
+        assert 'href="about.html"' in html
         assert 'v1.5.14' not in html
         assert 'baseline-v1.5.14' not in html
     assert 'bridgeReady' in index
@@ -749,6 +780,18 @@ def test_webview_html_no_longer_contains_stubbed_settings_or_demo_report():
     assert "activeProvider: 'auto_all'" in workspace
     assert "settings: { website: 'auto_all'" in workspace
     assert "activeProvider: 'auto_all'" in settings
+    assert 'JavBus → JavHoo → LibreDMM → R18.dev → 无码源' in index
+    assert 'JavBus → JavHoo → LibreDMM → R18.dev → 无码源' in workspace
+    assert 'JavBus → JavHoo → LibreDMM → R18.dev → 无码源' in settings
+    assert "r18dev:'RBD-353'" in settings
+    assert "libredmm:'RBD-353'" in settings
+    assert 'id="releaseNotes"' in settings
+    assert 'state.release_notes' in settings
+    assert '<title>关于 · JAV File Organizer</title>' in about
+    assert 'id="releaseNotes"' in about
+    assert 'state.release_notes' in about
+    assert '数据源配置' not in about
+    assert '处理设置' not in about
     assert 'poll_events' in settings
     assert '连接测试成功' in index
     assert '连接测试失败' in index

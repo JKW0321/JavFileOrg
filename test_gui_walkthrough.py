@@ -23,6 +23,7 @@ import threading
 import time
 from pathlib import Path
 from PIL import Image
+from app_metadata import BASELINE_BUILD_DATE, BASELINE_BUILD_ID, BASELINE_VERSION
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -186,9 +187,9 @@ def make_organizer(folder_path, finish_path):
     obj.stop_processing = False
 
     # version / metadata（兼容 _process_files_worker 的 log）
-    obj.version = 'v1.5.8'
-    obj.build_id = 'baseline-v1.5.8'
-    obj.build_date = '2026-07-08'
+    obj.version = BASELINE_VERSION
+    obj.build_id = BASELINE_BUILD_ID
+    obj.build_date = BASELINE_BUILD_DATE
 
     # video_extensions（_process_files_worker 需要）
     obj.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}
@@ -206,7 +207,7 @@ def make_organizer(folder_path, finish_path):
 
 def main():
     print("=" * 70)
-    print("JAV 文件整理工具 v1.5.8 — GUI 完整流程演示")
+    print(f"JAV 文件整理工具 {BASELINE_VERSION} — GUI 完整流程演示")
     print("=" * 70)
     print()
     print("模拟场景：")

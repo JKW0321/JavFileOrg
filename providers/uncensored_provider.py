@@ -62,6 +62,7 @@ class UncensoredProvider(BaseProvider):
         ('s-cute', re.compile(r'\bS[-_]?CUTE[-_\s]*\d+\b', re.IGNORECASE)),
         ('mesubuta', re.compile(r'\bMESUBUTA[-_\s]*\d{6}[-_\s]*\d{3}\b', re.IGNORECASE)),
         ('madou', re.compile(r'\b(?:MM|MD|MDHG|MDL|MDSR)[-_\s]*\d+\b|麻豆|MADOU', re.IGNORECASE)),
+        ('xxx-av', re.compile(r'\bXXX[-_\s]*AV[-_\s]*\d+\b', re.IGNORECASE)),
         ('dpvr', re.compile(r'\bDPVR[-_\s]*\d+\b', re.IGNORECASE)),
         ('number-name-series', re.compile(r'^\d{2,4}[-_\s]+[A-Z][A-Z]+', re.IGNORECASE)),
     )
@@ -71,6 +72,7 @@ class UncensoredProvider(BaseProvider):
         's-cute': 'S-Cute recognized, but the official old site ended service and no stable cover source is configured yet',
         'mesubuta': 'Mesubuta recognized, but the known official domain is unavailable and no stable cover source is configured yet',
         'madou': 'Madou recognized, but no verified public cover/detail source is configured yet',
+        'xxx-av': 'XXX-AV recognized, but its former exact metadata source is unavailable',
         'dpvr': 'DPVR recognized, but no verified public cover/detail source is configured yet',
         'number-name-series': 'filename pattern recognized, but the source family is ambiguous and needs manual review',
     }
@@ -78,6 +80,7 @@ class UncensoredProvider(BaseProvider):
     MGSTAGE_PREFIXES = (
         '300MIUM', '393OTIM', '420HPT', '420STH', '546EROFV', '583ERKR',
         '328CNSTV', '328HMDNV', '476MLA', '253KAKU', '292MY', '413INSTV',
+        'GANA',
     )
 
     def _request(self, url):
@@ -100,7 +103,7 @@ class UncensoredProvider(BaseProvider):
             return response
         finally:
             elapsed = time.monotonic() - started
-            self.log(f'⏱️ uncensored HTTP耗时 {elapsed:.1f}秒: {url}', 'INFO')
+            self.log(f'⏱️ {self.name} HTTP耗时 {elapsed:.1f}秒: {url}', 'INFO')
 
     def _normalize_query(self, query):
         raw = (query or '').strip()
@@ -142,7 +145,7 @@ class UncensoredProvider(BaseProvider):
                 ],
             }
 
-        match = re.search(r'\bFC2[-_\s]*(?:PPV[-_\s]*)?(\d{5,8})\b', compact)
+        match = re.search(r'\bFC2[-_\s]*(?:(?:PPV|PPT)[-_\s]*)?(\d{5,8})\b', compact)
         if match:
             item_id = match.group(1)
             return {
@@ -195,6 +198,31 @@ class UncensoredProvider(BaseProvider):
                 'display_code': display_code,
                 'detail_url': f'https://my.tokyo-hot.com/product/?q={code}',
                 'image_candidates': [],
+            }
+
+        gana = re.search(
+            r'(?<![A-Z0-9])(?:200)?GANA[-_\s]*(\d{2,6})(?!\d)',
+            compact,
+            re.IGNORECASE,
+        )
+        if gana:
+            number = gana.group(1)
+            source_code = f'200GANA-{number}'
+            return {
+                'family': 'mgstage',
+                'supported': True,
+                'code': source_code,
+                'display_code': f'GANA-{number}',
+                'detail_url': (
+                    'https://www.mgstage.com/product/product_detail/'
+                    f'{source_code}/'
+                ),
+                'image_candidates': [
+                    'https://image.mgstage.com/images/nanpatv/200gana/'
+                    f'{number}/pb_e_{source_code.lower()}.jpg',
+                    'https://image.mgstage.com/images/nanpatv/200gana/'
+                    f'{number}/pf_o1_{source_code.lower()}.jpg',
+                ],
             }
 
         mgstage_prefixes = '|'.join(re.escape(prefix) for prefix in self.MGSTAGE_PREFIXES)
@@ -834,7 +862,7 @@ class UncensoredProvider(BaseProvider):
             )
 
         detail_url = meta['detail_url']
-        self.log(f'🔍 无码源URL: family={meta.get("family")} | {detail_url}', 'INFO')
+        self.log(f'🔍 来源URL: family={meta.get("family")} | {detail_url}', 'INFO')
         try:
             if meta.get('family') == 'japanhdv':
                 return self._search_japanhdv(meta, query)

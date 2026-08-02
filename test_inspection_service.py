@@ -526,6 +526,31 @@ def test_inspection_keeps_specified_uncensored_source_for_general_code(tmp_path)
     assert result['file_results'][0]['provider'] == 'uncensored'
 
 
+def test_inspection_gana_uses_same_exact_mgstage_chain_as_normal_processing(tmp_path):
+    created = []
+
+    class NamedProvider:
+        def __init__(self, name):
+            self.name = name
+
+    service = InspectionService(
+        log=lambda *_args, **_kwargs: None,
+        provider_factory=lambda name: created.append(name) or NamedProvider(name),
+        atomic_processor=AtomicProcessor(lambda *_args: True, sanitize_filename),
+        clean_filename_for_search=clean_filename_for_search,
+        sanitize_filename=sanitize_filename,
+        smart_truncate_filename=lambda title, _filename, _max_length: title[:_max_length],
+    )
+
+    _provider, provider_name, decision = service._resolve_provider_for_video(
+        'auto_all', tmp_path / 'GANA-3249.mp4', 'gana-3249'
+    )
+
+    assert provider_name == 'libredmm'
+    assert decision['candidates'] == ['libredmm', 'mgstage']
+    assert created == ['libredmm']
+
+
 def test_inspection_processes_unprocessed_video_in_place(tmp_path):
     original = tmp_path / 'hhd800.com@MIDA-588.mp4'
     _video(original)
@@ -708,7 +733,7 @@ def test_inspection_emits_repair_stage_progress_for_file_changes(tmp_path):
     assert any(label.startswith('修复小视频 ') for _completed, _total, label in progress)
 
 
-def test_inspection_does_not_validate_non_duplicate_covers_in_duplicate_prefilter(tmp_path):
+def test_inspection_fully_decodes_each_cover_once_per_run(tmp_path, monkeypatch):
     for code in ('ABF-217', 'ABF-218', 'ABF-219'):
         video = tmp_path / f'{code} Fixed Title.mp4'
         cover = tmp_path / f'{code} Fixed Title.jpg'
@@ -716,14 +741,14 @@ def test_inspection_does_not_validate_non_duplicate_covers_in_duplicate_prefilte
         _valid_image(cover)
 
     service = _service(tmp_path)
-    original_is_image_valid = service._is_image_valid
+    original_open = inspection_mod.Image.open
     calls = []
 
-    def counted_is_image_valid(path):
+    def counted_open(path, *args, **kwargs):
         calls.append(Path(path).name)
-        return original_is_image_valid(path)
+        return original_open(path, *args, **kwargs)
 
-    service._is_image_valid = counted_is_image_valid
+    monkeypatch.setattr(inspection_mod.Image, 'open', counted_open)
     service._image_dhash = lambda path: (_ for _ in ()).throw(AssertionError(f'unexpected hash for {path}'))
     result = service.run(folder_path=str(tmp_path), website='javbus')
 
@@ -1157,7 +1182,7 @@ def test_inspection_duplicate_similarity_threshold_controls_auto_move(tmp_path):
     assert 'cover-distance-' in result['file_results'][0]['reason']
 
 
-def test_inspection_keeps_larger_duplicate_video_and_moves_smaller_original(tmp_path):
+def test_inspection_keeps_same_cover_videos_when_sizes_differ(tmp_path):
     original = tmp_path / 'ABF-217 Fixed Title.mp4'
     original_cover = tmp_path / 'ABF-217 Fixed Title.jpg'
     larger_duplicate = tmp_path / 'ABF-217 Fixed Title_1.mp4'
@@ -1171,17 +1196,61 @@ def test_inspection_keeps_larger_duplicate_video_and_moves_smaller_original(tmp_
 
     result = _service(tmp_path, events).run(folder_path=str(tmp_path), website='javbus')
 
-    wip = tmp_path / '01.wip'
-    assert result['needs_review_count'] == 1
+    assert result['needs_review_count'] == 0
     assert original.exists()
-    assert original.stat().st_size == 256 * 1024
+    assert original.stat().st_size == 64 * 1024
     assert original_cover.exists()
-    assert not larger_duplicate.exists()
+    assert larger_duplicate.exists()
     assert not larger_duplicate_cover.exists()
-    assert (wip / original.name).exists()
-    assert (wip / original_cover.name).exists()
-    assert any(item.get('reason') == 'inspection-duplicate-keep-normalized' for item in result['file_results'])
-    assert any('已规范重复保留文件名' in message for _level, message in events)
+    assert (tmp_path / '01.wip' / larger_duplicate_cover.name).exists()
+    assert not (tmp_path / '01.wip' / larger_duplicate.name).exists()
+
+
+def test_inspection_keeps_same_size_same_cover_videos_when_content_differs(tmp_path):
+    original = tmp_path / 'ABF-217 Fixed Title.mp4'
+    original_cover = tmp_path / 'ABF-217 Fixed Title.jpg'
+    second_part = tmp_path / 'ABF-217 Fixed Title_1.mp4'
+    second_cover = tmp_path / 'ABF-217 Fixed Title_1.jpg'
+
+    original.write_bytes(b'a' * (64 * 1024))
+    second_part.write_bytes(b'b' * (64 * 1024))
+    _valid_image(original_cover)
+    _valid_image(second_cover)
+
+    result = _service(tmp_path).run(folder_path=str(tmp_path), website='javbus')
+
+    assert result['needs_review_count'] == 0
+    assert original.exists()
+    assert original_cover.exists()
+    assert second_part.exists()
+    assert not second_cover.exists()
+    assert (tmp_path / '01.wip' / second_cover.name).exists()
+    assert not (tmp_path / '01.wip' / second_part.name).exists()
+
+
+def test_quick_image_validation_fully_decodes_pixels(tmp_path, monkeypatch):
+    cover = tmp_path / 'ABF-217 Fixed Title.jpg'
+    cover.write_bytes(b'header-placeholder')
+
+    class HeaderImage:
+        size = (800, 1200)
+        loaded = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def load(self):
+            self.loaded = True
+
+    image = HeaderImage()
+
+    monkeypatch.setattr(inspection_mod.Image, 'open', lambda _path: image)
+
+    assert _service(tmp_path)._is_image_valid(cover) is True
+    assert image.loaded is True
 
 
 def test_inspection_removes_sequence_marker_from_single_video_and_cover(tmp_path):

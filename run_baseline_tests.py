@@ -4,7 +4,7 @@
 run_baseline_tests.py
 =====================
 
-一键回归测试入口，覆盖当前 Git 维护版本 v1.5.8 的核心能力。
+一键回归测试入口，覆盖当前源码版本 v2.1.4 的核心能力。
 注意：程序运行时版本与当前 Git 基线 tag 保持一致，不再追加运行时后缀。
 
 - 纯函数/文件名规则（pytest）
@@ -59,7 +59,7 @@ def main() -> int:
     steps: list[tuple[str, list[str], bool]] = [
         (
             'Pure utility regression (pytest)',
-            [PY, '-m', 'pytest', 'test_filename_utils.py', 'test_javlibrary_parser.py', 'test_batch_filters.py', 'test_manifest_utils.py', 'test_provider_result.py', 'test_provider_router.py', 'test_javhoo_provider.py', 'test_javbus_provider.py', 'test_javlibrary_provider.py', 'test_bestjavporn_provider.py', 'test_uncensored_provider.py', 'test_gui_threading.py', 'test_gui_download.py', 'test_dry_run.py', 'test_series_atomic.py', 'test_workflow_service.py', 'test_inspection_service.py', 'test_webview_bridge.py', '-q'],
+            [PY, '-m', 'pytest', 'test_filename_utils.py', 'test_javlibrary_parser.py', 'test_batch_filters.py', 'test_manifest_utils.py', 'test_provider_result.py', 'test_provider_router.py', 'test_javhoo_provider.py', 'test_javbus_provider.py', 'test_javlibrary_provider.py', 'test_r18dev_provider.py', 'test_libredmm_provider.py', 'test_artvideo_provider.py', 'test_madouqu_provider.py', 'test_packaging.py', 'test_bestjavporn_provider.py', 'test_uncensored_provider.py', 'test_gui_threading.py', 'test_gui_download.py', 'test_dry_run.py', 'test_series_atomic.py', 'test_workflow_service.py', 'test_inspection_service.py', 'test_webview_bridge.py', '-q'],
             False,
         ),
         (

@@ -147,7 +147,11 @@ class RequestHtmlProvider(BaseProvider):
             # Reject fuzzy candidates such as MIFD-153 for FD-153 and
             # NTRD-021-2 for NTRD-021; try the provider's exact direct URL.
             return expected_url
-        return expected_url or (candidates[0] if candidates else None)
+        # A keyword/title query has no meaningful direct slug. Follow the
+        # candidate returned by the search page; the workflow will extract its
+        # code and require a second exact DMM verification before changing a
+        # file automatically.
+        return (candidates[0] if candidates else None) or expected_url
 
     def _fetch_detail_page(self, detail_url):
         response = self._request(detail_url)

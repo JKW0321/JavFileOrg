@@ -339,8 +339,15 @@ def extract_series_info(filename):
     stem = _stem_for_filename_analysis(filename)
 
     candidate = analyze_unknown_filename(filename)
-    if candidate and candidate.get('usable_for_search') and candidate.get('sequence'):
-        return candidate.get('normalized_code'), candidate.get('sequence')
+    if candidate and candidate.get('usable_for_search'):
+        if candidate.get('sequence'):
+            return candidate.get('normalized_code'), candidate.get('sequence')
+        # Some uncensored product identities legitimately end in another
+        # numeric segment (for example HEYDOUGA-4030-1823 and
+        # 1PONDO-102011-001).  Once the adaptive rules have identified the
+        # complete product code, the generic ``ABC-123-1`` matcher must not
+        # reinterpret its last segment as a video-part number.
+        return None, None
 
     base, sequence = _extract_series_info_from_stem(stem)
     if base:
@@ -378,11 +385,15 @@ _RELEASE_TAG_TAIL_PATTERN = re.compile(
 # 番号提取的正则模式（按优先级）
 _CODE_PATTERNS = [
     # 1. 序列格式: ABC-123-1, SONE-123-2
-    r'\b([a-zA-Z]{2,10}[-_]\d{2,5}[-_]\d+)\b',
+    r'(?<![a-zA-Z0-9])([a-zA-Z]{2,10}[-_]\d{2,5}[-_]\d+)(?!\d)',
     # 2. 字母后缀: ABC-123a
-    r'\b([a-zA-Z]{2,10}[-_]\d{2,5}[a-zA-Z])\b',
+    r'(?<![a-zA-Z0-9])([a-zA-Z]{2,10}[-_]\d{2,5}[a-zA-Z])(?![a-zA-Z0-9])',
     # 3. 标准格式: ABC-123
-    r'\b([a-zA-Z]{2,10}[-_]\d{2,5})\b',
+    r'(?<![a-zA-Z0-9])([a-zA-Z]{2,10}[-_]\d{2,5})(?!\d)',
+    # 3a. 旧片字母段: MKD-S26
+    r'(?<![a-zA-Z0-9])([a-zA-Z]{2,10}[-_][a-zA-Z]\d{2,5})(?![a-zA-Z0-9])',
+    # 3b. 单字母显式连字号: H-4610
+    r'(?<![a-zA-Z0-9])([a-zA-Z][-_]\d{3,5})(?!\d)',
     # 4. 方括号: [ABC-123]
     r'\[([a-zA-Z]{2,10}[-_]\d{2,5}[a-zA-Z]?)\]',
     # 5. 圆括号: (ABC-123)
@@ -442,6 +453,7 @@ def _candidate(rule_id, filename, normalized_code, *, confidence, usable_for_sea
 MGSTAGE_PREFIXES = (
     '300MIUM', '393OTIM', '420HPT', '420STH', '546EROFV', '583ERKR',
     '328CNSTV', '328HMDNV', '476MLA', '253KAKU', '292MY', '413INSTV',
+    'GANA',
 )
 
 
@@ -461,8 +473,111 @@ def analyze_unknown_filename(filename: str):
 
     compact = re.sub(r'[\[\]()【】]', ' ', stem)
 
+    xxx_av = re.search(
+        r'(?<![A-Z0-9])XXX[-_\s]*AV[-_\s]*(\d{3,6})(?!\d)',
+        compact,
+        re.IGNORECASE,
+    )
+    if xxx_av:
+        return _candidate(
+            'xxx_av',
+            filename,
+            f'XXX-AV-{xxx_av.group(1)}',
+            confidence=0.97,
+            usable_for_search=True,
+            reason='matched XXX-AV catalog code',
+            pattern_shape='XXX[-_ ]AV[-_ ]<3-6 digits>',
+        )
+
+    red = re.match(r'^RED[-_\s]?(\d{2,6})(?=$|[._\s-])', compact, re.IGNORECASE)
+    if red:
+        return _candidate(
+            'red_catalog',
+            filename,
+            f'RED-{red.group(1)}',
+            confidence=0.93,
+            usable_for_search=True,
+            reason='matched RED catalog code before resolution or nested extension noise',
+            pattern_shape='RED<digits>[.<resolution/nested extension>]',
+        )
+
+    s2mbd = re.search(
+        r'(?<![A-Z0-9])(S2MBD)[-_\s]*(\d{2,6})(?!\d)',
+        compact,
+        re.IGNORECASE,
+    )
+    if s2mbd:
+        return _candidate(
+            's2mbd',
+            filename,
+            f'S2MBD-{s2mbd.group(2).zfill(3)}',
+            confidence=0.96,
+            usable_for_search=True,
+            reason='matched S2MBD alphanumeric catalog prefix before embedded ACL token',
+            pattern_shape='S2MBD[-_ ]<digits>',
+        )
+
+    # ナンパTV exposes the public catalog as ``GANA-1234`` while MGStage uses
+    # ``200GANA-1234`` in its product URL and cover path. Accept both spellings
+    # but keep one stable public code throughout rename/search/group handling.
+    gana = re.search(
+        r'(?<![A-Z0-9])(?:200)?GANA[-_\s]*(\d{2,6})(?!\d)',
+        compact,
+        re.IGNORECASE,
+    )
+    if gana:
+        return _candidate(
+            'mgstage_gana',
+            filename,
+            f'GANA-{gana.group(1)}',
+            confidence=0.99,
+            usable_for_search=True,
+            reason='matched GANA public code or its 200GANA MGStage content-id alias',
+            pattern_shape='[200]GANA[-_ ]<2-6 digits>',
+        )
+
+    # Old releases frequently carry an uploader/site prefix before a bare
+    # Tokyo-Hot N-code (for example ``konoha57-n0933_...``). The N-code is the
+    # identity; the uploader token is not part of the search term.
+    embedded_tokyo_hot = re.search(
+        r'(?:^|[-_\s])([Nn]\d{4,6})(?=$|[-_\s])',
+        compact,
+    )
+    if embedded_tokyo_hot and re.search(
+        r'(?:konoha|uncensored)',
+        compact,
+        re.IGNORECASE,
+    ):
+        return _candidate(
+            'tokyo_hot_embedded_release',
+            filename,
+            f"TOKYO-HOT-{embedded_tokyo_hot.group(1).upper()}",
+            confidence=0.93,
+            usable_for_search=True,
+            reason='matched Tokyo-Hot n-code inside a known release-style filename',
+            pattern_shape='<release marker>[-_ ]N<4-6 digits>[-_ ]<metadata>',
+        )
+
+    # Legacy SM releases use E-numbers inside parentheses or underscore
+    # metadata: ``(e0654)`` / ``_e0678_``.
+    legacy_e = re.search(
+        r'(?:^|[(_\s])E[-_\s]?(\d{4})(?=$|[)_\s])',
+        compact,
+        re.IGNORECASE,
+    )
+    if legacy_e:
+        return _candidate(
+            'legacy_e_code',
+            filename,
+            f"E-{legacy_e.group(1)}",
+            confidence=0.9,
+            usable_for_search=True,
+            reason='matched legacy E-number inside release metadata',
+            pattern_shape='[(_ ]E[-_ ]<4 digits>[)_ ]',
+        )
+
     fc2 = re.search(
-        r'\bFC2[-_\s]*(?:PPV[-_\s]*)?(\d{5,8})(?:[-_\s]+(\d{1,3}))?\b',
+        r'\bFC2[-_\s]*(?:(?:PPV|PPT)[-_\s]*)?(\d{5,8})(?:[-_\s]+(\d{1,3}))?\b',
         compact,
         re.IGNORECASE,
     )
@@ -475,7 +590,7 @@ def analyze_unknown_filename(filename: str):
             confidence=0.95,
             usable_for_search=True,
             reason='matched FC2/FC2-PPV numeric code',
-            pattern_shape='FC2[-_ ]PPV?[-_ ]<5-8 digits>[-_ ]<optional sequence>',
+            pattern_shape='FC2[-_ ](PPV|PPT)?[-_ ]<5-8 digits>[-_ ]<optional sequence>',
         )
 
     tokyo_hot = re.search(
@@ -911,6 +1026,16 @@ def clean_filename_for_search(filename: str) -> str:
     name = strip_site_markers(name)
     name = re.sub(r'_\[4K[}\]]', '', name)
 
+    # ASCII bracket groups at the beginning are normally release/uploader
+    # brands, not the work title. Keep non-ASCII title brackets intact except
+    # for the common ``特典`` metadata tag.
+    name = re.sub(
+        r'^\s*(?:[\[\(【（]\s*[A-Za-z][A-Za-z0-9 ._-]{1,40}\s*[\]\)】）]\s*)+',
+        '',
+        name,
+    )
+    name = re.sub(r'^\s*[\[【]\s*特典\s*[\]】]\s*', '', name)
+
     # 移除常见后缀 (-ch, -C, -c, -U, -u, -uc, -UC, -AI)
     name = _SUFFIX_PATTERN.sub('', name)
 
@@ -923,10 +1048,15 @@ def clean_filename_for_search(filename: str) -> str:
     name = re.sub(r'\s+', ' ', name).strip()
     name = re.sub(r'-+', '-', name)
 
-    if ' ' in name:
-        name = name.split()[0]
+    leading_numeric = re.match(r'^(\d{3,6})(?=\s|$)', name)
+    if leading_numeric:
+        return leading_numeric.group(1)
 
-    return name.lower()
+    # A title-only filename has no product code. Preserve its distinguishing
+    # words for providers that support keyword search; keeping only the first
+    # word made unrelated files such as ``問答無用 No 124`` and
+    # ``問答無用 No.030`` collapse to the same cached query.
+    return name[:160].strip().lower()
 
 
 def sanitize_filename(filename: str, max_bytes: int | None = None) -> str:

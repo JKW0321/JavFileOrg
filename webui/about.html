@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>关于 · JAV File Organizer</title>
+<style>
+  :root {
+    --bg: oklch(98% 0.005 250); --surface: oklch(100% 0 0);
+    --fg: oklch(22% 0.02 240); --muted: oklch(50% 0.018 240);
+    --border: oklch(90% 0.008 240); --accent: oklch(56% 0.17 255);
+    --ok: oklch(58% 0.16 145); --soft: color-mix(in oklch, var(--fg) 3%, transparent);
+    --font: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+    --mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+    --radius: 8px;
+  }
+  *,*::before,*::after{box-sizing:border-box} html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 var(--font);-webkit-font-smoothing:antialiased}
+  a{color:inherit;text-decoration:none}.app{height:100vh;display:grid;grid-template-rows:auto 1fr auto}
+  .appbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border)}
+  .brand{display:flex;align-items:center;gap:10px}.appmark{width:26px;height:26px;border:1px solid var(--border);border-radius:6px;overflow:hidden}.appmark img{width:100%;height:100%;display:block;object-fit:cover}
+  .appname{font-weight:600;font-size:15px}.ver{font:11px var(--mono);color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:2px 8px}
+  .nav{display:flex;align-items:center;gap:8px}.btn{padding:8px 14px;border-radius:var(--radius);font-size:13px;color:var(--muted)}.btn:hover,.btn[aria-current="page"]{color:var(--fg);background:var(--soft)}
+  main{overflow:auto}.wrap{max-width:900px;margin:0 auto;padding:54px 28px 72px}
+  .hero{display:grid;grid-template-columns:88px 1fr;gap:24px;align-items:center;padding-bottom:34px;border-bottom:1px solid var(--border)}
+  .hero-icon{width:88px;height:88px;border-radius:20px;box-shadow:0 12px 34px color-mix(in oklch,var(--fg) 12%,transparent)}.hero h1{margin:0 0 5px;font-size:25px;letter-spacing:-.025em}.hero p{margin:0;color:var(--muted)}
+  .build{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.chip{font:11px var(--mono);padding:4px 9px;border:1px solid var(--border);border-radius:999px;background:var(--surface);color:var(--muted)}
+  section{padding:34px 0 0}h2{margin:0 0 7px;font:500 11px var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+  .intro{margin:0;max-width:70ch;color:var(--muted)}.release-notes{margin:16px 0 0;padding:18px 22px 18px 42px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}.release-notes li{padding:5px 0}
+  .statusbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:5px 16px;border-top:1px solid var(--border);background:var(--surface);font:11px var(--mono);color:var(--muted)}
+  .left{display:flex;align-items:center;gap:8px}.dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
+  @media(max-width:700px){.nav .optional{display:none}.wrap{padding-top:34px}.hero{grid-template-columns:64px 1fr}.hero-icon{width:64px;height:64px;border-radius:15px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="appbar">
+    <a class="brand" href="index.html" aria-label="返回工作区">
+      <span class="appmark"><img src="app-icon.png" alt=""></span>
+      <span class="appname">JAV File Organizer</span><span class="ver">v--</span>
+    </a>
+    <nav class="nav" aria-label="主导航">
+      <a class="btn" href="index.html">工作区</a>
+      <a class="btn optional" href="report.html">运行报告</a>
+      <a class="btn optional" href="settings.html">设置</a>
+      <a class="btn" href="about.html" aria-current="page">About</a>
+    </nav>
+  </header>
+  <main>
+    <div class="wrap">
+      <div class="hero">
+        <img class="hero-icon" src="app-icon.png" alt="JAV File Organizer 图标">
+        <div>
+          <h1>JAV File Organizer</h1>
+          <p>影片文件整理、封面校验与可恢复事务处理工具</p>
+          <div class="build"><span class="chip" id="version">版本加载中</span><span class="chip" id="buildId">构建信息加载中</span><span class="chip" id="buildDate">日期加载中</span></div>
+        </div>
+      </div>
+      <section>
+        <h2>软件说明</h2>
+        <p class="intro">按番号、文件名及直接目录上下文识别影片，维护视频组共享封面，并在普通处理与巡检中校验图片完整性。文件移动和封面落盘采用可恢复事务，失败时尽量保持源文件原样。</p>
+      </section>
+      <section>
+        <h2>Release Notes</h2>
+        <ul class="release-notes" id="releaseNotes"><li>正在加载更新内容…</li></ul>
+      </section>
+    </div>
+  </main>
+  <footer class="statusbar"><span class="left"><span class="dot"></span><span id="statusText">正在连接应用后端…</span></span><span>About · 软件信息与更新记录</span></footer>
+</div>
+<script>
+const esc=s=>String(s??'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function bridgeReady(){if(window.pywebview&&window.pywebview.api)return Promise.resolve(true);return new Promise(resolve=>{let done=false;const finish=()=>{if(done)return;done=true;resolve(!!(window.pywebview&&window.pywebview.api))};window.addEventListener('pywebviewready',finish,{once:true});setTimeout(finish,3000)})}
+async function load(){const ready=await bridgeReady();if(!ready){document.getElementById('statusText').textContent='应用后端未就绪';return}const state=await window.pywebview.api.settings_state();const version=state.version||'v--';document.querySelectorAll('.ver').forEach(el=>el.textContent=version);document.getElementById('version').textContent=version;document.getElementById('buildId').textContent=state.build_id||'—';document.getElementById('buildDate').textContent=state.build_date||'—';const notes=state.release_notes||[];document.getElementById('releaseNotes').innerHTML=notes.length?notes.map(note=>`<li>${esc(note)}</li>`).join(''):'<li>本版本暂无更新说明。</li>';document.getElementById('statusText').textContent='就绪 - '+version}
+load();
+</script>
+</body>
+</html>

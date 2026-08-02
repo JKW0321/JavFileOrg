@@ -5,11 +5,14 @@ from __future__ import annotations
 import os
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from app_metadata import BASELINE_VERSION
+from filename_utils import extract_code_from_text
 from manifest_utils import build_manifest_from_entries, build_run_summary, scan_folder_manifest, scan_video_files, write_json_report
 from provider_result_validation import reject_mismatched_provider_result
 from provider_router import route_provider
@@ -149,14 +152,27 @@ class WorkflowService:
         candidates = list(decision.get('candidates') or [provider_name])
         result = self._provider_search(cache, provider_name, provider, query)
         active_name = provider_name
+        result, verified_name = self._verify_auto_keyword_result(
+            cache, decision, query, result, active_name
+        )
+        if verified_name:
+            active_name = verified_name
         meaningful_failure = None
         if result.get('error_type') != 'unsupported-source':
             meaningful_failure = (result, active_name)
         for fallback_name in candidates[1:]:
             if result.get('ok') or self.stop_requested():
                 break
+            failure_type = result.get('error_type') or 'unknown'
+            failure_message = ' '.join(str(result.get('message') or '').split())
+            if len(failure_message) > 120:
+                failure_message = failure_message[:117] + '...'
+            failure_detail = failure_type
+            if failure_message:
+                failure_detail += f': {failure_message}'
             self.log(
-                f'🧭 自动来源回退: {query} | {active_name} 未成功，尝试 {fallback_name}',
+                f'🧭 自动来源回退: {query} | {active_name} 未成功 '
+                f'({failure_detail})，尝试 {fallback_name}',
                 'INFO',
             )
             if fallback_name not in self._provider_instances:
@@ -168,6 +184,11 @@ class WorkflowService:
                 self._provider_instances[active_name],
                 query,
             )
+            result, verified_name = self._verify_auto_keyword_result(
+                cache, decision, query, result, active_name
+            )
+            if verified_name:
+                active_name = verified_name
             if result.get('error_type') != 'unsupported-source':
                 meaningful_failure = (result, active_name)
         if (
@@ -178,27 +199,349 @@ class WorkflowService:
             return meaningful_failure
         return result, active_name
 
-    def _search_query_for_file(self, *, website, filename, file_path, folder_path):
+    def _set_provider_failure(self, result, *, error_type, message, raw_meta=None):
+        updates = {
+            'ok': False,
+            'error_type': error_type,
+            'message': message,
+        }
+        if raw_meta is not None:
+            updates['raw_meta'] = raw_meta
+        if isinstance(result, dict):
+            result.update(updates)
+        else:
+            for key, value in updates.items():
+                setattr(result, key, value)
+        return result
+
+    def _keyword_result_candidate(self, result):
+        codes = []
+        for value in (
+            result.get('title'),
+            result.get('detail_url'),
+            result.get('image_url'),
+        ):
+            code = extract_code_from_text(str(value or ''))
+            if code and code not in codes:
+                codes.append(code)
+        return codes[0] if len(codes) == 1 else None
+
+    def _keyword_result_is_relevant(self, query, title, candidate_code):
+        def normalized(value):
+            text = unicodedata.normalize('NFKC', str(value or '')).casefold()
+            if candidate_code:
+                atoms = re.findall(r'[a-z]+|\d+', candidate_code.casefold())
+                if atoms:
+                    text = re.sub(r'[-_\s]*'.join(map(re.escape, atoms)), ' ', text)
+            text = re.sub(
+                r'\b(?:mp4|mkv|avi|wmv|rmvb|mov|video|movie|uncensored|fhd|uhd)\b',
+                ' ',
+                text,
+            )
+            return re.sub(r'[^0-9a-z\u3040-\u30ff\u3400-\u9fff]+', '', text)
+
+        wanted = normalized(query)
+        returned = normalized(title)
+        if len(wanted) < 4 or len(returned) < 4:
+            return False
+        if (len(wanted) >= 6 and wanted in returned) or (
+            len(returned) >= 6 and returned in wanted
+        ):
+            return True
+        wanted_grams = {wanted[i:i + 3] for i in range(len(wanted) - 2)}
+        returned_grams = {returned[i:i + 3] for i in range(len(returned) - 2)}
+        if not wanted_grams or not returned_grams:
+            return False
+        overlap = len(wanted_grams & returned_grams)
+        return overlap >= 4 and overlap / min(len(wanted_grams), len(returned_grams)) >= 0.45
+
+    def _verify_auto_keyword_result(self, cache, decision, query, result, provider_name):
+        """Turn fuzzy keyword discovery into an exact, DMM-verified result.
+
+        Auto mode may send title/actress context to a provider with keyword
+        search. That first hit is never used directly: its candidate code must
+        be relevant to the keywords and independently succeed through
+        LibreDMM or R18.dev before any rename or cover write is allowed.
+        """
+        if (
+            not decision.get('auto_routed')
+            or not result.get('ok')
+            or extract_code_from_text(query)
+            or provider_name == 'artvideo'
+        ):
+            return result, None
+
+        candidate_code = self._keyword_result_candidate(result)
+        raw_meta = result.get('raw_meta') or {}
+        if not isinstance(raw_meta, dict):
+            raw_meta = {}
+        discovery = {
+            'query': query,
+            'discovery_provider': provider_name,
+            'candidate_code': candidate_code,
+        }
+        raw_meta['keyword_discovery'] = discovery
+        if not candidate_code:
+            return self._set_provider_failure(
+                result,
+                error_type='keyword-candidate-unverified',
+                message='关键词结果没有唯一、可核验的番号，已拒绝自动修改',
+                raw_meta=raw_meta,
+            ), None
+        if not self._keyword_result_is_relevant(query, result.get('title'), candidate_code):
+            return self._set_provider_failure(
+                result,
+                error_type='keyword-candidate-unverified',
+                message=f'关键词结果 {candidate_code} 与文件/目录关键信息相关度不足，已拒绝自动修改',
+                raw_meta=raw_meta,
+            ), None
+
+        candidate_query = candidate_code.lower()
+        last_failure = None
+        for exact_provider_name in ('libredmm', 'r18dev'):
+            if exact_provider_name not in self._provider_instances:
+                self._provider_instances[exact_provider_name] = self.provider_factory(
+                    exact_provider_name
+                )
+            exact_result = self._provider_search(
+                cache,
+                exact_provider_name,
+                self._provider_instances[exact_provider_name],
+                candidate_query,
+            )
+            if exact_result.get('ok'):
+                exact_meta = exact_result.get('raw_meta') or {}
+                if not isinstance(exact_meta, dict):
+                    exact_meta = {}
+                exact_meta['keyword_discovery'] = discovery
+                if isinstance(exact_result, dict):
+                    exact_result['raw_meta'] = exact_meta
+                else:
+                    exact_result.raw_meta = exact_meta
+                self.log(
+                    f'🔎 关键词检索确认: {query} -> {candidate_code} | '
+                    f'{provider_name} 发现，{exact_provider_name} 精确核验通过',
+                    'SUCCESS',
+                )
+                return exact_result, exact_provider_name
+            last_failure = exact_result
+
+        message = (
+            f'关键词找到候选番号 {candidate_code}，但 LibreDMM/R18.dev '
+            '均未完成精确核验，源文件保持原样'
+        )
+        if last_failure and last_failure.get('message'):
+            message += f'；最后结果: {last_failure.get("message")}'
+        return self._set_provider_failure(
+            result,
+            error_type='keyword-candidate-unverified',
+            message=message,
+            raw_meta=raw_meta,
+        ), None
+
+    def _actual_directory_video_count(self, file_path, selected_count):
+        """Confirm a selected-only count without walking the directory tree."""
+        if selected_count != 1:
+            return selected_count
+        count = 0
+        try:
+            with os.scandir(os.path.dirname(file_path)) as entries:
+                for entry in entries:
+                    if entry.name.startswith('.'):
+                        continue
+                    if (
+                        entry.is_file()
+                        and os.path.splitext(entry.name)[1].lower() in VIDEO_EXTENSIONS
+                    ):
+                        count += 1
+                        if count > 1:
+                            return count
+        except OSError:
+            return selected_count
+        return count
+
+    def _search_query_for_file(
+        self,
+        *,
+        website,
+        filename,
+        file_path,
+        folder_path,
+        directory_video_count=None,
+        art_batch_context=False,
+    ):
+        art_context = self._art_network_query(
+            filename,
+            file_path,
+            forced_context=art_batch_context,
+        )
+        if art_context:
+            return art_context
+
+        night24_context = self._night24_network_query(filename, file_path)
+        if night24_context:
+            return night24_context
+
         query = self.clean_filename_for_search(filename)
-        if website not in {'uncensored', 'auto_uncensored', 'auto_all'}:
-            return query
 
-        rel_path = os.path.relpath(file_path, folder_path)
-        if rel_path == filename:
-            return query
-
-        path_context = rel_path.replace(os.sep, ' ')
-        path_query = self.clean_filename_for_search(path_context)
-        if not path_query:
-            return query
-
-        if not query or re.fullmatch(r'\d{1,4}(?:[-_]\d{1,3})?', query):
-            return path_query
-
-        if path_query.startswith(('dms-night24-', 'japanhdv-', 'urabukkake-', 'mesubuta-')):
-            return path_query
+        # Subdirectory collections often keep the useful code/title in the
+        # movie folder while the only video is named 1.mp4, CD1.avi, video.mkv,
+        # or merely carries an actress/title fragment. Only the *immediate*
+        # parent is allowed as context; collection ancestors must never leak
+        # into a search query.
+        stem = os.path.splitext(filename)[0].strip()
+        nested = os.path.abspath(os.path.dirname(file_path)) != os.path.abspath(folder_path)
+        file_code = extract_code_from_text(filename)
+        weak_stem = bool(
+            re.fullmatch(
+                r'(?:\d{1,6}|(?:cd|disc|disk|part|pt|video|movie|file|影片|视频)[\s._-]*\d{0,3})',
+                stem,
+                re.IGNORECASE,
+            )
+        )
+        may_use_parent = nested and (weak_stem or not file_code)
+        if directory_video_count == 1 and may_use_parent:
+            directory_video_count = self._actual_directory_video_count(
+                file_path,
+                directory_video_count,
+            )
+        if directory_video_count == 1 and may_use_parent:
+            parent_name = os.path.basename(os.path.dirname(file_path)).strip()
+            parent_query = self.clean_filename_for_search(parent_name)
+            parent_code = extract_code_from_text(parent_name)
+            generic_parents = {
+                'download', 'downloads', 'video', 'videos', 'movie', 'movies',
+                'source', 'temp', 'tmp', 'new folder', 'untitled', '未命名文件夹',
+            }
+            parent_is_useful = bool(
+                parent_query
+                and not re.fullmatch(r'\d{1,6}', parent_query)
+                and parent_query.casefold() not in generic_parents
+            )
+            if parent_is_useful and parent_code:
+                return parent_code.lower()
+            if parent_is_useful and weak_stem:
+                return parent_query
+            if parent_is_useful and query and not file_code:
+                if query.casefold() in parent_query.casefold():
+                    return parent_query
+                if parent_query.casefold() in query.casefold():
+                    return query
+                return f'{parent_query} {query}'[:160].strip()
 
         return query
+
+    @staticmethod
+    def _art_context_directories(video_file_paths):
+        """Infer an ART batch from files in the same immediate directory.
+
+        This deliberately does not inspect parent/grandparent collection
+        names.  A directory is considered an ART batch only when at least two
+        files are present and 80% carry an explicit ART catalog prefix.
+        """
+        grouped = {}
+        for file_path in video_file_paths:
+            parent = os.path.abspath(os.path.dirname(str(file_path)))
+            grouped.setdefault(parent, []).append(os.path.basename(str(file_path)))
+        contexts = set()
+        for parent, names in grouped.items():
+            explicit_count = sum(bool(re.match(
+                r'^\s*ART[-_.\s]+\d{3,6}(?=$|[-_.\s])',
+                unicodedata.normalize('NFKC', os.path.splitext(name)[0]),
+                re.IGNORECASE,
+            )) for name in names)
+            if len(names) >= 2 and explicit_count >= 2 and explicit_count / len(names) >= 0.8:
+                contexts.add(parent)
+        return contexts
+
+    def _art_network_query(self, filename, file_path, *, forced_context=False):
+        """Build an ART Video network query using only the direct folder.
+
+        ART collections commonly use ``1754 Title`` or ``No.2090`` rather
+        than spelling the studio prefix in every filename.  The direct folder
+        is authoritative context; collection ancestors are deliberately not
+        consulted so unrelated numeric files cannot be reclassified.
+        """
+        parent_name = unicodedata.normalize(
+            'NFKC', os.path.basename(os.path.dirname(str(file_path or '')))
+        ).strip()
+        file_stem = os.path.splitext(os.path.basename(str(filename or '')))[0].strip()
+        normalized_stem = unicodedata.normalize('NFKC', file_stem)
+        art_folder = bool(re.search(
+            r'(?<![a-z0-9])(?:art\s*video|art)(?![a-z0-9])',
+            parent_name,
+            re.IGNORECASE,
+        ))
+        art_marker = bool(re.match(
+            r'^\s*[\[【(（]\s*art\s*video\s*[\]】)）]',
+            normalized_stem,
+            re.IGNORECASE,
+        ))
+        # A previous safe pass may already have normalized a legacy ART file
+        # to ``ART-1754 Title`` and moved it into ``Finish``. In that folder
+        # the direct parent no longer says ART, but this explicit prefix is
+        # authoritative product-family context and must survive reprocessing.
+        explicit_art_code = bool(re.match(
+            r'^\s*ART[-_.\s]+\d{3,6}(?=$|[-_.\s])',
+            normalized_stem,
+            re.IGNORECASE,
+        ))
+        if not (art_folder or art_marker or explicit_art_code or forced_context):
+            return None
+
+        normalized_stem = re.sub(
+            r'^\s*[\[【(（]\s*art\s*video\s*[\]】)）]\s*',
+            '',
+            normalized_stem,
+            flags=re.IGNORECASE,
+        )
+        if explicit_art_code:
+            normalized_stem = re.sub(
+                r'^\s*ART[-_.\s]+',
+                '',
+                normalized_stem,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        # The maker marker is not consistently placed at the beginning.  Old
+        # collections also contain names such as ``奴隷通信 36 アートビデオ ...``
+        # and bilingual releases with ``ART VIDEO`` in the middle.  It is
+        # catalog context, not part of the product title, so remove every
+        # standalone occurrence while preserving the actual Japanese title.
+        normalized_stem = re.sub(
+            r'(?<![A-Za-z0-9])(?:アート\s*ビデオ|art\s*video)(?![A-Za-z0-9])',
+            ' ',
+            normalized_stem,
+            flags=re.IGNORECASE,
+        )
+        normalized_stem = re.sub(r'\s+', ' ', normalized_stem).strip()
+
+        match = re.match(
+            r'^\s*(?:no\.?[\s._-]*)?(?P<number>\d{3,6})(?=$|[\s._-])',
+            normalized_stem,
+            re.IGNORECASE,
+        )
+        if match:
+            number = match.group('number').lstrip('0') or '0'
+            remainder = normalized_stem[match.end():].strip(' ._-')
+            return f'ART VIDEO {number}{" " + remainder if remainder else ""}'
+        return f'ART VIDEO {normalized_stem}'.strip() if normalized_stem else None
+
+    def _night24_network_query(self, filename, file_path):
+        parent_name = unicodedata.normalize(
+            'NFKC', os.path.basename(os.path.dirname(str(file_path or '')))
+        )
+        if not re.search(r'(?<![a-z0-9])night\s*24(?![a-z0-9])', parent_name, re.IGNORECASE):
+            return None
+        stem = unicodedata.normalize(
+            'NFKC', os.path.splitext(os.path.basename(str(filename or '')))[0]
+        ).strip()
+        match = re.match(r'^(?:no\.?[\s._-]*)?(\d{1,6})(?=$|[\s._-])', stem, re.IGNORECASE)
+        if not match:
+            return None
+        number = match.group(1)
+        remainder = stem[match.end():].strip(' ._-')
+        return f'dms-night24-{number}{" " + remainder if remainder else ""}'
 
     def _safe_finish_folder(self, folder_path, finish_folder, dry_run):
         if dry_run:
@@ -757,6 +1100,11 @@ class WorkflowService:
             )
 
         video_file_paths = [os.path.join(folder_path, f) for f in video_files]
+        art_context_directories = self._art_context_directories(video_file_paths)
+        directory_video_counts = {}
+        for video_path in video_file_paths:
+            parent = os.path.abspath(os.path.dirname(video_path))
+            directory_video_counts[parent] = directory_video_counts.get(parent, 0) + 1
         series_groups, standalone_files = self.detect_series_files(video_file_paths)
         series_by_path = {
             file_path: base_code
@@ -962,6 +1310,14 @@ class WorkflowService:
                 filename=filename,
                 file_path=file_path,
                 folder_path=folder_path,
+                directory_video_count=directory_video_counts.get(
+                    os.path.abspath(os.path.dirname(file_path)),
+                    0,
+                ),
+                art_batch_context=(
+                    os.path.abspath(os.path.dirname(file_path))
+                    in art_context_directories
+                ),
             )
             if not query:
                 candidate = analyze_unknown_filename(filename)

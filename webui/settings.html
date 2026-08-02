@@ -228,6 +228,8 @@
   .about-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 32px; font-size: 12.5px; }
   .about-grid .a-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--border); }
   .about-grid .a-row span:last-child { font-family: var(--font-mono); font-size: 12px; color: var(--muted); text-align: right; }
+  .release-notes { margin: 18px 0 0; padding: 14px 16px 14px 34px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--fg-softer); }
+  .release-notes li { padding: 4px 0; color: var(--fg); }
 
   /* toast */
   .toast {
@@ -264,6 +266,7 @@
       <a class="btn btn-ghost" href="index.html">工作区</a>
       <a class="btn btn-ghost" href="report.html">运行报告</a>
       <a class="btn btn-ghost" href="settings.html" aria-current="page">设置</a>
+      <a class="btn btn-ghost" href="about.html">About</a>
     </nav>
   </header>
 
@@ -411,15 +414,17 @@
           <!-- 04 关于 -->
           <section class="setsec" id="sec-about" data-od-id="sec-about">
             <h2 class="side-title">04 · 关于</h2>
-            <p class="sec-desc">版本与支持范围。</p>
+            <p class="sec-desc">版本、支持范围与本次更新内容。</p>
             <div class="about-grid">
               <div class="a-row"><span>版本</span><span>加载中</span></div>
               <div class="a-row"><span>构建日期</span><span>加载中</span></div>
               <div class="a-row"><span>支持视频格式</span><span>mp4 / avi / mkv / mov / wmv / flv / webm / m4v / rmvb</span></div>
               <div class="a-row"><span>数据源</span><span>JavHoo · JavBus · JAVLibrary · BestJavPorn · 无码源</span></div>
-              <div class="a-row"><span>刮削方式</span><span>requests + BeautifulSoup · JAVLibrary 走 Selenium</span></div>
+              <div class="a-row"><span>刮削方式</span><span>网页解析 + 结构化接口 · JAVLibrary 走 Selenium</span></div>
               <div class="a-row"><span>离线回归覆盖</span><span>核心流程 / WebView / 事务处理</span></div>
             </div>
+            <h3>本版本更新</h3>
+            <ul class="release-notes" id="releaseNotes"><li>正在加载更新内容…</li></ul>
           </section>
         </div>
 
@@ -451,15 +456,15 @@ function bridgeReady(){
 async function api(name,...args){ const ready=await bridgeReady(); if(!ready) return {ok:false,message:'pywebview not ready'}; return window.pywebview.api[name](...args); }
 let toastTimer = 0;
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),1600); }
-const TEST_CODES = { auto_all:'SONE-753', auto_censored:'SONE-753', auto_uncensored:'CARIB-032226-001', javhoo:'SONE-753', javbus:'SONE-753', javlibrary:'JBD-131', bestjavporn:'ABF-311', uncensored:'CARIB-032226-001' };
-let state = { providers: [], settings: {}, activeProvider: 'auto_all', version: '', build_id: '', build_date: '', testing: false, lastEventId: 0, seen: new Set() };
-function providerDesc(p){ if(p.key==='auto_all')return '有码/无码智能判断 · JavBus → JavHoo → 无码源'; if(p.key==='auto_censored')return '仅有码自动回退 · JavBus → JavHoo'; if(p.key==='auto_uncensored')return '仅无码 · 按文件名匹配内部站点'; if(p.key==='uncensored')return '指定无码源'; if(p.key==='javhoo')return '指定详细源 · 稳定快速'; if(p.key==='javbus')return '指定详细源 · 内容丰富'; if(p.key==='javlibrary')return '指定详细源 · 数据完整'; if(p.key==='bestjavporn')return '指定详细源 · 日文源'; return p.name; }
+const TEST_CODES = { auto_all:'SONE-753', auto_censored:'SONE-753', auto_uncensored:'CARIB-032226-001', javhoo:'SONE-753', javbus:'SONE-753', r18dev:'RBD-353', libredmm:'RBD-353', javlibrary:'JBD-131', bestjavporn:'ABF-311', uncensored:'CARIB-032226-001' };
+let state = { providers: [], settings: {}, activeProvider: 'auto_all', version: '', build_id: '', build_date: '', release_notes: [], testing: false, lastEventId: 0, seen: new Set() };
+function providerDesc(p){ if(p.key==='auto_all')return '先判断有码/无码 · JavBus → JavHoo → LibreDMM → R18.dev → 无码源'; if(p.key==='auto_censored')return '仅有码自动回退 · JavBus → JavHoo → LibreDMM → R18.dev'; if(p.key==='auto_uncensored')return '仅无码 · 按文件名匹配内部站点'; if(p.key==='uncensored')return '指定无码源'; if(p.key==='javhoo')return '指定详细源 · 校验并拒绝统一 Logo 占位图'; if(p.key==='javbus')return '指定详细源 · 内容丰富'; if(p.key==='r18dev')return '结构化源 · FANZA/DMM 编目和完整封面'; if(p.key==='libredmm')return '结构化源 · 聚合 FANZA、MGStage、SOD 等'; if(p.key==='javlibrary')return '指定详细源 · 仅独立选择时使用'; if(p.key==='bestjavporn')return '指定详细源 · 日文源'; return p.name; }
 function shortName(name){ return String(name||'').split(' - ')[0]; }
 function providerLabel(key){ const p=state.providers.find(item=>item.key===key); return shortName((p||{}).name)||key||shortName(active().name); }
-function setVersionText(){ document.querySelectorAll('.ver').forEach(el=>el.textContent=state.version||'v--'); $('statusText').textContent='就绪 - '+(state.version||'v--'); const about=document.querySelectorAll('.about-grid .a-row span:last-child'); if(about[0]) about[0].textContent=`${state.version||''} · ${state.build_id||''}`; if(about[1]) about[1].textContent=state.build_date||''; if(about[3]) about[3].textContent=state.providers.map(p=>shortName(p.name)).join(' · '); }
-function renderProviders(){ $('providerList').innerHTML = state.providers.map(p => `<div class="provider" role="radio" tabindex="0" data-id="${esc(p.key)}" aria-checked="${p.key===state.activeProvider}"><span class="radio" aria-hidden="true"></span><span class="p-body"><span class="p-name">${esc(shortName(p.name))}${p.is_strategy?'<span class="p-tag">自动策略</span>':p.requires_verification?'<span class="p-tag warn">需验证</span>':p.key==='uncensored'||p.key==='bestjavporn'?'<span class="p-tag">实验</span>':''}</span><span class="p-desc">${esc(providerDesc(p))}${p.is_overridden?' · 已自定义':''}</span></span></div>`).join(''); document.querySelectorAll('.provider').forEach(el=>{ const pick=async()=>{ state.activeProvider=el.dataset.id; await api('set_active_provider',state.activeProvider); renderProviders(); renderDetail(); }; el.onclick=pick; el.onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){e.preventDefault(); pick();} }; }); }
+function setVersionText(){ document.querySelectorAll('.ver').forEach(el=>el.textContent=state.version||'v--'); $('statusText').textContent='就绪 - '+(state.version||'v--'); const about=document.querySelectorAll('.about-grid .a-row span:last-child'); if(about[0]) about[0].textContent=`${state.version||''} · ${state.build_id||''}`; if(about[1]) about[1].textContent=state.build_date||''; if(about[3]) about[3].textContent=state.providers.map(p=>shortName(p.name)).join(' · '); const notes=state.release_notes||[]; $('releaseNotes').innerHTML=notes.length?notes.map(note=>`<li>${esc(note)}</li>`).join(''):'<li>本版本暂无更新说明。</li>'; }
+function renderProviders(){ $('providerList').innerHTML = state.providers.map(p => `<div class="provider" role="radio" tabindex="0" data-id="${esc(p.key)}" aria-checked="${p.key===state.activeProvider}"><span class="radio" aria-hidden="true"></span><span class="p-body"><span class="p-name">${esc(shortName(p.name))}${p.is_strategy?'<span class="p-tag">自动策略</span>':p.is_structured_api?'<span class="p-tag">结构化</span>':p.requires_verification?'<span class="p-tag warn">需验证</span>':p.key==='uncensored'||p.key==='bestjavporn'?'<span class="p-tag">实验</span>':''}</span><span class="p-desc">${esc(providerDesc(p))}${p.is_overridden?' · 已自定义':''}</span></span></div>`).join(''); document.querySelectorAll('.provider').forEach(el=>{ const pick=async()=>{ state.activeProvider=el.dataset.id; await api('set_active_provider',state.activeProvider); renderProviders(); renderDetail(); }; el.onclick=pick; el.onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){e.preventDefault(); pick();} }; }); }
 function active(){ return state.providers.find(p=>p.key===state.activeProvider) || state.providers[0] || {}; }
-function renderDetail(){ const p=active(); const routed=p.key==='uncensored'||p.is_strategy; $('pdName').textContent=shortName(p.name)||'—'; $('pdTestCode').textContent='测试番号 '+(TEST_CODES[p.key]||'SONE-753'); $('pdBanner').classList.toggle('hidden',!(p.requires_verification||routed)); $('pdBannerText').textContent=p.is_strategy?'这是自动选择策略；优先级由程序维护，不使用自定义 URL 或选择器。':p.key==='uncensored'?'无码源按文件名前缀匹配内部站点，无需手动配置选择器。':'首次使用或 Cookie 失效时，需要在弹出的 Chrome 窗口完成验证。'; $('pdFields').classList.toggle('hidden',routed); $('pdRouting').classList.toggle('hidden',!(p.key==='uncensored'||p.key==='auto_uncensored'||p.key==='auto_all')); $('btnSaveProv').disabled=!!p.is_strategy; $('btnResetProv').disabled=!!p.is_strategy; $('fSearchUrl').value=p.search_url||''; $('fTextSel').value=p.text_selector||''; $('fImgSel').value=p.image_selector||''; $('provSaveState').textContent=''; $('provSaveState').className='save-state'; }
+function renderDetail(){ const p=active(); const routed=p.key==='uncensored'||p.is_strategy||p.is_structured_api; $('pdName').textContent=shortName(p.name)||'—'; $('pdTestCode').textContent='测试番号 '+(TEST_CODES[p.key]||'SONE-753'); $('pdBanner').classList.toggle('hidden',!(p.requires_verification||routed)); $('pdBannerText').textContent=p.is_strategy?'这是自动选择策略；优先级由程序维护，不使用自定义 URL 或选择器。':p.is_structured_api?'这是结构化数据源；程序会严格核对番号和完整大封面，不使用网页选择器。':p.key==='uncensored'?'无码源按文件名前缀匹配内部站点，无需手动配置选择器。':'首次使用或 Cookie 失效时，需要在弹出的 Chrome 窗口完成验证。'; $('pdFields').classList.toggle('hidden',routed); $('pdRouting').classList.toggle('hidden',!(p.key==='uncensored'||p.key==='auto_uncensored'||p.key==='auto_all')); $('btnSaveProv').disabled=!!(p.is_strategy||p.is_structured_api); $('btnResetProv').disabled=!!(p.is_strategy||p.is_structured_api); $('fSearchUrl').value=p.search_url||''; $('fTextSel').value=p.text_selector||''; $('fImgSel').value=p.image_selector||''; $('provSaveState').textContent=''; $('provSaveState').className='save-state'; }
 function renderProc(){ const s=state.settings||{}; $('fMaxLen').value=s.max_filename_length||''; $('fMaxBytes').value=s.max_filename_bytes||''; $('fBatch').value=s.batch_count||''; $('tglActor').setAttribute('aria-checked',String(s.preserve_actor!==false)); $('tglSub').setAttribute('aria-checked',String(!!s.include_subdirectories)); $('tglDry').setAttribute('aria-checked',String(!!s.dry_run)); $('procSaveState').textContent=''; $('procSaveState').classList.remove('dirty'); }
 function connectionAdvice(website,r){ const text=`${r.error_type||''} ${r.message||''}`.toLowerCase(); if(r.advice)return r.advice; if(website==='javbus'&&text.includes('age-verification'))return 'JavBus 返回年龄确认页。请先在浏览器打开 JavBus 完成年龄确认，或稍后重试。'; if(website==='javlibrary'||/cloudflare|challenge/.test(text))return '需要在弹出的 Chrome 窗口完成验证后，再重新测试。'; if(/verification/.test(text))return '目标站点返回验证页，请先在浏览器完成该站点验证或稍后重试。'; if(/detail fallback also failed/.test(text)&&/500|502|503|504|server error|too many 500/.test(text))return '目标站点搜索页和详情页都返回服务端错误；当前源暂时不可用，建议换源或稍后重试。'; if(/500|502|503|504|server error|too many 500/.test(text))return '目标站点返回服务端错误；程序会尝试详情页兜底，仍失败时建议稍后重试或换源。'; if(/timeout|connection|network|dns|reset|proxy/.test(text))return '请检查网络、代理或远程链路，稍后重试。'; if(/403|forbidden/.test(text))return '目标站点拒绝访问，可能需要 Cookie、Referer 或稍后重试。'; if((r.error_type||'')==='image-download-failed')return '详情页可解析，但封面下载验证失败；处理时会继续使用候选封面。'; return '请查看日志中的错误类型和返回信息。'; }
 function setProviderTestState(cls,text){ $('provSaveState').className=`save-state ${cls||''}`.trim(); $('provSaveState').textContent=text; }
